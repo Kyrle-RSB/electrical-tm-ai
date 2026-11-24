@@ -10,6 +10,7 @@ export function createCockpitWindow(preloadDirectory:string,hidden=false):Browse
  });
  win.webContents.setWindowOpenHandler(()=>({action:'deny'}));
  win.webContents.on('will-navigate',event=>event.preventDefault());
+ win.webContents.session.setPermissionCheckHandler(()=>false);
  win.webContents.session.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false));
  return win;
 }

@@ -62,3 +62,11 @@ test('preload bridge is frozen and invokes only the fixed channel map',async()=>
  await bridge.importReceiptImage();await bridge.saveSyntheticPdf();await bridge.chooseBackupFolderAndBackUp();await bridge.getBackupFolder();await bridge.chooseBackupFolder();await bridge.backUpToSelectedFolder();await bridge.chooseBackupAndRestore();await bridge.storeFakeSecretProof();await bridge.checkFakeSecretProof();await bridge.removeFakeSecretProof();
  assert.deepEqual(seen,[...ALL_CHANNELS]);
 });
+
+test('native foreign-window fixture covers the exact fixed bridge method set',async()=>{
+ const {PACKAGED_SECURITY_METHODS}=await import('../e2e/cockpit-flow.spec');
+ const {createBridge}=await import('../../apps/desktop/src/preload/bridge');
+ const bridge=createBridge(async()=>{throw new Error('No transport in method census');});
+ assert.deepEqual([...PACKAGED_SECURITY_METHODS],Object.keys(bridge));
+ assert.equal(new Set(PACKAGED_SECURITY_METHODS).size,PACKAGED_SECURITY_METHODS.length);
+});

@@ -20,10 +20,22 @@ export function validateCockpitFlowReceipt(receipt){
  const expected=[[1440,900,'light'],[1440,900,'dark'],[1280,800,'light'],[1280,800,'dark']];
  return receipt.layouts.every((x,i)=>x.requestedWidth===expected[i][0]&&x.requestedHeight===expected[i][1]&&x.appearance===expected[i][2]&&x.zoomFactor===2&&x.overflow===false&&x.labels===true&&Number.isFinite(x.viewportWidth)&&x.viewportWidth>0&&Number.isFinite(x.viewportHeight)&&x.viewportHeight>0&&Array.isArray(x.contentSize)&&x.contentSize.length===2&&x.contentSize.every(n=>Number.isFinite(n)&&n>0));
 }
+const SECURITY_METHODS=Object.freeze(['ping','createProject','updateProject','listProjects','listProjectsDetailed','updateProjectDetails','setProjectStatus','getBusinessProfile','updateBusinessProfile','getBusinessLogo','chooseBusinessLogo','removeBusinessLogo','importReceiptImage','saveSyntheticPdf','chooseBackupFolderAndBackUp','getBackupFolder','chooseBackupFolder','backUpToSelectedFolder','chooseBackupAndRestore','storeFakeSecretProof','checkFakeSecretProof','removeFakeSecretProof']);
+const MALFORMED_CASES=Object.freeze(['create-missing','create-extra','create-oversize','create-unsafe-code','edit-id','details-extra','status-invalid','profile-extra','profile-required']);
+const REQUIRED_CSP="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'";
+export function validateRendererSecurityReceipt(receipt){
+ if(receipt?.schema!=='tm-renderer-security-v1'||receipt.synthetic!==true||receipt.stateUnchanged!==true||receipt.navigationAttempted!==true||receipt.navigationDenied!==true)return false;
+ const {actualPrefs:p,isolation:i,security:s}=receipt;
+ if(p?.contextIsolation!==true||p.nodeIntegration!==false||p.sandbox!==true||p.webSecurity!==true||p.webviewTag!==false||i?.requireAbsent!==true||i.processAbsent!==true||i.csp!==REQUIRED_CSP||receipt.expectedCsp!==REQUIRED_CSP)return false;
+ if(!Array.isArray(i.bridgeKeys)||i.bridgeKeys.length!==SECURITY_METHODS.length||!SECURITY_METHODS.every(method=>i.bridgeKeys.includes(method)))return false;
+ if(!Array.isArray(receipt.foreignResults)||receipt.foreignResults.length!==SECURITY_METHODS.length||!SECURITY_METHODS.every((method,n)=>receipt.foreignResults[n]?.method===method&&receipt.foreignResults[n]?.code==='SECURITY'))return false;
+ if(!Array.isArray(receipt.malformedResults)||receipt.malformedResults.length!==MALFORMED_CASES.length||!MALFORMED_CASES.every((id,n)=>receipt.malformedResults[n]?.id===id&&receipt.malformedResults[n]?.code==='VALIDATION'))return false;
+ return ['inlineBlocked','evalBlocked','networkBlocked','frameBlocked','popupDenied','permissionDenied'].every(flag=>s?.[flag]===true)&&Array.isArray(s.violations)&&['script-src-elem','connect-src','frame-src'].every(d=>s.violations.includes(d));
+}
 export function validateNativeSmokeReceipt(receipt){
-  if(!receipt||typeof receipt!=='object'||receipt.schema!=='tm-native-smoke-v2'||
+  if(!receipt||typeof receipt!=='object'||receipt.schema!=='tm-native-smoke-v3'||
     receipt.source!=='packaged-binary'||receipt.synthetic!==true||receipt.failed!==null||
-    !Array.isArray(receipt.passed)||!validateCockpitFlowReceipt(receipt.cockpitFlow))return false;
+    !Array.isArray(receipt.passed)||!validateCockpitFlowReceipt(receipt.cockpitFlow)||!validateRendererSecurityReceipt(receipt.rendererSecurity))return false;
   if(receipt.passed.length!==NATIVE_REQUIRED_CHECKS.length)return false;
   return NATIVE_REQUIRED_CHECKS.every((check,index)=>receipt.passed[index]===check);
 }
@@ -109,9 +121,10 @@ async function runLifecycle(binary){
 // Unit-check the evidence contract even in a non-native build environment.
 if(process.argv.includes('--self-test')){
   const cockpitFlow={schema:'tm-cockpit-flow-v1',synthetic:true,interaction:{profileSaved:true,projectCreated:true,projectEdited:true,archiveReopen:true,stableIdentity:true,helpFocusReturn:true},layouts:[[1440,900,'light'],[1440,900,'dark'],[1280,800,'light'],[1280,800,'dark']].map(([width,height,appearance])=>({requestedWidth:width,requestedHeight:height,contentSize:[width,height],zoomFactor:2,appearance,viewportWidth:width/2,viewportHeight:height/2,overflow:false,labels:true}))};
-  const valid={schema:'tm-native-smoke-v2',source:'packaged-binary',synthetic:true,
-    failed:null,passed:[...NATIVE_REQUIRED_CHECKS],cockpitFlow};
-  if(!validateNativeSmokeReceipt(valid)||validateNativeSmokeReceipt({...valid,cockpitFlow:null})||validateNativeSmokeReceipt({...valid,cockpitFlow:{...cockpitFlow,layouts:cockpitFlow.layouts.map(x=>({...x,overflow:true}))}})||validateNativeSmokeReceipt({...valid,failed:'native-os-credential'})||
+  const rendererSecurity={schema:'tm-renderer-security-v1',synthetic:true,stateUnchanged:true,navigationAttempted:true,navigationDenied:true,actualPrefs:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,webviewTag:false},isolation:{requireAbsent:true,processAbsent:true,bridgeKeys:[...SECURITY_METHODS],csp:REQUIRED_CSP},expectedCsp:REQUIRED_CSP,security:{inlineBlocked:true,evalBlocked:true,networkBlocked:true,frameBlocked:true,popupDenied:true,permissionDenied:true,violations:['script-src-elem','script-src','connect-src','frame-src']},foreignResults:SECURITY_METHODS.map(method=>({method,code:'SECURITY'})),malformedResults:MALFORMED_CASES.map(id=>({id,code:'VALIDATION'}))};
+  const valid={schema:'tm-native-smoke-v3',source:'packaged-binary',synthetic:true,
+    failed:null,passed:[...NATIVE_REQUIRED_CHECKS],cockpitFlow,rendererSecurity};
+  if(!validateNativeSmokeReceipt(valid)||validateNativeSmokeReceipt({...valid,rendererSecurity:null})||validateNativeSmokeReceipt({...valid,rendererSecurity:{...rendererSecurity,stateUnchanged:false}})||validateNativeSmokeReceipt({...valid,rendererSecurity:{...rendererSecurity,foreignResults:rendererSecurity.foreignResults.slice(0,-1)}})||validateNativeSmokeReceipt({...valid,rendererSecurity:{...rendererSecurity,malformedResults:rendererSecurity.malformedResults.map(x=>({...x,code:'INTERNAL'}))}})||validateNativeSmokeReceipt({...valid,rendererSecurity:{...rendererSecurity,security:{...rendererSecurity.security,evalBlocked:false}}})||validateNativeSmokeReceipt({...valid,cockpitFlow:null})||validateNativeSmokeReceipt({...valid,cockpitFlow:{...cockpitFlow,layouts:cockpitFlow.layouts.map(x=>({...x,overflow:true}))}})||validateNativeSmokeReceipt({...valid,failed:'native-os-credential'})||
      validateNativeSmokeReceipt({...valid,passed:valid.passed.slice(0,-1)})||
      validateNativeSmokeReceipt({...valid,source:'mock'})||
      validateNativeSmokeReceipt({...valid,passed:valid.passed.slice().reverse()}))
@@ -153,10 +166,10 @@ if(process.argv.includes('--self-test')){
     const binarySha256=crypto.createHash('sha256').update(fs.readFileSync(binary)).digest('hex');
     const sanitize=s=>String(s||'').replaceAll(os.homedir(),'<HOME>')
       .replace(/\b(?:sk-ant-|sk-proj-)[A-Za-z0-9_-]{12,}\b/gi,'<REDACTED_SECRET>');
-    console.log(JSON.stringify({schema:'tm-native-smoke-runner-v2',platform:process.platform,arch:process.arch,
+    console.log(JSON.stringify({schema:'tm-native-smoke-runner-v3',platform:process.platform,arch:process.arch,
       binarySha256,exitCode:result.status,signal:result.signal,verdict:success?'PASS':'FAIL',
       checks:receipt?.passed||[],failedCheck:receipt?.failed||(!verified?'missing-or-invalid-report':lifecycle?.verdict==='FAIL'?'full-process-lifecycle':null),
-      lifecycle,cockpitFlow:receipt?.cockpitFlow??null,
+      lifecycle,cockpitFlow:receipt?.cockpitFlow??null,rendererSecurity:receipt?.rendererSecurity??null,
       note:'PACKAGED, ISOLATED, SYNTHETIC test only. Other Phase 2 acceptance/reviews remain open.',
       diagnosticTail:success?null:sanitize(((result.stdout||'')+'\n'+(result.stderr||'')).slice(-1200)),
       error:result.error?sanitize(result.error.message):null},null,2));

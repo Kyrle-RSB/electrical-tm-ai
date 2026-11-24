@@ -68,3 +68,85 @@ export async function runPackagedCockpitFlow(win:CockpitWindow,theme:{themeSourc
  }finally{theme.themeSource=originalTheme;win.webContents.setZoomFactor(originalZoom);win.setContentSize(originalSize[0],originalSize[1]);}
  return {schema:'tm-cockpit-flow-v1',synthetic:true,interaction,layouts,note:'Packaged DOM interaction and simulated native appearance; physical keyboard, screen reader, contrast and OS-theme witness remain open.'};
 }
+
+/** This literal independent enumeration is cross-checked against the real bridge by the
+ * foundation suite; it is never a transport exposed to the renderer. */
+export const PACKAGED_SECURITY_METHODS=Object.freeze([
+ 'ping','createProject','updateProject','listProjects','listProjectsDetailed','updateProjectDetails','setProjectStatus',
+ 'getBusinessProfile','updateBusinessProfile','getBusinessLogo','chooseBusinessLogo','removeBusinessLogo',
+ 'importReceiptImage','saveSyntheticPdf','chooseBackupFolderAndBackUp','getBackupFolder','chooseBackupFolder',
+ 'backUpToSelectedFolder','chooseBackupAndRestore','storeFakeSecretProof','checkFakeSecretProof','removeFakeSecretProof'
+]);
+const SECURITY_CSP="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'";
+interface SecurityWindow{
+ webContents:{executeJavaScript(code:string,userGesture?:boolean):Promise<unknown>;getURL():string;
+  getLastWebPreferences():{contextIsolation?:boolean;nodeIntegration?:boolean;sandbox?:boolean;webSecurity?:boolean;webviewTag?:boolean}|null};
+}
+export async function runPackagedSecurityFlow(primary:SecurityWindow,foreign:SecurityWindow,projectId:string,snapshot:()=>string,navigationAttempts:()=>number){
+ const baseline=snapshot();
+ const project={code:'FOREIGN-SECURITY-PROBE',customer:'Synthetic denied',siteAddress:'Synthetic denied',details:{name:'Denied',billingAddress:'Denied',notes:'Denied'}};
+ const profile={legalName:'Foreign denied',tradeName:'',phone:'',email:'',mailingAddress:'',taxId:'',contractorLicense:''};
+ const input:Record<string,unknown[]>={createProject:[project],updateProject:[{id:projectId,...project}],updateProjectDetails:[{id:projectId,...project.details}],setProjectStatus:[{id:projectId,status:'archived'}],updateBusinessProfile:[profile]};
+ const foreignResults=await foreign.webContents.executeJavaScript(`(async()=>{
+  const methods=${JSON.stringify(PACKAGED_SECURITY_METHODS)},input=${JSON.stringify(input)};
+  const results=[];
+  for(const method of methods){
+   try{await window.tmBridge[method](...(input[method]||[]));results.push({method,code:'ACCEPTED'});}
+   catch(e){results.push({method,code:String(e).includes('SECURITY:')?'SECURITY':'OTHER'});}
+  }
+  return results;
+ })()`);
+ const malformedCases=[
+  ['create-missing','createProject',{code:'INVALID'}],
+  ['create-extra','createProject',{...project,ownerRole:'admin'}],
+  ['create-oversize','createProject',{...project,customer:'x'.repeat(18000)}],
+  ['create-unsafe-code','createProject',{...project,code:'../outside'}],
+  ['edit-id','updateProject',{...project,id:'not-a-uuid'}],
+  ['details-extra','updateProjectDetails',{id:projectId,...project.details,tenantId:'other'}],
+  ['status-invalid','setProjectStatus',{id:projectId,status:'deleted'}],
+  ['profile-extra','updateBusinessProfile',{...profile,ownerRole:'admin'}],
+  ['profile-required','updateBusinessProfile',{...profile,legalName:''}]
+ ];
+ const malformedResults=await primary.webContents.executeJavaScript(`(async()=>{
+  const results=[];
+  for(const [id,method,input] of ${JSON.stringify(malformedCases)}){
+   try{await window.tmBridge[method](input);results.push({id,code:'ACCEPTED'});}
+   catch(e){results.push({id,code:String(e).includes('VALIDATION:')?'VALIDATION':'OTHER'});}
+  }return results;
+ })()`);
+ const effectsAfterInvokes=snapshot()===baseline;
+ const prefs=primary.webContents.getLastWebPreferences();
+ const isolation=await primary.webContents.executeJavaScript(`({
+  requireAbsent:typeof require==='undefined',processAbsent:typeof process==='undefined',
+  bridgeKeys:Object.keys(window.tmBridge),csp:document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content
+ })()`);
+ const security=await primary.webContents.executeJavaScript(`(async()=>{
+  const events=[];const observe=e=>events.push({directive:e.effectiveDirective,blocked:e.blockedURI});
+  document.addEventListener('securitypolicyviolation',observe);
+  const inline=document.createElement('script');inline.textContent='window.__tmForbiddenInlineProbe=true';
+  const frame=document.createElement('iframe');frame.hidden=true;frame.src='data:text/html,synthetic-probe';
+  let networkBlocked=false,evalBlocked=false,permissionDenied=false;
+  try{
+   document.head.appendChild(inline);
+   document.body.appendChild(frame);
+   try{await fetch('tmapp://app/index.html');}catch{networkBlocked=true;}
+   // String timers run through the page's normal CSP evaluation path, not main's injected script.
+   try{setTimeout('window.__tmForbiddenEvalProbe=true',0);}catch{evalBlocked=true;}
+   const win=window.open('tmapp://app/forbidden-popup','_blank');const popupDenied=win===null;if(win)win.close();
+   const permission=await navigator.permissions.query({name:'notifications'});
+   permissionDenied=permission.state==='denied'&&await Notification.requestPermission()==='denied';
+   await new Promise(r=>setTimeout(r,300));
+   evalBlocked=(evalBlocked||events.some(e=>e.directive==='script-src'&&e.blocked==='eval'))&&window.__tmForbiddenEvalProbe!==true;
+   const inlineBlocked=window.__tmForbiddenInlineProbe!==true&&events.some(e=>e.directive==='script-src-elem'&&e.blocked==='inline');
+   return {inlineBlocked,evalBlocked,networkBlocked:networkBlocked&&events.some(e=>e.directive==='connect-src'),frameBlocked:events.some(e=>e.directive==='frame-src'),popupDenied,permissionDenied,violations:[...new Set(events.map(e=>e.directive))].sort()};
+  }finally{inline.remove();frame.remove();document.removeEventListener('securitypolicyviolation',observe);}
+ })()`,true);
+ const beforeUrl=primary.webContents.getURL(),beforeAttempts=navigationAttempts();
+ await primary.webContents.executeJavaScript(`(()=>{const a=document.createElement('a');a.href='tmapp://app/forbidden-navigation';document.body.appendChild(a);a.click();a.remove();})()`,true);
+ await new Promise(resolve=>setTimeout(resolve,300));
+ const navigationAttempted=navigationAttempts()===beforeAttempts+1;
+ const navigationDenied=navigationAttempted&&primary.webContents.getURL()===beforeUrl&&beforeUrl==='tmapp://app/index.html';
+ const stateUnchanged=effectsAfterInvokes&&snapshot()===baseline;
+ const actualPrefs={contextIsolation:prefs?.contextIsolation,nodeIntegration:prefs?.nodeIntegration,sandbox:prefs?.sandbox,webSecurity:prefs?.webSecurity,webviewTag:prefs?.webviewTag};
+ return {schema:'tm-renderer-security-v1',synthetic:true,foreignResults,malformedResults,stateUnchanged,actualPrefs,isolation,expectedCsp:SECURITY_CSP,security,navigationAttempted,navigationDenied};
+}

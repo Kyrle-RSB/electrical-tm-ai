@@ -2,7 +2,7 @@
  * Native packaged tests must be repeated on this exact source revision. */
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, nativeTheme } from 'electron';
 import os from 'node:os';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -22,7 +22,7 @@ import {registerBackupHandlers} from './ipc/handlers/backups';
 import {registerBrandingHandlers} from './ipc/handlers/settings';
 import {createNativeFileDialogs} from './os/file-dialogs';
 import {prepareApplicationPaths} from './os/paths';
-import {runPackagedCockpitFlow} from '../../../../tests/e2e/cockpit-flow.spec';
+import {runPackagedCockpitFlow,runPackagedSecurityFlow} from '../../../../tests/e2e/cockpit-flow.spec';
 import {storeImmutablePdf} from '../../../../packages/pdf/src/common/stored-pdf';
 import {LocalOperationQueue} from '../../../../packages/application/src/use-cases/backup-restore';
 import {createCockpitWindow} from './window';
@@ -199,6 +199,7 @@ async function run(){
     let currentCheck='packaging';
     let succeeded=false;
     let cockpitFlow:Awaited<ReturnType<typeof runPackagedCockpitFlow>>|null=null;
+    let rendererSecurity:Awaited<ReturnType<typeof runPackagedSecurityFlow>>|null=null;
     try {
       if(!app.isPackaged||DEV_URL)throw new Error('Not an independent packaged runtime');
       checks.push(currentCheck);
@@ -209,33 +210,30 @@ async function run(){
           document.body?.textContent?.includes('Local foundation')};
       })()`);
       if(!probe?.ok)throw new Error('Packaged renderer or IPC failed');
+      // Disposable project and full logical mutation census, never production data.
+      const securityProject=store.createProject({code:'SECURITY-CONTROL-001',customer:'Synthetic security control',siteAddress:'Synthetic site'});
+      const snapshot=()=>{
+        const rows={projects:store.db.prepare('SELECT * FROM projects ORDER BY id').all(),details:store.db.prepare('SELECT * FROM project_details ORDER BY project_id').all(),
+          business:store.db.prepare('SELECT * FROM business_profiles ORDER BY id').all(),settings:store.db.prepare('SELECT * FROM business_settings ORDER BY business_id').all(),
+          logo:store.db.prepare('SELECT * FROM business_logo_assets ORDER BY business_id').all(),audits:store.db.prepare('SELECT * FROM audit_events ORDER BY rowid').all(),receipts:store.db.prepare('SELECT * FROM operation_receipts ORDER BY rowid').all()};
+        const files:Array<[string,string]>=[];
+        const visit=(relative:string)=>{
+          const abs=path.join(P2_TEST_PROFILE,relative);if(!fs.existsSync(abs))return;
+          const stat=fs.lstatSync(abs);if(stat.isSymbolicLink())throw new Error('Unexpected synthetic security probe alias');
+          if(stat.isDirectory()){files.push([relative,'directory']);for(const name of fs.readdirSync(abs).sort())visit(path.join(relative,name));}
+          else if(stat.isFile())files.push([relative,createHash('sha256').update(fs.readFileSync(abs)).digest('hex')]);
+          else throw new Error('Unexpected synthetic security probe file');
+        };
+        for(const relative of ['local-data/vault','local-data/artifacts','local-data/migration-rescues','settings','secrets'])visit(relative);
+        return JSON.stringify({rows,files});
+      };
       // A distinct native WebContents with the same preload and URL must still be denied.
       const foreign=createCockpitWindow(__dirname,true);
-      try{
-        await foreign.loadURL(currentUrl);
-        const rejected=await foreign.webContents.executeJavaScript(`(async()=>{
-          try{await window.tmBridge.ping();return false;}
-          catch(error){return String(error).includes('SECURITY');}
-        })()`);
-        if(rejected!==true)throw new Error('Foreign renderer IPC was not rejected');
-      }finally{foreign.destroy();}
-      const isolation=await win.webContents.executeJavaScript(`({
-        requireAbsent:typeof require==='undefined',processAbsent:typeof process==='undefined',
-        bridgeKeys:Object.keys(window.tmBridge),
-        csp:document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content
-      })`);
-      if(!isolation.requireAbsent||!isolation.processAbsent||!Array.isArray(isolation.bridgeKeys)||
-         isolation.bridgeKeys.includes('invoke')||!isolation.csp?.includes("connect-src 'none'")||
-         isolation.csp.includes('unsafe-inline')||isolation.csp.includes('unsafe-eval'))
-        throw new Error('Packaged isolation or CSP policy mismatch');
-      const inlineBlocked=await win.webContents.executeJavaScript(`(async()=>{
-        const script=document.createElement('script');
-        script.textContent='window.__tmForbiddenInlineProbe=true';
-        document.head.appendChild(script);
-        await new Promise(resolve=>setTimeout(resolve,100));
-        script.remove();return window.__tmForbiddenInlineProbe!==true;
-      })()`);
-      if(inlineBlocked!==true)throw new Error('Packaged CSP allowed inline script');
+      let navigationAttempts=0;
+      const observeNavigation=()=>{navigationAttempts++;};
+      win.webContents.on('will-navigate',observeNavigation);
+      try{await foreign.loadURL(currentUrl);rendererSecurity=await runPackagedSecurityFlow(win,foreign,securityProject,snapshot,()=>navigationAttempts);}
+      finally{win.webContents.removeListener('will-navigate',observeNavigation);foreign.destroy();}
       cockpitFlow=await runPackagedCockpitFlow(win,nativeTheme);
       checks.push(currentCheck);
 
@@ -336,8 +334,8 @@ async function run(){
       // Log only named synthetic check identifiers. Do not reveal filesystem, OS vault data or customer fields.
       recorder.record('packaged.smoke.'+currentCheck,'fail');
     }
-    const report={schema:'tm-native-smoke-v2',passed:checks,failed:succeeded?null:currentCheck,
-      source:'packaged-binary',synthetic:true,cockpitFlow};
+    const report={schema:'tm-native-smoke-v3',passed:checks,failed:succeeded?null:currentCheck,
+      source:'packaged-binary',synthetic:true,cockpitFlow,rendererSecurity};
     // Windows GUI executables do not guarantee that stdout is attached to a terminal.
     // The native runner supplies a new, unpredictable, temp-only evidence path.
     const receiptPath=process.env.TM_SMOKE_REPORT_PATH;

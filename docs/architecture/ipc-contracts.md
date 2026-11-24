@@ -7,4 +7,6 @@ Current Phase 2 increments:
 - `projects.listDetailed`, `projects.updateDetails`, `projects.setStatus`: project status/detail writes with audit records.
 - Existing read/add/health/import/PDF/backup/fake-secret proof channels remain.
 
-**Not yet complete:** native regression verification of this revision, durable idempotency for future financial and non-database operations, future AI/Gmail handlers and independent security reviewer sign-off. The local single-operator model remains unchanged.
+The packaged proof enumerates every fixed bridge method from a distinct native WebContents, verifies nine malformed main-frame requests, compares a synthetic logical data and managed-file census, and records effective isolation and CSP/permission results. Error messages for known input-only validation failures are mapped to VALIDATION without reclassifying unsafe filesystem failures. Permission queries and permission requests are denied by the main-process session. Raw transport/replay and injected frame identity remain covered by separate foundation tests; the renderer is never given a raw IPC method.
+
+**Not yet complete:** exact-source native proof of this increment, independent security and real development HMR verification, durable idempotency for future financial and non-database operations, future AI/Gmail handlers and independent security reviewer sign-off. The local single-operator model remains unchanged.
