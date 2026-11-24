@@ -63,7 +63,7 @@ Run equivalent tests on a real Windows x64 environment. Check Windows secure sto
 
 ## Native execution bundle: current Phase 2 continuation (not a release certificate)
 
-For a clean source checkout with Node 24+ and the pinned pnpm version, run from the
+For a clean source checkout with the exact Node version in `.nvmrc` and the pinned pnpm version, run from the
 repository root on **macOS arm64** or **Windows x64**:
 
 ```sh
@@ -89,4 +89,4 @@ The previous Phase 1 evidence belongs to older revisions and is not substituted
 for this exact source version.
 
 ### November 24 continuation
-The earlier commit `761ecde1e7991c8a4afcefb50ae9bdead4a38722` passed Mac/Windows packaged automation. It is not evidence for later changed source. Run `node scripts/capture-native-proof.mjs --execute` on the exact candidate revision and inspect its result; the added native checks cover foreign-window IPC rejection, strict packaged CSP/inline-script rejection, SQLite reopen and automatic UI load, protected-secret re-read/revocation and backup tampering. Full application-process restart, physical OS denial and clean independent install remain separate manual requirements.
+The earlier commit `761ecde1e7991c8a4afcefb50ae9bdead4a38722` passed Mac/Windows packaged automation. It is not evidence for later changed source. Run `node scripts/capture-native-proof.mjs --execute` on the exact candidate revision and inspect its result; the added native checks cover foreign-window IPC rejection, strict packaged CSP/inline-script rejection, SQLite reopen and automatic UI load, protected-secret re-read/revocation and backup tampering. The v3 evidence collector requires a three-process seed/reopen/revoke lifecycle; v4 additionally checks synthetic cockpit form interactions and zoom layouts. Physical OS denial and clean independent install remain separate witnessed requirements.

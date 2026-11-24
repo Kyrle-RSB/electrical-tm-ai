@@ -154,11 +154,10 @@ The following machine-readable inventory preserves each original Phase 2 task an
       "packages/persistence-sqlite/src/migrations/0004-payment-receipts-branding.sql",
       "packages/persistence-sqlite/src/transactions/unit-of-work.ts",
       "packages/persistence-sqlite/src/repos/project-repo.ts",
-      "tests/integration/sqlite-ledger.test.ts"
-    ],
-    "pendingPaths": [
+      "tests/integration/sqlite-ledger.test.ts",
       "apps/desktop/src/main/os/paths.ts"
-    ]
+    ],
+    "pendingPaths": []
   },
   {
     "task": "P2-F05",
@@ -183,12 +182,11 @@ The following machine-readable inventory preserves each original Phase 2 task an
       "packages/application/src/ports/port-types.ts",
       "tests/unit/money.test.ts",
       "tests/unit/overhead-allocation.test.ts",
-      "tests/unit/estimated-profit.test.ts"
-    ],
-    "pendingPaths": [
+      "tests/unit/estimated-profit.test.ts",
       "packages/domain/src/shared/clock.ts",
       "packages/domain/src/materials/markup.ts"
-    ]
+    ],
+    "pendingPaths": []
   },
   {
     "task": "P2-F06",
@@ -229,11 +227,10 @@ The following machine-readable inventory preserves each original Phase 2 task an
       "packages/asset-vault/src/resolve-managed-asset.ts",
       "packages/pdf/src/invoices/render-invoice.ts",
       "packages/pdf/src/common/stored-pdf.ts",
-      "tests/security/asset-import.test.ts"
-    ],
-    "pendingPaths": [
+      "tests/security/asset-import.test.ts",
       "apps/desktop/src/main/os/file-dialogs.ts"
-    ]
+    ],
+    "pendingPaths": []
   },
   {
     "task": "P2-F08",
@@ -254,11 +251,10 @@ The following machine-readable inventory preserves each original Phase 2 task an
       "packages/backup/src/backup-manifest.ts",
       "packages/backup/src/backup-destination.ts",
       "apps/desktop/src/renderer/features/settings/BackupLocation.tsx",
-      "tests/integration/backup-restore.test.ts"
-    ],
-    "pendingPaths": [
+      "tests/integration/backup-restore.test.ts",
       "apps/desktop/src/main/ipc/handlers/backups.ts"
-    ]
+    ],
+    "pendingPaths": []
   },
   {
     "task": "P2-F09",
@@ -278,11 +274,10 @@ The following machine-readable inventory preserves each original Phase 2 task an
       "apps/desktop/src/main/ipc/handlers/settings.ts",
       "apps/desktop/src/renderer/features/projects/ProjectsPanel.tsx",
       "apps/desktop/src/renderer/features/settings/BusinessBranding.tsx",
-      "packages/contracts/src/ipc/projects.contract.ts"
-    ],
-    "pendingPaths": [
+      "packages/contracts/src/ipc/projects.contract.ts",
       "tests/e2e/cockpit-flow.spec.ts"
-    ]
+    ],
+    "pendingPaths": []
   },
   {
     "task": "P2-F10",
@@ -332,12 +327,11 @@ The following machine-readable inventory preserves each original Phase 2 task an
       "tests/platform/windows-install.md",
       "docs/releases/RELEASE-CHECKLIST.md",
       "docs/user/install-macos.md",
-      "docs/user/install-windows.md"
-    ],
-    "pendingPaths": [
+      "docs/user/install-windows.md",
       "apps/desktop/assets/icon.icns",
       "apps/desktop/assets/icon.ico"
-    ]
+    ],
+    "pendingPaths": []
   },
   {
     "task": "P2-F12",

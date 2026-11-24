@@ -1,6 +1,6 @@
 /** Phase 2 isolated construction build. Not production billing software.
  * Native packaged tests must be repeated on this exact source revision. */
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, nativeTheme } from 'electron';
 import os from 'node:os';
 import {randomUUID} from 'node:crypto';
 import fs from 'node:fs';
@@ -11,13 +11,18 @@ import {CHANNELS,assertEnvelope,assertNoPayload,createRequestReplayGuard,request
 import {classifyIpcError} from '../../../../packages/contracts/src/ipc/error-envelope';
 import {importImageFromPickedFile} from '../../../../packages/asset-vault/src/import-file';
 import {verifyManagedImage} from '../../../../packages/asset-vault/src/verify-image';
-import {saveSyntheticInvoicePdf} from '../../../../packages/pdf/src/invoices/render-invoice';
+import {saveSyntheticInvoicePdf,capturePdfExportTarget} from '../../../../packages/pdf/src/invoices/render-invoice';
 import {createBackup} from '../../../../packages/backup/src/create-backup';
 import {restoreBackup,verifyBackup} from '../../../../packages/backup/src/restore-backup';
 import {BackupDestinationPreference} from '../../../../packages/backup/src/backup-destination';
 import {ProtectedSecretFile} from './os/keychain';
 import {isTrustedSender} from './ipc/sender-guard';
-import {registerFoundationHandlers} from './ipc/register';
+import {registerFoundationHandlers,type ValidatedRegistrar} from './ipc/register';
+import {registerBackupHandlers} from './ipc/handlers/backups';
+import {createNativeFileDialogs} from './os/file-dialogs';
+import {prepareApplicationPaths} from './os/paths';
+import {runPackagedCockpitFlow} from '../../../../tests/e2e/cockpit-flow.spec';
+import {storeImmutablePdf} from '../../../../packages/pdf/src/common/stored-pdf';
 import {LocalOperationQueue} from '../../../../packages/application/src/use-cases/backup-restore';
 import {createCockpitWindow} from './window';
 import {establishSingleInstance} from './os/single-instance';
@@ -39,20 +44,22 @@ if(!hasSingleInstanceLock){
   if(isPackagedSmoke)console.error('TM_SMOKE_FAIL: another instance is already active');
   app.quit();
 }
+declare const MAIN_WINDOW_VITE_DEV_SERVER_URL:string|undefined;
+function startPrimary(){
+const paths=prepareApplicationPaths(P2_TEST_PROFILE,app.getAppPath(),process.resourcesPath,app.isPackaged);
 const recorder=createStartupRecorder(P2_TEST_PROFILE);
 recorder.record('launch','begin');
-const DATA_ROOT=path.join(app.getPath('userData'),'local-data');
+const DATA_ROOT=paths.dataRoot;
 let store:LocalStore;
 let currentUrl:string;
 const operationQueue=new LocalOperationQueue();
-const backupPreference=new BackupDestinationPreference(path.join(app.getPath('userData'),'settings','backup-location.json'),DATA_ROOT);
-declare const MAIN_WINDOW_VITE_DEV_SERVER_URL:string|undefined;
+const backupPreference=new BackupDestinationPreference(paths.settings,P2_TEST_PROFILE);
 const DEV_URL=typeof MAIN_WINDOW_VITE_DEV_SERVER_URL==='string'?MAIN_WINDOW_VITE_DEV_SERVER_URL:undefined;
 async function run(){
   recorder.record('sqlite.open','begin');
   fs.mkdirSync(DATA_ROOT,{recursive:true,mode:0o700});
-  const migrationsDir=app.isPackaged?path.join(process.resourcesPath,'migrations'):path.resolve(app.getAppPath(),'../../packages/persistence-sqlite/src/migrations');
-  store=new LocalStore(path.join(DATA_ROOT,'db','app.sqlite'),migrationsDir);
+  const migrationsDir=paths.migrations;
+  store=new LocalStore(paths.database,migrationsDir);
   store.initializeFictionalCompany();
   recorder.record('sqlite.open','pass');
   const rendererRoot=path.resolve(app.getAppPath(),'.vite','renderer','main_window');
@@ -96,80 +103,29 @@ async function run(){
     if(!isTrustedSender(e as any,mainWindow.webContents as any,currentUrl))throw new Error('SECURITY: sender rejected');
     assertEnvelope(r);return (r as {payload:unknown}).payload;
   };
+  const nativeDialogs=createNativeFileDialogs({open:options=>dialog.showOpenDialog(mainWindow,options),save:options=>dialog.showSaveDialog(mainWindow,options),confirm:options=>dialog.showMessageBox(mainWindow,options)});
   safeHandle(CHANNELS.fileImport,(e,r)=>operationQueue.run(async()=>{
-    assertNoPayload(guard(e,r));
-    const selected=await dialog.showOpenDialog(mainWindow,{properties:['openFile'],filters:[{name:'Receipt photo',extensions:['png','jpg','jpeg']}]});
-    if(selected.canceled||selected.filePaths.length!==1)return null;
-    return importImageFromPickedFile(selected.filePaths[0],path.join(DATA_ROOT,'vault'));
+    assertNoPayload(guard(e,r));const selected=await nativeDialogs.pickReceipt();
+    return selected===null?null:importImageFromPickedFile(selected,path.join(DATA_ROOT,'vault'));
   }));
   safeHandle(CHANNELS.pdfCreate,(e,r)=>operationQueue.run(async()=>{
-    assertNoPayload(guard(e,r));
-    const selected=await dialog.showSaveDialog(mainWindow,{defaultPath:'synthetic-invoice-proof.pdf',filters:[{name:'PDF',extensions:['pdf']}]});
-    if(selected.canceled||!selected.filePath)return null;
+    assertNoPayload(guard(e,r));const selected=await nativeDialogs.choosePdf();
+    if(selected===null)return null;
+    const expectedExisting=await capturePdfExportTarget(selected,[P2_TEST_PROFILE]);
     let allowReplace=false;
-    if(fs.existsSync(selected.filePath)){
-      // macOS Save dialog may have shown Replace. Confirm again in-app before altering a file.
-      const confirmation=await dialog.showMessageBox(mainWindow,{
-        type:'warning',title:'Replace existing synthetic PDF?',
-        message:'A file with this name already exists.',
-        detail:'Replace only this synthetic test PDF? This operation never edits issued invoice records.',
-        buttons:['Keep existing file','Replace synthetic PDF'],defaultId:0,cancelId:0
-      });
-      if(confirmation.response!==1)return null;
+    if(expectedExisting){
+      if(!await nativeDialogs.confirmPdfReplace())return null;
       allowReplace=true;
     }
-    return saveSyntheticInvoicePdf(selected.filePath,{company:'Synthetic Demo Electric Ltd.',customer:'Demo Customer',project:'SYNTHETIC-01',invoiceNumber:'TEST-0001',taxId:'FAKE-TAX-ID',contractorLicense:'FAKE-LICENSE',amount:'125.00'},{allowReplace,protectedRoots:[P2_TEST_PROFILE]});
+    return saveSyntheticInvoicePdf(selected,{company:'Synthetic Demo Electric Ltd.',customer:'Demo Customer',project:'SYNTHETIC-01',invoiceNumber:'TEST-0001',taxId:'FAKE-TAX-ID',contractorLicense:'FAKE-LICENSE',amount:'125.00'},{allowReplace,protectedRoots:[P2_TEST_PROFILE],expectedExisting});
   }));
-  safeHandle(CHANNELS.backupGetLocation,(e,r)=>operationQueue.run(async()=>{
-    assertNoPayload(guard(e,r));return {folder:await backupPreference.get()};
+  const registerBackup:ValidatedRegistrar=(channel,validate,operation)=>safeHandle(channel,(e,r)=>operationQueue.run(()=>{
+    const payload=validate(guard(e,r));assertEnvelope(r);return operation(r.requestId,payload);
   }));
-  safeHandle(CHANNELS.backupChooseLocation,(e,r)=>operationQueue.run(async()=>{
-    assertNoPayload(guard(e,r));
-    const selected=await dialog.showOpenDialog(mainWindow,{properties:['openDirectory','createDirectory']});
-    if(selected.canceled||selected.filePaths.length!==1)return null;
-    return {folder:await backupPreference.set(selected.filePaths[0])};
-  }));
-  safeHandle(CHANNELS.backupCreateStored,(e,r)=>operationQueue.run(async()=>{
-    assertNoPayload(guard(e,r));
-    const folder=await backupPreference.get();
-    if(!folder)throw new Error('Select a backup folder before backing up');
-    await backupPreference.validate(folder);
-    return createBackup(store,DATA_ROOT,folder);
-  }));
-  safeHandle(CHANNELS.backupCreate,(e,r)=>operationQueue.run(async()=>{
-    assertNoPayload(guard(e,r));
-    const selected=await dialog.showOpenDialog(mainWindow,{properties:['openDirectory','createDirectory']});
-    if(selected.canceled||selected.filePaths.length!==1)return null;
-    const folder=await backupPreference.set(selected.filePaths[0]);
-    return createBackup(store,DATA_ROOT,folder);
-  }));
-  safeHandle(CHANNELS.backupRestore,(e,r)=>operationQueue.run(async()=>{
-    assertNoPayload(guard(e,r));
-    const selected=await dialog.showOpenDialog(mainWindow,{properties:['openDirectory']});
-    if(selected.canceled||selected.filePaths.length!==1)return null;
-    const backupPath=selected.filePaths[0];
-    await verifyBackup(backupPath,migrationsDir); // prove schema compatibility before replacing current data
-    const consent=await dialog.showMessageBox(mainWindow,{type:'warning',buttons:['Cancel','Restore demo data'],defaultId:0,cancelId:0,
-      title:'Restore synthetic records?',message:'Replace current local demo data with selected verified backup?',detail:'This Phase 1 proof is for fictional records only. The current profile will be held in a separate rollback folder.'});
-    if(consent.response!==1)return null;
-    store.close();
-    let restored:{rollbackPath:string|null}|null=null;
-    try{
-      restored=await restoreBackup(backupPath,DATA_ROOT,migrationsDir);
-      store=new LocalStore(path.join(DATA_ROOT,'db','app.sqlite'),migrationsDir);
-      return {restored:true,rollbackPath:restored.rollbackPath};
-    }catch(error){
-      // Post-swap initialization is the final gate. Restore rescue if rebind fails.
-      if(restored?.rollbackPath&&fs.existsSync(restored.rollbackPath)){
-        const failed=DATA_ROOT+'.restore-failed-'+Date.now();
-        if(fs.existsSync(DATA_ROOT))await fs.promises.rename(DATA_ROOT,failed);
-        await fs.promises.rename(restored.rollbackPath,DATA_ROOT);
-      }
-      store=new LocalStore(path.join(DATA_ROOT,'db','app.sqlite'),migrationsDir);
-      throw error;
-    }
-  }));
-  const secret=new ProtectedSecretFile(safeStorage,path.join(app.getPath('userData'),'secrets','phase1-fake.bin'));
+  registerBackupHandlers(registerBackup,{dialogs:nativeDialogs,preference:backupPreference,dataRoot:DATA_ROOT,migrationsDir,
+    getStore:()=>store,setStore:value=>{store=value;},reopen:()=>new LocalStore(paths.database,migrationsDir),
+    onFatalRecovery:()=>{recorder.record('restore.recovery','fail');app.exit(1);}});
+  const secret=new ProtectedSecretFile(safeStorage,paths.secret);
   safeHandle(CHANNELS.fakeSecretStore,(e,r)=>operationQueue.run(async()=>{
     const val=guard(e,r);
     if(val!=='TEST-FAKE-EXAMPLE')throw new Error('Proof accepts only the fixed fake token');
@@ -227,6 +183,7 @@ async function run(){
     const checks:string[]=[];
     let currentCheck='packaging';
     let succeeded=false;
+    let cockpitFlow:Awaited<ReturnType<typeof runPackagedCockpitFlow>>|null=null;
     try {
       if(!app.isPackaged||DEV_URL)throw new Error('Not an independent packaged runtime');
       checks.push(currentCheck);
@@ -264,6 +221,7 @@ async function run(){
         script.remove();return window.__tmForbiddenInlineProbe!==true;
       })()`);
       if(inlineBlocked!==true)throw new Error('Packaged CSP allowed inline script');
+      cockpitFlow=await runPackagedCockpitFlow(win,nativeTheme);
       checks.push(currentCheck);
 
       currentCheck='sqlite-persistence';
@@ -271,7 +229,7 @@ async function run(){
       if(!store.listProjects().some(p=>p.id===id))throw new Error('Project could not be read back');
       // Reopen the actual database and reload the renderer: no manual Refresh action.
       store.close();
-      store=new LocalStore(path.join(DATA_ROOT,'db','app.sqlite'),migrationsDir);
+      store=new LocalStore(paths.database,migrationsDir);
       await win.loadURL(currentUrl);
       const visible=await win.webContents.executeJavaScript(`(async()=>{
         const deadline=Date.now()+10000;
@@ -299,15 +257,23 @@ async function run(){
       if(!refusedReplacement)throw new Error('Unconfirmed replacement was not rejected');
       await saveSyntheticInvoicePdf(artifactPath,invoice,{allowReplace:true});
       if(!fs.readFileSync(artifactPath).equals(original))throw new Error('Confirmed PDF replace changed content');
+      const issued=await storeImmutablePdf(path.join(DATA_ROOT,'artifacts'),original);
+      const originalPath=path.join(DATA_ROOT,'artifacts',issued.relativePath);
+      let protectedRejected=false;
+      try{await saveSyntheticInvoicePdf(originalPath,{...invoice,amount:'999.00'},{allowReplace:true,protectedRoots:[P2_TEST_PROFILE]});}catch{protectedRejected=true;}
+      if(!protectedRejected||!fs.readFileSync(originalPath).equals(original))throw new Error('Issued evidence export boundary failed');
+      store.db.prepare('INSERT INTO issued_invoices(id,project_id,invoice_number,immutable_body_json,issued_utc,amount_cents,pdf_sha256,pdf_locator) VALUES(?,?,?,?,?,?,?,?)')
+       .run('synthetic-smoke-invoice',id,'SMOKE-0001','{}','2026-11-23T00:00:00Z',12500,issued.sha256,issued.relativePath);
       checks.push(currentCheck);
 
       currentCheck='asset-vault';
       const fixturePath=path.join(P2_TEST_PROFILE,'smoke-input.png');
-      // One synthetic 1x1 PNG; never use a contractor receipt in automated smoke.
+      // One synthetic 24x24 PNG; never use a contractor receipt in automated smoke.
       fs.writeFileSync(fixturePath,Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIklEQVR4nGP8//8/AzUAE1VMGTVo1KBRg0YNGjVo1CCKAAAZ0QMtxqFhfwAAAABJRU5ErkJggg==','base64'),{mode:0o600});
       const imported=await importImageFromPickedFile(fixturePath,path.join(DATA_ROOT,'vault'));
       const verified=await verifyManagedImage(path.join(DATA_ROOT,'vault'),imported.relativePath,imported.sha256);
       if(verified.mime!=='image/png')throw new Error('Synthetic receipt import failed verification');
+      store.db.prepare('INSERT INTO purchase_sources(id,business_id,source_hash,kind,vault_locator,added_utc) VALUES(?,?,?,?,?,?)').run('synthetic-smoke-receipt','local',imported.sha256,'receipt',imported.relativePath,'2026-11-23T00:00:00Z');
       checks.push(currentCheck);
 
       currentCheck='native-os-credential';
@@ -340,7 +306,7 @@ async function run(){
       store.createProject({code:'SMOKE-LATER',customer:'Synthetic Check',siteAddress:'2 Test Road'});
       store.close();
       await restoreBackup(result.backupPath,DATA_ROOT,migrationsDir);
-      store=new LocalStore(path.join(DATA_ROOT,'db','app.sqlite'),migrationsDir);
+      store=new LocalStore(paths.database,migrationsDir);
       if(!store.listProjects().some(p=>p.id===id)||store.listProjects().some(p=>p.project_code==='SMOKE-LATER')||
          !fs.existsSync(path.join(DATA_ROOT,'artifacts','smoke-invoice.pdf'))||
          !fs.existsSync(path.join(DATA_ROOT,'vault',imported.relativePath)))
@@ -352,7 +318,7 @@ async function run(){
       recorder.record('packaged.smoke.'+currentCheck,'fail');
     }
     const report={schema:'tm-native-smoke-v2',passed:checks,failed:succeeded?null:currentCheck,
-      source:'packaged-binary',synthetic:true};
+      source:'packaged-binary',synthetic:true,cockpitFlow};
     // Windows GUI executables do not guarantee that stdout is attached to a terminal.
     // The native runner supplies a new, unpredictable, temp-only evidence path.
     const receiptPath=process.env.TM_SMOKE_REPORT_PATH;
@@ -372,13 +338,11 @@ async function run(){
     try{store?.close();}catch{/* The process exits with failure if a prior operation broke SQLite. */}
     app.exit(succeeded?0:1);
   }}
-if(hasSingleInstanceLock){
   app.whenReady().then(run).catch(_error=>{
     recorder.record('startup','fail');
     console.error('Electrical T&M startup failed; see local diagnostics/startup.jsonl (no secrets logged).');
     app.exit(1);
   });
-}
 let shutdownRequested=false;
 app.on('before-quit',event=>{
   if(shutdownRequested)return;
@@ -396,3 +360,7 @@ app.on('before-quit',event=>{
 // This single-window Phase 1 proof exits fully on macOS as well: no hidden
 // app instance retaining a lock or requiring a separate process cleanup.
 app.on('window-all-closed',()=>app.quit());
+}
+if(hasSingleInstanceLock){
+ try{startPrimary();}catch{console.error('Electrical T&M application data could not be safely opened.');app.exit(1);}
+}

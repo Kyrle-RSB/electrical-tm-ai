@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 /** Minimal self-contained PDF-1.4 synthetic feasibility renderer; NOT production invoice engine. */
 function asciiSafe(s:string):string {return s.normalize('NFKD').replace(/[^\x20-\x7e]/g,'?').replace(/[()\\]/g,'\\$&').slice(0,110);}
 export function makeSyntheticInvoicePdf(info:{company:string;customer:string;project:string;invoiceNumber:string;taxId:string;contractorLicense:string;amount:string}):Buffer {
@@ -59,23 +59,38 @@ async function resolveExportTarget(target:string,protectedRoots:readonly string[
   }
   return resolved;
 }
+export type PdfExportIdentity={dev:number;ino:number;size:number;mtimeMs:number;sha256:string};
+async function inspectExportIdentity(target:string):Promise<PdfExportIdentity|null>{
+ let before:fs.Stats;
+ try{before=await fs.promises.lstat(target);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error;}
+ if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1||before.size>25*1024*1024)throw new Error('Unsafe PDF destination type');
+ const handle=await fs.promises.open(target,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+ try{
+  const stat=await handle.stat();if(stat.dev!==before.dev||stat.ino!==before.ino||stat.size!==before.size||stat.nlink!==1)throw new Error('PDF destination changed during inspection');
+  const bytes=Buffer.alloc(stat.size);let offset=0;
+  while(offset<bytes.length){const {bytesRead}=await handle.read(bytes,offset,bytes.length-offset,offset);if(!bytesRead)throw new Error('PDF destination changed during inspection');offset+=bytesRead;}
+  const after=await handle.stat();if(after.size!==stat.size||after.mtimeMs!==stat.mtimeMs)throw new Error('PDF destination changed during inspection');
+  return {dev:stat.dev,ino:stat.ino,size:stat.size,mtimeMs:stat.mtimeMs,sha256:createHash('sha256').update(bytes).digest('hex')};
+ }finally{await handle.close();}
+}
+/** Capture the selected external export before asking for replacement confirmation. */
+export async function capturePdfExportTarget(target:string,protectedRoots:readonly string[]):Promise<PdfExportIdentity|null>{
+ return inspectExportIdentity(await resolveExportTarget(target,protectedRoots));
+}
+function sameIdentity(a:PdfExportIdentity|null,b:PdfExportIdentity|null){
+ return JSON.stringify(a)===JSON.stringify(b);
+}
 /** Synthetic proof export only. Issued invoices use immutable, content-addressed storage.
  * Replacement needs an affirmative OS-dialog + app confirmation in Electron main.
  */
 export async function saveSyntheticInvoicePdf(
   target:string,params:Parameters<typeof makeSyntheticInvoicePdf>[0],
-  opts:{allowReplace?:boolean;protectedRoots?:readonly string[]}={}
+  opts:{allowReplace?:boolean;protectedRoots?:readonly string[];expectedExisting?:PdfExportIdentity|null}={}
 ):Promise<string>{
   target=await resolveExportTarget(target,opts.protectedRoots??[]);
   await fs.promises.mkdir(path.dirname(target),{recursive:true});
-  let exists=false;
-  try{
-    const stat=await fs.promises.lstat(target);
-    if(!stat.isFile()||stat.isSymbolicLink())throw new Error('Unsafe PDF destination type');
-    exists=true;
-  }catch(error){
-    if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;
-  }
+  const identity=await inspectExportIdentity(target),exists=identity!==null;
+  if(opts.expectedExisting!==undefined&&!sameIdentity(opts.expectedExisting,identity))throw new Error('PDF destination changed after selection');
   if(exists&&!opts.allowReplace)throw Object.assign(new Error('PDF filename already exists. Choose another filename or confirm replacement.'),{code:'EEXIST'});
   const pdf=makeSyntheticInvoicePdf(params);
   // Exclusive new-file create remains the normal path. A confirmed replace is staged
@@ -87,6 +102,7 @@ export async function saveSyntheticInvoicePdf(
     try{
       const handle=await fs.promises.open(temp,'wx',0o600);
       try{await handle.writeFile(pdf);await handle.sync();}finally{await handle.close();}
+      if(!sameIdentity(identity,await inspectExportIdentity(target)))throw new Error('PDF destination changed before replacement');
       await fs.promises.rename(temp,target);
     }finally{await fs.promises.rm(temp,{force:true});}
   }

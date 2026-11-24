@@ -32,3 +32,18 @@ test('lifecycle mode accepts only its own marked direct synthetic temp child',as
   finally{fs.rmSync(alias,{recursive:true,force:true});}
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+
+test('owned paths reject redirected application database and diagnostic folders',async()=>{
+ const {prepareApplicationPaths}=await import('../../apps/desktop/src/main/os/paths');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-app-paths-'));
+ try{
+  const root=path.join(dir,'profile'),outside=path.join(dir,'outside');fs.mkdirSync(outside);fs.mkdirSync(root);
+  const config=prepareApplicationPaths(root,path.join(dir,'repo','apps','desktop'),path.join(dir,'resources'),true);
+  assert.equal(config.migrations,path.join(dir,'resources','migrations'));
+  assert.equal(config.database,path.join(root,'local-data','db','app.sqlite'));
+  fs.symlinkSync(outside,path.join(root,'diagnostics'),process.platform==='win32'?'junction':'dir');
+  assert.throws(()=>createStartupRecorder(root),/Unsafe application data directory/);
+  assert.throws(()=>prepareApplicationPaths(root,dir,dir,true),/Unsafe application data directory/);
+  assert.deepEqual(fs.readdirSync(outside),[]);
+ }finally{fs.rmSync(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

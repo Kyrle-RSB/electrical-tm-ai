@@ -10,7 +10,7 @@ export function HelpDrawer({open,onClose}:{open:boolean;onClose:()=>void}){
   return()=>window.removeEventListener('keydown',escape);
  },[open,onClose]);
  if(!open)return null;
- return <aside className="glass help-panel" role="region" aria-labelledby="help-heading">
+ return <aside id="help-region" className="glass help-panel" role="region" aria-labelledby="help-heading">
   <div className="section-header"><h2 id="help-heading">Getting started</h2><button ref={closeRef} onClick={onClose}>Close help</button></div>
   <p>This is an engineering proof. Do not enter real customer records or API credentials.</p>
   <ol>

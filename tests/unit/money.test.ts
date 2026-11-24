@@ -19,3 +19,10 @@ test('SQLite money storage refuses overflow while exact BigInt arithmetic remain
  assert.throws(()=>assertSqliteCents(2n**63n),/storage range/);
  assert.throws(()=>assertSqliteCents(-(2n**63n)-1n),/storage range/);
 });
+
+test('material markup snapshots preserve exact cost, sell, spread and checked storage bounds',async()=>{
+ const {materialMarkupSnapshot}=await import('../../packages/domain/src/materials/markup');
+ assert.deepEqual(materialMarkupSnapshot(1001n,'25'),{netUnitCostCents:1001n,markupPercent:'25',sellUnitCents:1251n,estimatedSpreadCents:250n});
+ assert.throws(()=>materialMarkupSnapshot(-1n,'25'),/Invalid supplier/);
+ assert.throws(()=>materialMarkupSnapshot(2n**63n-1n,'1'),/storage range/);
+});

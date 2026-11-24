@@ -1,6 +1,6 @@
 import test from 'node:test';import {strict as assert} from 'node:assert';
 import fs from 'node:fs';import path from 'node:path';import os from 'node:os';
-import {makeSyntheticInvoicePdf,saveSyntheticInvoicePdf} from '../../packages/pdf/src/invoices/render-invoice';
+import {makeSyntheticInvoicePdf,saveSyntheticInvoicePdf,capturePdfExportTarget} from '../../packages/pdf/src/invoices/render-invoice';
 import {storeImmutablePdf} from '../../packages/pdf/src/common/stored-pdf';
 const fixture={company:'Demo Electric',customer:'Fake',project:'X',invoiceNumber:'TEST-001',taxId:'FAKE',contractorLicense:'FAKE',amount:'25.00'};
 test('issued PDF bytes stored immutably and repeated same-content export does not duplicate',async()=>{
@@ -53,4 +53,31 @@ test('immutable PDF storage refuses redirected issued directory without external
   await assert.rejects(storeImmutablePdf(artifacts,makeSyntheticInvoicePdf(fixture)),/Unsafe immutable PDF directory/);
   assert.deepEqual(fs.readdirSync(outside),[]);
  }finally{fs.rmSync(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('failed staged replacement never truncates existing export',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-pdf-failure-')),file=path.join(root,'existing.pdf');
+ const originalOpen=fs.promises.open;
+ try{
+  await saveSyntheticInvoicePdf(file,fixture);const before=fs.readFileSync(file);
+  fs.promises.open=(async(...args:Parameters<typeof originalOpen>)=>{
+   if(String(args[0]).includes('.tmp-'))throw Object.assign(new Error('Synthetic disk full'),{code:'ENOSPC'});
+   return originalOpen(...args);
+  }) as typeof originalOpen;
+  await assert.rejects(saveSyntheticInvoicePdf(file,{...fixture,amount:'99.00'},{allowReplace:true}),/disk full/);
+  assert.deepEqual(fs.readFileSync(file),before);assert.deepEqual(fs.readdirSync(root),['existing.pdf']);
+ }finally{fs.promises.open=originalOpen;fs.rmSync(root,{recursive:true,force:true});}
+});
+
+
+test('confirmed export replacement is bound to the selected file identity',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-pdf-changed-')),file=path.join(root,'existing.pdf');
+ try{
+  await saveSyntheticInvoicePdf(file,fixture);
+  const expectedExisting=await capturePdfExportTarget(file,[]);
+  fs.writeFileSync(file,makeSyntheticInvoicePdf({...fixture,amount:'33.00'}));
+  const changed=fs.readFileSync(file);
+  await assert.rejects(saveSyntheticInvoicePdf(file,{...fixture,amount:'99.00'},{allowReplace:true,expectedExisting}),/changed after selection/);
+  assert.deepEqual(fs.readFileSync(file),changed);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
 });

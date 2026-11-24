@@ -30,6 +30,8 @@ export async function traverseRegularFiles(root:string,rel=''):Promise<string[]>
 }
 /** Single-operator proof. App-level write mutex required for full product backup consistency. */
 export async function createBackup(store:LocalStore,dataRoot:string,backupDestination:string):Promise<{backupPath:string;manifest:Manifest}> {
+  const rootStat=await fs.promises.lstat(dataRoot);
+  if(rootStat.isSymbolicLink()||!rootStat.isDirectory())throw new Error('Unsupported filesystem object in data vault');
   dataRoot=await canonicalBackupPath(dataRoot);
   backupDestination=await canonicalBackupPath(backupDestination);
   if(backupPathsOverlap(dataRoot,backupDestination))throw new Error('Backup destination must be outside data directory');

@@ -10,3 +10,10 @@ test('rate date snapshot and burdened cost do not retrospectively change',()=>{
  assert.throws(()=>snapshotLaborRate(rates,'w1','2025-01-01','1'));
  assert.throws(()=>snapshotLaborRate(rates,'w1','2026-02-31','1'),/Invalid work day/);
 });
+
+test('calendar validation avoids throwing on unrelated invalid rate dates and preserves effective snapshot',async()=>{
+ const {isCalendarDay}=await import('../../packages/domain/src/shared/clock');
+ assert.equal(isCalendarDay('2024-02-29'),true);assert.equal(isCalendarDay('2026-99-99'),false);
+ const versions=[...rates,{...rates[0],id:'invalid',effectiveDay:'2026-99-99'}];
+ assert.equal(snapshotLaborRate(versions,'w1','2026-11-02','1').rateId,'new');
+});

@@ -1,12 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import {ensureOwnedDirectory} from './os/paths';
 /** Structured local diagnostics. No secrets, customer fields or arbitrary filenames are emitted. */
 const SAFE_EVENT=/^[a-z][a-z0-9.-]{1,80}$/;
 export type StartupEvent={atUtc:string;event:string;state:'begin'|'pass'|'fail'|'info'};
 export function createStartupRecorder(userDataRoot:string){
  const file=path.join(userDataRoot,'diagnostics','startup.jsonl');
- fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});
+ ensureOwnedDirectory(userDataRoot);
+ ensureOwnedDirectory(path.dirname(file));
+ if(fs.existsSync(file)){const stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new Error('Unsafe diagnostic file');}
  return {
   file,
   record(event:string,state:StartupEvent['state']){

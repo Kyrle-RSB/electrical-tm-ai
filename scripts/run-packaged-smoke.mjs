@@ -13,10 +13,16 @@ export const NATIVE_REQUIRED_CHECKS=Object.freeze([
   'packaging','renderer-ipc','sqlite-persistence','pdf-create-and-replace',
   'asset-vault','native-os-credential','backup-integrity-restore'
 ]);
+export function validateCockpitFlowReceipt(receipt){
+ const flags=['profileSaved','projectCreated','projectEdited','archiveReopen','stableIdentity','helpFocusReturn'];
+ if(receipt?.schema!=='tm-cockpit-flow-v1'||receipt.synthetic!==true||flags.some(flag=>receipt.interaction?.[flag]!==true)||!Array.isArray(receipt.layouts)||receipt.layouts.length!==4)return false;
+ const expected=[[1440,900,'light'],[1440,900,'dark'],[1280,800,'light'],[1280,800,'dark']];
+ return receipt.layouts.every((x,i)=>x.requestedWidth===expected[i][0]&&x.requestedHeight===expected[i][1]&&x.appearance===expected[i][2]&&x.zoomFactor===2&&x.overflow===false&&x.labels===true&&Number.isFinite(x.viewportWidth)&&x.viewportWidth>0&&Number.isFinite(x.viewportHeight)&&x.viewportHeight>0&&Array.isArray(x.contentSize)&&x.contentSize.length===2&&x.contentSize.every(n=>Number.isFinite(n)&&n>0));
+}
 export function validateNativeSmokeReceipt(receipt){
   if(!receipt||typeof receipt!=='object'||receipt.schema!=='tm-native-smoke-v2'||
     receipt.source!=='packaged-binary'||receipt.synthetic!==true||receipt.failed!==null||
-    !Array.isArray(receipt.passed))return false;
+    !Array.isArray(receipt.passed)||!validateCockpitFlowReceipt(receipt.cockpitFlow))return false;
   if(receipt.passed.length!==NATIVE_REQUIRED_CHECKS.length)return false;
   return NATIVE_REQUIRED_CHECKS.every((check,index)=>receipt.passed[index]===check);
 }
@@ -50,9 +56,10 @@ function runLifecycle(binary){
 }
 // Unit-check the evidence contract even in a non-native build environment.
 if(process.argv.includes('--self-test')){
+  const cockpitFlow={schema:'tm-cockpit-flow-v1',synthetic:true,interaction:{profileSaved:true,projectCreated:true,projectEdited:true,archiveReopen:true,stableIdentity:true,helpFocusReturn:true},layouts:[[1440,900,'light'],[1440,900,'dark'],[1280,800,'light'],[1280,800,'dark']].map(([width,height,appearance])=>({requestedWidth:width,requestedHeight:height,contentSize:[width,height],zoomFactor:2,appearance,viewportWidth:width/2,viewportHeight:height/2,overflow:false,labels:true}))};
   const valid={schema:'tm-native-smoke-v2',source:'packaged-binary',synthetic:true,
-    failed:null,passed:[...NATIVE_REQUIRED_CHECKS]};
-  if(!validateNativeSmokeReceipt(valid)||validateNativeSmokeReceipt({...valid,failed:'native-os-credential'})||
+    failed:null,passed:[...NATIVE_REQUIRED_CHECKS],cockpitFlow};
+  if(!validateNativeSmokeReceipt(valid)||validateNativeSmokeReceipt({...valid,cockpitFlow:null})||validateNativeSmokeReceipt({...valid,cockpitFlow:{...cockpitFlow,layouts:cockpitFlow.layouts.map(x=>({...x,overflow:true}))}})||validateNativeSmokeReceipt({...valid,failed:'native-os-credential'})||
      validateNativeSmokeReceipt({...valid,passed:valid.passed.slice(0,-1)})||
      validateNativeSmokeReceipt({...valid,source:'mock'})||
      validateNativeSmokeReceipt({...valid,passed:valid.passed.slice().reverse()}))
@@ -95,7 +102,7 @@ if(process.argv.includes('--self-test')){
     console.log(JSON.stringify({schema:'tm-native-smoke-runner-v2',platform:process.platform,arch:process.arch,
       binarySha256,exitCode:result.status,signal:result.signal,verdict:success?'PASS':'FAIL',
       checks:receipt?.passed||[],failedCheck:receipt?.failed||(!verified?'missing-or-invalid-report':lifecycle?.verdict==='FAIL'?'full-process-lifecycle':null),
-      lifecycle,
+      lifecycle,cockpitFlow:receipt?.cockpitFlow??null,
       note:'PACKAGED, ISOLATED, SYNTHETIC test only. Other Phase 2 acceptance/reviews remain open.',
       diagnosticTail:success?null:sanitize(((result.stdout||'')+'\n'+(result.stderr||'')).slice(-1200)),
       error:result.error?sanitize(result.error.message):null},null,2));

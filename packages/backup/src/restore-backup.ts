@@ -50,6 +50,11 @@ export async function verifyBackup(backupPath:string,migrationsDir?:string):Prom
 }
 /** Close live SQLite connection before calling. Returns rollback directory to retain until user confirms. */
 export async function restoreBackup(backupPath:string,activeRoot:string,migrationsDir?:string):Promise<{rollbackPath:string|null}> {
+  // Reject redirected managed directory objects before realpath can erase the link identity.
+  for(const root of [backupPath,activeRoot]){
+    try{const stat=await fs.promises.lstat(root);if(stat.isSymbolicLink()||!stat.isDirectory())throw new Error('Unsupported filesystem object in restore root');}
+    catch(error){if(root===activeRoot&&(error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
+  }
   const target=await canonicalBackupPath(activeRoot), source=await canonicalBackupPath(backupPath);
   if(backupPathsOverlap(target,source))throw new Error('Cannot restore onto backup');
   backupPath=source;

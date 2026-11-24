@@ -154,3 +154,44 @@ test('backup refuses missing DB-referenced receipt and issued PDF; restore rejec
   assert.deepEqual(fs.readFileSync(path.join(live,'artifacts',pdfLocator)),pdf);
  }finally{db?.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('restore refuses redirected source or active data root before moving any directory',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-restore-root-'));
+ try{
+  const live=path.join(root,'live'),file=path.join(live,'db','app.sqlite');
+  const db=new LocalStore(file,migrations);db.initializeFictionalCompany();db.createProject({code:'KEPT',customer:'Synthetic',siteAddress:'Site'});
+  const saved=await createBackup(db,live,path.join(root,'external'));db.close();
+  const sourceAlias=path.join(root,'source-alias'),liveAlias=path.join(root,'active-alias');
+  fs.symlinkSync(saved.backupPath,sourceAlias,process.platform==='win32'?'junction':'dir');
+  fs.symlinkSync(live,liveAlias,process.platform==='win32'?'junction':'dir');
+  const before=fs.readFileSync(file);
+  await assert.rejects(restoreBackup(sourceAlias,live,migrations),/Unsupported filesystem object/);
+  await assert.rejects(restoreBackup(saved.backupPath,liveAlias,migrations),/Unsupported filesystem object/);
+  assert.deepEqual(fs.readFileSync(file),before);
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('native backup route cancels safely and recovers original store when restored database cannot rebind',async()=>{
+ const {registerBackupHandlers}=await import('../../apps/desktop/src/main/ipc/handlers/backups');
+ const {createNativeFileDialogs}=await import('../../apps/desktop/src/main/os/file-dialogs');
+ const {BackupDestinationPreference}=await import('../../packages/backup/src/backup-destination');
+ const {CHANNELS}=await import('../../packages/contracts/src');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-restore-handler-')),live=path.join(root,'profile','data'),dbPath=path.join(live,'db','app.sqlite');
+ let db:LocalStore|undefined;
+ try{
+  db=new LocalStore(dbPath,migrations);db.initializeFictionalCompany();db.createProject({code:'EARLIER',customer:'Synthetic',siteAddress:'Site'});
+  const saved=await createBackup(db,live,path.join(root,'external'));db.createProject({code:'LATEST',customer:'Synthetic',siteAddress:'Site'});
+  let selected:string|null=null,consent=false,attempts=0,fatal=false;
+  const dialogs=createNativeFileDialogs({open:async()=>({canceled:selected===null,filePaths:selected===null?[]:[selected]}),save:async()=>({canceled:true}),confirm:async()=>({response:consent?1:0})});
+  assert.equal(await dialogs.choosePdf(),null);assert.equal(await dialogs.pickReceipt(),null);
+  const pref=new BackupDestinationPreference(path.join(root,'profile','settings','backup.json'),path.join(root,'profile'));
+  await assert.rejects(pref.set(path.join(root,'profile')),/separate/);
+  const handlers=new Map<string,()=>Promise<unknown>>();
+  registerBackupHandlers((channel,validate,operation)=>{handlers.set(channel,async()=>operation('synthetic',validate(undefined)));},{dialogs,preference:pref,dataRoot:live,migrationsDir:migrations,getStore:()=>db!,setStore:value=>{db=value;},reopen:()=>{attempts++;if(attempts===1)throw new Error('Synthetic rebind failure');return new LocalStore(dbPath,migrations);},onFatalRecovery:()=>{fatal=true;}});
+  const restore=handlers.get(CHANNELS.backupRestore)!;
+  assert.equal(await restore(),null);assert.equal(attempts,0);
+  selected=saved.backupPath;assert.equal(await restore(),null);assert.equal(attempts,0);
+  consent=true;await assert.rejects(restore(),/Synthetic rebind failure/);
+  assert.equal(fatal,false);assert.equal(attempts,2);assert.deepEqual(db.listProjects().map(p=>p.project_code),['EARLIER','LATEST']);
+ }finally{try{db?.close();}catch{}fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

@@ -36,3 +36,19 @@ button:disabled{opacity:.55;cursor:wait}
 @media(prefers-color-scheme:dark){.intro-row p,.theme-indicator,.muted{color:#afbdd0}.pill{color:#b6d7ff;border-color:#5681cb}}
 @media(max-width:900px){.settings-grid{grid-template-columns:1fr}}
 @media(max-width:700px){.intro-row,.section-header{flex-direction:column;align-items:flex-start}.header-actions{flex-wrap:wrap}}
+
+/* Foundation accessibility: keep controls inside the measured CSS viewport at 200% zoom. */
+:root{--focus-ring:#17469a}
+button,input,textarea{font:inherit;max-width:100%}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid var(--focus-ring);outline-offset:3px}
+.wrap{grid-template-columns:minmax(0,1fr)}
+.glass,.hero>div,.intro-row>div,.project-row>div,.actions{min-width:0}
+.hero,.intro-row,.section-header,.project-row{flex-wrap:wrap}
+.hero p,.intro-row p,.muted,.theme-indicator,.project-status,footer{color:#43566b}
+.pill,.tag,button{white-space:normal;overflow-wrap:anywhere}
+form label{flex:1 1 190px;min-width:0;max-width:100%}
+input,textarea{width:100%;padding:9px;border:1px solid #70859a;border-radius:8px;background:rgba(255,255,255,.92);color:#121c29}
+textarea{min-height:72px;resize:vertical}
+.glass,.project-row,.path-text,.feedback,.help-panel{overflow-wrap:anywhere}
+.project-row button{white-space:normal}
+@media(prefers-color-scheme:dark){:root{--focus-ring:#c8ed38}.hero p,.intro-row p,.muted,.theme-indicator,.project-status,footer{color:#b4c3d4}input,textarea{color:#ebf2fa;background:#172231;border-color:#70859a}}
