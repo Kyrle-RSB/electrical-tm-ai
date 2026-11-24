@@ -25,3 +25,10 @@ export interface ProtectedSecretPort {
  read(alias:string):Promise<string|null>;
  revoke(alias:string):Promise<void>;
 }
+
+import type {BusinessLogoStatus,ManagedBusinessLogo} from '../../../contracts/src/ipc/settings.contract';
+export interface BusinessLogoStorePort extends MutationPort {
+ getBusinessLogo():BusinessLogoStatus|null;
+ setBusinessLogo(asset:ManagedBusinessLogo):void;
+ removeBusinessLogo():void;
+}

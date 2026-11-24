@@ -9,3 +9,5 @@
 **Limits:** non-keyed SHA-256 does not provide adversarial authenticity; users must secure backup archives. A separate OS/process may mutate local files outside this app. Single-app serialization is not a substitute for OS-level file security.
 
 The manifest is checked against durable receipt and issued-document references inside a disposable copy of the SQLite snapshot, not only against the files listed by the manifest. Missing or altered referenced evidence blocks publication or restoration. Portable paths reject traversal, device names and case-normalized collisions. This does not authenticate a hostile rewrite of both the database and archive.
+
+Migration 0007 adds a distinct local business logo reference using the existing managed image vault. Verify backup completeness against this reference as well as receipts and issued documents. No historical migration bytes were edited.

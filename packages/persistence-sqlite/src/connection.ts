@@ -1,19 +1,21 @@
 import { DatabaseSync } from 'node:sqlite';
+import type {BusinessLogoStatus,ManagedBusinessLogo} from '../../contracts/src/ipc/settings.contract';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {ProjectRepository, type ProjectState} from './repos/project-repo';
 import {withImmediateTransaction} from './transactions/unit-of-work';
 import type {ProjectInput,DetailedProject} from '../../contracts/src/ipc/projects.contract';
-/** Shipped SQL migrations are append-only; the SHA-256 is historical source authority. */
-function loadMigrations(dir:string):Array<{version:number;sql:string;checksum:string}> {
+/** Shipped migrations remain append-only. New checksums use LF; accept exact historical CRLF equivalent without rewriting installed receipts. */
+function loadMigrations(dir:string):Array<{version:number;sql:string;checksum:string;legacyWindowsChecksum:string}> {
   const files=fs.readdirSync(dir).filter(file=>/^\d{4}-[a-z0-9-]+\.sql$/.test(file)).sort();
   if(!files.length)throw new Error('No database migrations were bundled');
   return files.map((file,index)=>{
     const version=Number(file.slice(0,4));
     if(version!==index+1)throw new Error('Database migration sequence contains gaps or duplicate versions');
-    const sql=fs.readFileSync(path.join(dir,file),'utf8');
-    return {version,sql,checksum:crypto.createHash('sha256').update(sql).digest('hex')};
+    const sql=fs.readFileSync(path.join(dir,file),'utf8').replace(/\r\n/g,'\n');
+    const digest=(text:string)=>crypto.createHash('sha256').update(text).digest('hex');
+    return {version,sql,checksum:digest(sql),legacyWindowsChecksum:digest(sql.replace(/\n/g,'\r\n'))};
   });
 }
 
@@ -38,7 +40,7 @@ export class LocalStore {
     const migrations=loadMigrations(this.migrationsDir);
     this.db.exec('CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, checksum TEXT NOT NULL, installed_utc TEXT NOT NULL) STRICT;');
     const installed=this.db.prepare('SELECT version,checksum FROM schema_migrations ORDER BY version').all() as Array<{version:number;checksum:string}>;
-    if(installed.some((x,index)=>x.version!==index+1||!migrations.find(m=>m.version===x.version&&m.checksum===x.checksum)))
+    if(installed.some((x,index)=>x.version!==index+1||!migrations.find(m=>m.version===x.version&&(m.checksum===x.checksum||m.legacyWindowsChecksum===x.checksum))))
       throw new Error('Migration history mismatch: unknown or altered migration');
     const pending=migrations.filter(m=>!installed.some(x=>x.version===m.version));
     // Existing nonempty schemas get a crash-consistent rescue before any upgrade.
@@ -105,6 +107,23 @@ export class LocalStore {
         .run(input.tradeName,input.phone,input.email,input.mailingAddress,input.taxId,input.contractorLicense,new Date().toISOString());
       this.db.prepare('INSERT INTO audit_events(action,entity_id,occurred_utc) VALUES(?,?,?)').run('business.update','local',new Date().toISOString());
     });
+  }
+  getBusinessLogo():BusinessLogoStatus|null {
+    return (this.db.prepare("SELECT asset_id AS id,mime,sha256 FROM business_logo_assets WHERE business_id='local'").get() as BusinessLogoStatus|undefined)??null;
+  }
+  setBusinessLogo(asset:ManagedBusinessLogo):void {
+    if(!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(asset.id)||!/^[a-f0-9]{64}$/.test(asset.sha256)||!['image/png','image/jpeg'].includes(asset.mime)||asset.relativePath!==`images/${asset.id}.${asset.mime==='image/png'?'png':'jpg'}`)throw new Error('Invalid managed logo reference');
+    withImmediateTransaction(this.db,()=>{
+      this.db.prepare(`INSERT INTO business_logo_assets(business_id,asset_id,vault_locator,sha256,mime,updated_utc) VALUES('local',?,?,?,?,?) ON CONFLICT(business_id) DO UPDATE SET asset_id=excluded.asset_id,vault_locator=excluded.vault_locator,sha256=excluded.sha256,mime=excluded.mime,updated_utc=excluded.updated_utc`).run(asset.id,asset.relativePath,asset.sha256,asset.mime,new Date().toISOString());
+      this.db.prepare('INSERT INTO audit_events(action,entity_id,occurred_utc) VALUES(?,?,?)').run('business.logo.set','local',new Date().toISOString());
+    });
+  }
+  removeBusinessLogo():void {
+    withImmediateTransaction(this.db,()=>{
+      this.db.prepare("DELETE FROM business_logo_assets WHERE business_id='local'").run();
+      this.db.prepare('INSERT INTO audit_events(action,entity_id,occurred_utc) VALUES(?,?,?)').run('business.logo.remove','local',new Date().toISOString());
+    });
+    // Keep historical managed bytes: do not delete possible evidence used by future immutable document snapshots.
   }
   updateProjectDetails(id:string,details:{name:string;billingAddress:string;notes:string}):void{
     this.projects.details(id,details);

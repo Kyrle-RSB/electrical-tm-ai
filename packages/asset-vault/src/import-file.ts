@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-export type ImportedImage = {id:string;relativePath:string; sha256:string; mime:string; size:number};
+export type ImportedImage = {id:string;relativePath:string; sha256:string; mime:'image/png'|'image/jpeg'; size:number};
 import {assertManagedImageDirectory,readRegularImage,MAX_IMAGE_BYTES} from './resolve-managed-asset';
 const PNG_SIGNATURE=Buffer.from([137,80,78,71,13,10,26,10]);
 const CRC_TABLE=Uint32Array.from({length:256},(_,index)=>{

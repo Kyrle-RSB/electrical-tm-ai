@@ -53,7 +53,31 @@ test('interrupted SQLite schema transaction is rolled back on process restart',(
    assert.equal(db.db.prepare("SELECT name FROM sqlite_master WHERE name='interrupted_probe'").get(),undefined);
    assert.equal((db.db.prepare('PRAGMA quick_check').get() as any).quick_check,'ok');
    assert.deepEqual(db.db.prepare('PRAGMA foreign_key_check').all(),[]);
-   assert.deepEqual(db.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r:any)=>r.version),[1,2,3,4,5,6]);
+   assert.deepEqual(db.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r:any)=>r.version),[1,2,3,4,5,6,7]);
   }finally{db.close();}
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('legacy Windows migration checksums survive a portable LF checkout without rewriting history',()=>{
+ const {createHash}=require('node:crypto') as typeof import('node:crypto');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-migration-eol-'));
+ const old=path.join(root,'old'),lf=path.join(root,'lf'),file=path.join(root,'data','db','app.sqlite');
+ const full='packages/persistence-sqlite/src/migrations';fs.mkdirSync(old);fs.mkdirSync(lf);
+ try{
+  for(const name of fs.readdirSync(full).filter(n=>n.endsWith('.sql'))){
+   const canonical=fs.readFileSync(path.join(full,name),'utf8').replace(/\r\n/g,'\n');
+   fs.writeFileSync(path.join(lf,name),canonical);
+   if(name==='0001-initial.sql')fs.writeFileSync(path.join(old,name),canonical.replace(/\n/g,'\r\n'));
+  }
+  const legacyHash=createHash('sha256').update(fs.readFileSync(path.join(old,'0001-initial.sql'))).digest('hex');
+  // Simulate a historical Windows build that hashed the CRLF bytes before normalization existed.
+  const v1=new LocalStore(file,old);v1.initializeFictionalCompany();
+  const id=v1.createProject({code:'EOL-01',customer:'Fictional',siteAddress:'Stable'});
+  v1.db.prepare('UPDATE schema_migrations SET checksum=? WHERE version=1').run(legacyHash);v1.close();
+  let reopened=new LocalStore(file,lf);
+  try{assert.equal(reopened.listProjects()[0].id,id);assert.equal(reopened.db.prepare('SELECT checksum FROM schema_migrations WHERE version=1').get()?.checksum,legacyHash);assert.ok(reopened.lastMigrationRescuePath);}finally{reopened.close();}
+  // Same line endings are not a reason to accept changed SQL or history.
+  fs.appendFileSync(path.join(lf,'0001-initial.sql'),'\n-- non-identical migration content\n');
+  assert.throws(()=>new LocalStore(file,lf),/Migration history mismatch/);
  }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });

@@ -195,3 +195,31 @@ test('native backup route cancels safely and recovers original store when restor
   assert.equal(fatal,false);assert.equal(attempts,2);assert.deepEqual(db.listProjects().map(p=>p.project_code),['EARLIER','LATEST']);
  }finally{try{db?.close();}catch{}fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('optional managed business logo survives backup, removal and restore; omission is rejected',async()=>{
+ const {createBusinessBrandingUseCases}=await import('../../packages/application/src/use-cases/business-branding');
+ const {importImageFromPickedFile}=await import('../../packages/asset-vault/src/import-file');
+ const {randomUUID}=await import('node:crypto');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-logo-')),live=path.join(root,'live'),dbPath=path.join(live,'db','app.sqlite');
+ let db:LocalStore|undefined;
+ try{
+  db=new LocalStore(dbPath,migrations);db.initializeFictionalCompany();
+  assert.equal(db.getBusinessLogo(),null);
+  const image=path.join(root,'synthetic.png');fs.writeFileSync(image,Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIklEQVR4nGP8//8/AzUAE1VMGTVo1KBRg0YNGjVo1CCKAAAZ0QMtxqFhfwAAAABJRU5ErkJggg==','base64'));
+  const receipt=await importImageFromPickedFile(image,path.join(live,'vault'));
+  db.db.prepare('INSERT INTO purchase_sources(id,business_id,source_hash,kind,vault_locator,added_utc) VALUES(?,?,?,?,?,?)').run('logo-test-receipt','local',receipt.sha256,'receipt',receipt.relativePath,'2026-11-24T00:00:00Z');
+  const logo=await importImageFromPickedFile(image,path.join(live,'vault'));assert.notEqual(logo.id,receipt.id);
+  const use=createBusinessBrandingUseCases(db,async()=>logo),operation=randomUUID();
+  assert.equal((await use.choose(operation))?.id,logo.id);
+  await assert.rejects(use.choose(operation),/duplicate mutation/);
+  const cancel=createBusinessBrandingUseCases(db,async()=>null);assert.equal(await cancel.choose(randomUUID()),null);assert.equal(db.getBusinessLogo()?.id,logo.id);
+  assert.throws(()=>db!.setBusinessLogo({...logo,relativePath:'../../outside.png'}),/Invalid managed logo/);
+  const saved=await createBackup(db,live,path.join(root,'backups'));assert.ok(saved.manifest.files.some(f=>f.path==='vault/'+logo.relativePath&&f.sha256===logo.sha256));
+  await verifyBackup(saved.backupPath,migrations);
+  use.remove(randomUUID());assert.equal(db.getBusinessLogo(),null);assert.ok(fs.existsSync(path.join(live,'vault',logo.relativePath)));
+  db.close();db=undefined;
+  await restoreBackup(saved.backupPath,live,migrations);db=new LocalStore(dbPath,migrations);assert.equal(db.getBusinessLogo()?.id,logo.id);
+  const logoRelative='vault/'+logo.relativePath;fs.rmSync(path.join(saved.backupPath,logoRelative));const manifestFile=path.join(saved.backupPath,'manifest.json');const manifest=JSON.parse(fs.readFileSync(manifestFile,'utf8'));manifest.files=manifest.files.filter((f:{path:string})=>f.path!==logoRelative);fs.writeFileSync(manifestFile,JSON.stringify(manifest));
+  await assert.rejects(verifyBackup(saved.backupPath,migrations),/Referenced backup evidence missing or altered/);
+ }finally{db?.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

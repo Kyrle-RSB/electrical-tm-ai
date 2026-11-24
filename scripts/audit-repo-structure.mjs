@@ -15,6 +15,7 @@ const supplemental=new Set([
  'docs/phase-1/evidence/README.md','docs/phase-1/evidence/REPAIR_SESSION_2026-11-23.md',
  'docs/public-repo/REPOSITORY_STANDARDS.md','packages/persistence-sqlite/src/migrations/0005-evidence-integrity.sql',
  'packages/persistence-sqlite/src/migrations/0006-operation-receipts.sql',
+ 'packages/persistence-sqlite/src/migrations/0007-business-logo.sql',
  'scripts/audit-native-proof.mjs','scripts/capture-native-proof.mjs','scripts/run-foundation-tests.mjs',
  'tests/fixtures/synthetic-receipt.png','tests/foundation/foundation.test.ts','tests/integration/backup-location.test.ts',
  'tests/integration/financial-evidence-locks.test.ts','tests/integration/migration-rescue.test.ts','tests/integration/operation-queue.test.ts',

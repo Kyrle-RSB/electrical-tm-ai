@@ -33,6 +33,7 @@ export function assertReferencedEvidence(db:DatabaseSync,manifest:Manifest):void
   if(typeof locator!=='string'||!isPortableBackupPath(locator)||typeof digest!=='string'||!/^[0-9a-f]{64}$/.test(digest)||entries.get(prefix+'/'+locator)!==digest)
    throw new Error('Referenced backup evidence missing or altered');
  };
+ if(exists('business_logo_assets'))for(const row of db.prepare('SELECT vault_locator,sha256 FROM business_logo_assets').all())check('vault',row.vault_locator,row.sha256);
  if(exists('purchase_sources'))for(const row of db.prepare('SELECT vault_locator,source_hash FROM purchase_sources').all())check('vault',row.vault_locator,row.source_hash);
  if(exists('issued_invoices'))for(const row of db.prepare('SELECT pdf_locator,pdf_sha256 FROM issued_invoices').all())check('artifacts',row.pdf_locator,row.pdf_sha256);
  if(exists('payment_receipts'))for(const row of db.prepare('SELECT pdf_locator,pdf_sha256 FROM payment_receipts').all())check('artifacts',row.pdf_locator,row.pdf_sha256,true);

@@ -31,3 +31,5 @@ unchanged. This is a narrow, tested path exception, **not** permission to
 reorganize the rest of the repository.
 
 The November 24 continuation uses the public canonical development repository `Kyrle-RSB/electrical-tm-ai`. The owner reaffirmed ADR-P2-001 and explicitly authorized sanitized development-source publication, not customer release. The approved entry replaces the originally catalogued renderer HTML path in the effective audit map; existing support/test paths are separately enumerated and unexpected paths fail the audit.
+
+Migration history is append-only. SQL checkouts are pinned to LF. New checksum receipts use LF; legacy installed receipts that match the exact CRLF encoding of the same shipped SQL are accepted without rewriting the database history. Any other checksum or sequence mismatch fails closed.

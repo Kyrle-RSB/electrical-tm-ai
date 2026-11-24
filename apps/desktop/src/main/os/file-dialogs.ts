@@ -9,6 +9,7 @@ export function createNativeFileDialogs(adapter:DialogAdapter){
  const one=(result:{canceled:boolean;filePaths:string[]})=>!result.canceled&&result.filePaths.length===1&&path.isAbsolute(result.filePaths[0])?result.filePaths[0]:null;
  return {
   pickReceipt:async()=>one(await adapter.open({properties:['openFile'],filters:[{name:'Receipt photo',extensions:['png','jpg','jpeg']}]})),
+  pickLogo:async()=>one(await adapter.open({properties:['openFile'],filters:[{name:'Synthetic company logo',extensions:['png','jpg','jpeg']}]})),
   chooseFolder:async(allowCreate:boolean)=>one(await adapter.open({properties:allowCreate?['openDirectory','createDirectory']:['openDirectory']})),
   choosePdf:async()=>{
    const result=await adapter.save({defaultPath:'synthetic-invoice-proof.pdf',filters:[{name:'PDF',extensions:['pdf']}]});

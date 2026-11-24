@@ -1,3 +1,4 @@
+import type {BusinessLogoStatus} from '../../../../packages/contracts/src/ipc/settings.contract';
 import {CHANNELS,type AllowedChannel} from '../../../../packages/contracts/src/ipc/channel-map';
 import type {ProjectInput,ProjectEditInput,ProjectDetailsInput,ProjectStatusInput,ProjectData,DetailedProject} from '../../../../packages/contracts/src/ipc/projects.contract';
 import type {BusinessInput} from '../../../../packages/contracts/src/ipc/request-envelope';
@@ -13,6 +14,9 @@ export function createBridge(invoke:BridgeTransport){return Object.freeze({
  setProjectStatus:(value:ProjectStatusInput)=>invoke<{updated:boolean}>(CHANNELS.projectStatus,value),
  getBusinessProfile:()=>invoke<BusinessInput&{currency:string}>(CHANNELS.businessGet),
  updateBusinessProfile:(value:BusinessInput)=>invoke<{updated:boolean}>(CHANNELS.businessUpdate,value),
+ getBusinessLogo:()=>invoke<BusinessLogoStatus|null>(CHANNELS.businessLogoGet),
+ chooseBusinessLogo:()=>invoke<BusinessLogoStatus|null>(CHANNELS.businessLogoChoose),
+ removeBusinessLogo:()=>invoke<{removed:boolean}>(CHANNELS.businessLogoRemove),
  importReceiptImage:()=>invoke<unknown>(CHANNELS.fileImport),
  saveSyntheticPdf:()=>invoke<string|null>(CHANNELS.pdfCreate),
  chooseBackupFolderAndBackUp:()=>invoke<unknown>(CHANNELS.backupCreate),

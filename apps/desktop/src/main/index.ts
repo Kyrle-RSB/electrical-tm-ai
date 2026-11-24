@@ -19,6 +19,7 @@ import {ProtectedSecretFile} from './os/keychain';
 import {isTrustedSender} from './ipc/sender-guard';
 import {registerFoundationHandlers,type ValidatedRegistrar} from './ipc/register';
 import {registerBackupHandlers} from './ipc/handlers/backups';
+import {registerBrandingHandlers} from './ipc/handlers/settings';
 import {createNativeFileDialogs} from './os/file-dialogs';
 import {prepareApplicationPaths} from './os/paths';
 import {runPackagedCockpitFlow} from '../../../../tests/e2e/cockpit-flow.spec';
@@ -40,6 +41,8 @@ fs.mkdirSync(P2_TEST_PROFILE,{recursive:true,mode:0o700});
 app.setPath('userData',P2_TEST_PROFILE);
 let mainWindow!:BrowserWindow;
 const hasSingleInstanceLock=establishSingleInstance(app,()=>mainWindow);
+let secondaryLaunches=0;
+if(hasSingleInstanceLock)app.on('second-instance',()=>{secondaryLaunches++;});
 if(!hasSingleInstanceLock){
   if(isPackagedSmoke)console.error('TM_SMOKE_FAIL: another instance is already active');
   app.quit();
@@ -59,7 +62,7 @@ async function run(){
   recorder.record('sqlite.open','begin');
   fs.mkdirSync(DATA_ROOT,{recursive:true,mode:0o700});
   const migrationsDir=paths.migrations;
-  store=new LocalStore(paths.database,migrationsDir);
+  try{store=new LocalStore(paths.database,migrationsDir);}catch(error){recorder.record('sqlite.open','fail');throw error;}
   store.initializeFictionalCompany();
   recorder.record('sqlite.open','pass');
   const rendererRoot=path.resolve(app.getAppPath(),'.vite','renderer','main_window');
@@ -122,6 +125,7 @@ async function run(){
   const registerBackup:ValidatedRegistrar=(channel,validate,operation)=>safeHandle(channel,(e,r)=>operationQueue.run(()=>{
     const payload=validate(guard(e,r));assertEnvelope(r);return operation(r.requestId,payload);
   }));
+  registerBrandingHandlers(registerBackup,()=>store,async()=>{const selected=await nativeDialogs.pickLogo();return selected===null?null:importImageFromPickedFile(selected,path.join(DATA_ROOT,'vault'));});
   registerBackupHandlers(registerBackup,{dialogs:nativeDialogs,preference:backupPreference,dataRoot:DATA_ROOT,migrationsDir,
     getStore:()=>store,setStore:value=>{store=value;},reopen:()=>new LocalStore(paths.database,migrationsDir),
     onFatalRecovery:()=>{recorder.record('restore.recovery','fail');app.exit(1);}});
@@ -173,7 +177,15 @@ async function run(){
       const ciphertext=fs.readFileSync(path.join(P2_TEST_PROFILE,'secrets','phase1-fake.bin'));
       if(ciphertext.includes(Buffer.from('TEST-FAKE-EXAMPLE')))throw new Error('Lifecycle credential plaintext');
     }
-    fs.writeFileSync(path.join(P2_TEST_PROFILE,`lifecycle-${stage}.json`),JSON.stringify({schema:'tm-lifecycle-v1',stage,nonce:lifecycleProof.nonce,pid:process.pid,synthetic:true,...result})+'\n',{flag:'wx',mode:0o600});
+    if(stage==='revoked'&&process.env.TM_LIFECYCLE_DUPLICATE_PROBE==='1'){
+      // Native runner controls only this previously validated disposable profile.
+      fs.writeFileSync(path.join(P2_TEST_PROFILE,'duplicate-ready.json'),JSON.stringify({nonce:lifecycleProof.nonce,pid:process.pid}),{flag:'wx',mode:0o600});
+      const deadline=Date.now()+20000;
+      while(Date.now()<deadline&&secondaryLaunches===0)await new Promise(resolve=>setTimeout(resolve,50));
+      if(secondaryLaunches!==1)throw new Error('Duplicate instance was not rejected');
+      recorder.record('packaged.lifecycle.duplicate','pass');
+    }
+    fs.writeFileSync(path.join(P2_TEST_PROFILE,`lifecycle-${stage}.json`),JSON.stringify({schema:'tm-lifecycle-v1',stage,nonce:lifecycleProof.nonce,pid:process.pid,synthetic:true,...result,secondaryLaunches})+'\n',{flag:'wx',mode:0o600});
     recorder.record('packaged.lifecycle.'+stage,'pass');
     app.quit();return;
   }
@@ -274,6 +286,10 @@ async function run(){
       const verified=await verifyManagedImage(path.join(DATA_ROOT,'vault'),imported.relativePath,imported.sha256);
       if(verified.mime!=='image/png')throw new Error('Synthetic receipt import failed verification');
       store.db.prepare('INSERT INTO purchase_sources(id,business_id,source_hash,kind,vault_locator,added_utc) VALUES(?,?,?,?,?,?)').run('synthetic-smoke-receipt','local',imported.sha256,'receipt',imported.relativePath,'2026-11-23T00:00:00Z');
+      // A separate managed logo reference is part of backup acceptance, not an invoice-rendering claim.
+      const logo=await importImageFromPickedFile(fixturePath,path.join(DATA_ROOT,'vault'));
+      if(logo.id===imported.id)throw new Error('Logo identity is not separate');
+      store.setBusinessLogo({...logo,mime:logo.mime==='image/png'?'image/png':'image/jpeg'});
       checks.push(currentCheck);
 
       currentCheck='native-os-credential';
@@ -293,7 +309,7 @@ async function run(){
       const result=await createBackup(store,DATA_ROOT,backupDestination);
       const manifest=await verifyBackup(result.backupPath,migrationsDir);
       if(!manifest.files.some(f=>f.path.startsWith('vault/images/'))||
-         !manifest.files.some(f=>f.path==='artifacts/smoke-invoice.pdf'))
+         !manifest.files.some(f=>f.path==='artifacts/smoke-invoice.pdf')||!manifest.files.some(f=>f.path==='vault/'+logo.relativePath&&f.sha256===logo.sha256))
         throw new Error('Backup omitted synthetic assets');
       // Tamper with the backup artifact, not the live original, and prove rejection.
       const archivedPdf=path.join(result.backupPath,'artifacts','smoke-invoice.pdf');
@@ -309,7 +325,7 @@ async function run(){
       store=new LocalStore(paths.database,migrationsDir);
       if(!store.listProjects().some(p=>p.id===id)||store.listProjects().some(p=>p.project_code==='SMOKE-LATER')||
          !fs.existsSync(path.join(DATA_ROOT,'artifacts','smoke-invoice.pdf'))||
-         !fs.existsSync(path.join(DATA_ROOT,'vault',imported.relativePath)))
+         !fs.existsSync(path.join(DATA_ROOT,'vault',imported.relativePath))||store.getBusinessLogo()?.id!==logo.id||!fs.existsSync(path.join(DATA_ROOT,'vault',logo.relativePath)))
         throw new Error('Native backup restore lost project or attachments');
       checks.push(currentCheck);
       succeeded=true;

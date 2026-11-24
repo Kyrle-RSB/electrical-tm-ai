@@ -12,3 +12,5 @@ The application stores data on the user's device. **A backup is not optional pro
 A modified file or corrupted backup is rejected. Missing receipts or issued PDF originals referenced by the database also block backup or restore, even if the manifest has been edited to omit them. SHA-256 manifests detect accidental corruption and naive tampering, **not forgery by an attacker who can edit both the files and manifest**. Backups are not encrypted automatically: store them in a protected location and do not share them publicly. Credentials are not included and must be reconnected after recovery.
 
 Check the exact candidate native receipts. The automated synthetic backup verifies referenced assets and restore; separate manual interaction and recovery witnesses remain required. Do not delete your only working database to test restoration.
+
+Optional logo: select a synthetic PNG/JPEG in Business profile. Its managed asset ID and checksum are stored locally and included in backup verification; cancel preserves the previous reference. Removing a logo reference retains historical managed bytes. A production logo-rendering invoice template is outside Phase 2.
