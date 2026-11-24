@@ -23,7 +23,7 @@ export async function readRegularImage(file:string):Promise<Buffer>{
  const before=await fs.promises.lstat(file);
  if(!before.isFile()||before.isSymbolicLink()||before.size>MAX_IMAGE_BYTES)
   throw new Error('Image must be a regular permitted file');
- const handle=await fs.promises.open(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+ const handle=await fs.promises.open(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
  try{
   const opened=await handle.stat();
   if(!opened.isFile()||opened.size>MAX_IMAGE_BYTES||opened.size!==before.size||opened.dev!==before.dev||opened.ino!==before.ino)
@@ -32,7 +32,8 @@ export async function readRegularImage(file:string):Promise<Buffer>{
   let offset=0;
   while(offset<bytes.length){const {bytesRead}=await handle.read(bytes,offset,bytes.length-offset,offset);if(bytesRead===0)throw new Error('Image changed during secure import');offset+=bytesRead;}
   const after=await handle.stat();
-  if(after.size!==opened.size||after.mtimeMs!==opened.mtimeMs)throw new Error('Image changed during secure import');
+  const named=await fs.promises.lstat(file);
+  if(after.size!==opened.size||after.mtimeMs!==opened.mtimeMs||!named.isFile()||named.isSymbolicLink()||named.dev!==opened.dev||named.ino!==opened.ino||named.size!==opened.size)throw new Error('Image changed during secure import');
   return bytes;
  }finally{await handle.close();}
 }

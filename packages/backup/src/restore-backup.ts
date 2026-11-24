@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import {DatabaseSync} from 'node:sqlite';
-import { hashFile, traverseRegularFiles } from './create-backup';
+import { hashFile, traverseRegularFiles, readBoundedBackupFile, copyRegularBackupFile } from './create-backup';
 import {assertReferencedEvidence,validateManifest,type Manifest} from './backup-manifest';
 import { LocalStore } from '../../persistence-sqlite/src/connection';
 import {canonicalBackupPath,backupPathsOverlap} from './backup-destination';
@@ -12,14 +12,12 @@ export async function verifyBackup(backupPath:string,migrationsDir?:string):Prom
   const onDisk=await traverseRegularFiles(backupPath);
   if(!onDisk.includes('manifest.json'))throw new Error('Backup missing manifest');
   const p=path.join(backupPath,'manifest.json');
-  if((await fs.promises.stat(p)).size>8*1024*1024)throw new Error('Backup manifest exceeds size limit');
-  const m=validateManifest(JSON.parse(await fs.promises.readFile(p,'utf8')));
+  const m=validateManifest(JSON.parse((await readBoundedBackupFile(p,8*1024*1024)).toString('utf8')));
   const listed=new Set(m.files.map(entry=>entry.path));
   for(const entry of m.files){
     const actual=path.join(backupPath,entry.path);
     if((await fs.promises.lstat(actual)).isSymbolicLink())throw new Error('Backup contains symlink');
-    const stat=await fs.promises.stat(actual);
-    if(!stat.isFile()||stat.size!==entry.bytes||await hashFile(actual)!==entry.sha256)throw new Error(`Backup integrity failure: ${entry.path}`);
+    if(await hashFile(actual,entry.bytes)!==entry.sha256)throw new Error(`Backup integrity failure: ${entry.path}`);
   }
   if(onDisk.length!==m.files.length+1||onDisk.some(f=>f!=='manifest.json'&&!listed.has(f.split(path.sep).join('/'))))throw new Error('Backup contains unexpected files');
   if(!listed.has('db/app.sqlite'))throw new Error('Backup missing SQLite database');
@@ -27,7 +25,9 @@ export async function verifyBackup(backupPath:string,migrationsDir?:string):Prom
   const tempDir=await fs.promises.mkdtemp(path.join(os.tmpdir(),'tm-backup-verify-'));
   try{
     const copyPath=path.join(tempDir,'snapshot.sqlite');
-    await fs.promises.copyFile(path.join(backupPath,'db','app.sqlite'),copyPath);
+    await copyRegularBackupFile(path.join(backupPath,'db','app.sqlite'),copyPath);
+    const dbEntry=m.files.find(entry=>entry.path==='db/app.sqlite')!;
+    if(await hashFile(copyPath,dbEntry.bytes)!==dbEntry.sha256)throw new Error('Backup SQLite copy changed');
     const backupDb=new DatabaseSync(copyPath,{readOnly:true});
     try {
       const integrity=backupDb.prepare('PRAGMA quick_check').get() as {quick_check:string}|undefined;
@@ -68,7 +68,7 @@ export async function restoreBackup(backupPath:string,activeRoot:string,migratio
     for(const entry of manifest.files){
       const dest=path.join(stage,entry.path);
       await fs.promises.mkdir(path.dirname(dest),{recursive:true});
-      await fs.promises.copyFile(path.join(backupPath,entry.path),dest,fs.constants.COPYFILE_EXCL);
+      await copyRegularBackupFile(path.join(backupPath,entry.path),dest);
     }
     for(const entry of manifest.files) if(await hashFile(path.join(stage,entry.path))!==entry.sha256) throw new Error('Restore staging mismatch');
     if(fs.existsSync(target)){await fs.promises.rename(target,rollback);rolledBack=true;}

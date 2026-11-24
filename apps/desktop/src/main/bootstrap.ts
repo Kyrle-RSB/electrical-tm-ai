@@ -4,6 +4,22 @@ import os from 'node:os';
 import {ensureOwnedDirectory} from './os/paths';
 /** Structured local diagnostics. No secrets, customer fields or arbitrary filenames are emitted. */
 const SAFE_EVENT=/^[a-z][a-z0-9.-]{1,80}$/;
+/** Validate the object actually opened, then verify the path still names it. */
+function ownedDescriptor(file:string,fd:number,maxBytes?:number):fs.Stats{
+ const opened=fs.fstatSync(fd),named=fs.lstatSync(file);
+ if(!opened.isFile()||!named.isFile()||named.isSymbolicLink()||opened.nlink!==1||named.nlink!==1||opened.dev!==named.dev||opened.ino!==named.ino||opened.size!==named.size||(maxBytes!==undefined&&opened.size>maxBytes))throw new Error('Unsafe or changed file identity');
+ return opened;
+}
+function readProofJson(file:string,maxBytes:number,label:string):unknown{
+ let fd:number|undefined;
+ try{
+  fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
+  const opened=ownedDescriptor(file,fd,maxBytes),bytes=Buffer.alloc(opened.size);
+  let offset=0;while(offset<bytes.length){const n=fs.readSync(fd,bytes,offset,bytes.length-offset,offset);if(n===0)throw new Error('Changed proof file');offset+=n;}
+  const after=ownedDescriptor(file,fd,maxBytes);if(after.size!==opened.size||after.mtimeMs!==opened.mtimeMs)throw new Error('Changed proof file');
+  return JSON.parse(bytes.toString('utf8'));
+ }catch{throw new Error(label);}finally{if(fd!==undefined)fs.closeSync(fd);}
+}
 export type StartupEvent={atUtc:string;event:string;state:'begin'|'pass'|'fail'|'info'};
 export function createStartupRecorder(userDataRoot:string){
  const file=path.join(userDataRoot,'diagnostics','startup.jsonl');
@@ -15,7 +31,9 @@ export function createStartupRecorder(userDataRoot:string){
   record(event:string,state:StartupEvent['state']){
    if(!SAFE_EVENT.test(event))throw new Error('Invalid diagnostic event identifier');
    const line:StartupEvent={atUtc:new Date().toISOString(),event,state};
-   fs.appendFileSync(file,JSON.stringify(line)+'\n',{encoding:'utf8',mode:0o600});
+   ensureOwnedDirectory(userDataRoot,false);ensureOwnedDirectory(path.dirname(file),false);
+   const fd=fs.openSync(file,fs.constants.O_WRONLY|fs.constants.O_APPEND|fs.constants.O_CREAT|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0),0o600);
+   try{ownedDescriptor(file,fd);fs.appendFileSync(fd,JSON.stringify(line)+'\n',{encoding:'utf8'});}finally{fs.closeSync(fd);}
   }
  };
 }
@@ -32,9 +50,8 @@ export function resolveLifecycleProof(env:NodeJS.ProcessEnv):LifecycleProof|null
  if(stat.isSymbolicLink()||!stat.isDirectory())throw new Error('Invalid lifecycle profile object');
  const real=fs.realpathSync(profile),tmp=fs.realpathSync(os.tmpdir()),relative=path.relative(tmp,real);
  if(!/^tm-native-lifecycle-[a-zA-Z0-9]+$/.test(relative))throw new Error('Invalid lifecycle profile root');
- const marker=path.join(real,'.tm-lifecycle.json'),markerStat=fs.lstatSync(marker);
- if(!markerStat.isFile()||markerStat.isSymbolicLink()||markerStat.size>256)throw new Error('Invalid lifecycle marker');
- const value=JSON.parse(fs.readFileSync(marker,'utf8'));
+ const marker=path.join(real,'.tm-lifecycle.json');
+ const value=readProofJson(marker,256,'Invalid lifecycle marker') as {schema?:string;nonce?:string}|null;
  if(value?.schema!=='tm-lifecycle-v1'||value.nonce!==nonce)throw new Error('Invalid lifecycle marker');
  const ownedRoots=['local-data','secrets','settings'];
  const visit=(p:string)=>{
@@ -45,11 +62,32 @@ export function resolveLifecycleProof(env:NodeJS.ProcessEnv):LifecycleProof|null
   if(ownedRoots.some(n=>fs.existsSync(path.join(real,n))))throw new Error('Lifecycle seed profile is not empty');
  }else{
   const prior=stage==='reopen'?'seed':'reopen';
-  const receipt=path.join(real,`lifecycle-${prior}.json`),st=fs.lstatSync(receipt);
-  if(!st.isFile()||st.isSymbolicLink()||st.size>4096)throw new Error('Invalid prior lifecycle receipt');
-  const previous=JSON.parse(fs.readFileSync(receipt,'utf8'));
-  if(previous.schema!=='tm-lifecycle-v1'||previous.nonce!==nonce||previous.stage!==prior||previous.synthetic!==true)throw new Error('Invalid prior lifecycle receipt');
+  const receipt=path.join(real,`lifecycle-${prior}.json`);
+  const previous=readProofJson(receipt,4096,'Invalid prior lifecycle receipt') as {schema?:string;nonce?:string;stage?:string;synthetic?:boolean}|null;
+  if(!previous||previous.schema!=='tm-lifecycle-v1'||previous.nonce!==nonce||previous.stage!==prior||previous.synthetic!==true)throw new Error('Invalid prior lifecycle receipt');
   for(const name of ownedRoots){const item=path.join(real,name);if(fs.existsSync(item))visit(item);}
  }
  return {profile:real,stage,nonce};
+}
+
+/** Run the same orderly cleanup for failure and normal exit before native teardown.
+ * Reentrant before-quit notifications cannot bypass the active drain. */
+export function createShutdownCoordinator(deps:{drain:()=>Promise<void>;close:()=>void;record:(state:'pass'|'fail')=>void;quit:()=>void;exit:(code:1)=>void}){
+ let failed=false,settled=false,active:Promise<void>|undefined;
+ return {
+  fail(){failed=true;if(!active&&!settled)deps.quit();},
+  beforeQuit(preventDefault:()=>void){
+   if(settled)return;
+   preventDefault();if(active)return;
+   active=(async()=>{
+    try{await deps.drain();deps.close();deps.record('pass');}
+    catch{failed=true;try{deps.record('fail');}catch{/* Unsafe diagnostics must not block termination. */}}
+    // Leave the current native callback/microtask stack before invoking Electron teardown.
+    await new Promise<void>(resolve=>setImmediate(resolve));
+    settled=true;
+    if(failed)deps.exit(1);else deps.quit();
+   })();
+  },
+  wait(){return active??Promise.resolve();}
+ };
 }

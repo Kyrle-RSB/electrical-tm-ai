@@ -9,7 +9,18 @@ const pad=n=>String(n).padStart(2,'0');
 const cases=Array.from({length:30},(_,i)=>`P2-AC${pad(i+1)}`);
 const tasks=Array.from({length:12},(_,i)=>`P2-F${pad(i+1)}`);
 const sha=x=>crypto.createHash('sha256').update(x).digest('hex');
-const read=p=>fs.readFileSync(p,'utf8');
+/** Hash/read the checked descriptor rather than following a replaced pathname. */
+function checkedSourceBytes(file,limit=64*1024*1024){
+ let fd;
+ try{fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));}
+ catch(error){if(error?.code==='ENOENT')throw new Error('Required source file missing');throw error;}
+ try{
+  const initial=fs.fstatSync(fd);
+  const verify=()=>{const stat=fs.fstatSync(fd),named=fs.lstatSync(file);if(!stat.isFile()||!named.isFile()||named.isSymbolicLink()||stat.nlink!==1||named.nlink!==1||stat.dev!==named.dev||stat.ino!==named.ino||stat.size!==initial.size||stat.size!==named.size||stat.mtimeMs!==initial.mtimeMs||stat.size>limit)throw new Error('Unsafe or changed regular source file');};
+  verify();const bytes=Buffer.alloc(initial.size);let offset=0;while(offset<bytes.length){const count=fs.readSync(fd,bytes,offset,bytes.length-offset,offset);if(!count)throw new Error('Changed source file');offset+=count;}verify();return bytes;
+ }finally{fs.closeSync(fd);}
+}
+const read=p=>checkedSourceBytes(p).toString('utf8');
 const pinned='12.21.0';
 const required=['README.md','LICENSE','SECURITY.md','PRIVACY.md','CONTRIBUTING.md','package.json','pnpm-lock.yaml','apps/desktop/forge.config.ts','apps/desktop/vite.renderer.config.ts','apps/desktop/index.html','packages/persistence-sqlite/src/connection.ts','packages/domain/src/shared/money.ts','packages/backup/src/create-backup.ts','packages/backup/src/restore-backup.ts'];
 function auditTrace(matrix,hasFile){
@@ -45,11 +56,12 @@ function pn(args,cwd=root,input){return command(pnpm,args,cwd,input);}
 function mustOutput(r,label){if(r.status!==0)throw new Error(`${label} failed (exit ${r.status})`);return r.stdout.trim();}
 function checkLinker(value){if(value!=='hoisted')throw new Error('Effective pnpm node-linker must be hoisted');}
 function checkLock(dir,requireGit=false){
- const file=path.join(dir,'pnpm-lock.yaml');if(!fs.existsSync(file)||!fs.statSync(file).isFile()||fs.statSync(file).size===0)throw new Error('Required frozen lockfile missing or empty');
+ const file=path.join(dir,'pnpm-lock.yaml');const bytes=checkedSourceBytes(file);if(bytes.length===0)throw new Error('Required frozen lockfile empty');
  const inGit=command('git',['rev-parse','--is-inside-work-tree'],dir);
- if(inGit.status!==0){if(requireGit)throw new Error('Canonical Git checkout required for CI lock verification');return {status:'ARCHIVE_ONLY_NO_GIT_PROOF',sha256:sha(fs.readFileSync(file))};}
+ if(inGit.status!==0){if(requireGit)throw new Error('Canonical Git checkout required for CI lock verification');return {status:'ARCHIVE_ONLY_NO_GIT_PROOF',sha256:sha(bytes)};}
  if(command('git',['ls-files','--error-unmatch','pnpm-lock.yaml'],dir).status!==0||command('git',['diff','--quiet','HEAD','--','pnpm-lock.yaml'],dir).status!==0)throw new Error('Frozen lockfile absent from tracked HEAD or changed');
- return {status:'TRACKED_LOCK_MATCHES_HEAD',sha256:sha(fs.readFileSync(file))};
+ if(!checkedSourceBytes(file).equals(bytes))throw new Error('Frozen lockfile changed during verification');
+ return {status:'TRACKED_LOCK_MATCHES_HEAD',sha256:sha(bytes)};
 }
 function selfTest(matrix){
  const yes=()=>true;
@@ -68,6 +80,7 @@ function selfTest(matrix){
   mustOutput(command('git',['add','pnpm-lock.yaml'],fixture),'fixture git add');
   mustOutput(command('git',['-c','user.name=Synthetic Fixture','-c','user.email=fixture@example.test','-c','commit.gpgsign=false','commit','--quiet','-m','Synthetic lock fixture'],fixture),'fixture git commit');
   assert.equal(checkLock(fixture,true).status,'TRACKED_LOCK_MATCHES_HEAD');
+  const hardlink=path.join(fixture,'lock-alias');fs.linkSync(path.join(fixture,'pnpm-lock.yaml'),hardlink);assert.throws(()=>checkLock(fixture,true),/Unsafe/);fs.unlinkSync(hardlink);
   fs.appendFileSync(path.join(fixture,'pnpm-lock.yaml'),'changed: true\n');assert.throws(()=>checkLock(fixture,true),/changed/);
  }finally{fs.rmSync(fixture,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
  console.log('PASS traceability, missing-source, linker and tracked-lock negative fixtures');

@@ -15,3 +15,9 @@
 Never ship real credentials, client documents, private tokens or backups in the MIT source tree. No secret or external provider call is required for normal foundation operations.
 
 The path checks reject existing alias paths and unsafe overlap; they do not claim protection against arbitrary malicious processes running as the same OS user and racing directory replacement. Backups remain hash-integrity checked, not authenticated signatures. Independent security review and physical-machine proof remain required.
+
+### Descriptor-level filesystem review (Phase 2 continuation)
+
+CodeQL PR annotations 4–12 identified check/use filesystem operations. Startup marker/receipt reads, diagnostic appends, backup manifest reads and backup source copying/hashing now validate the actual opened descriptor, enforce appropriate byte bounds, reject hardlinks where the application owns a file, and recheck observable path identity. CI source/lock provenance reads use the same descriptor discipline. Selected image and PDF reads retain their pre-open identity comparison, no-follow flags and bounded reads, and recheck named identity afterward. A successfully executed scan is not disposition of individual annotations. No alert has been dismissed by the implementing agent.
+
+These checks mitigate observable file replacements; Node's portable API does not provide a complete OS-specific directory-handle transaction across each filesystem operation. Privileged or malicious same-account concurrent directory replacement remains an explicit limitation, not a certified invariant. An independent security reviewer must inspect the actual alerts, negative tests and release threat boundary.

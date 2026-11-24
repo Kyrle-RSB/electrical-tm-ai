@@ -64,12 +64,12 @@ async function inspectExportIdentity(target:string):Promise<PdfExportIdentity|nu
  let before:fs.Stats;
  try{before=await fs.promises.lstat(target);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error;}
  if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1||before.size>25*1024*1024)throw new Error('Unsafe PDF destination type');
- const handle=await fs.promises.open(target,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+ const handle=await fs.promises.open(target,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
  try{
   const stat=await handle.stat();if(stat.dev!==before.dev||stat.ino!==before.ino||stat.size!==before.size||stat.nlink!==1)throw new Error('PDF destination changed during inspection');
   const bytes=Buffer.alloc(stat.size);let offset=0;
   while(offset<bytes.length){const {bytesRead}=await handle.read(bytes,offset,bytes.length-offset,offset);if(!bytesRead)throw new Error('PDF destination changed during inspection');offset+=bytesRead;}
-  const after=await handle.stat();if(after.size!==stat.size||after.mtimeMs!==stat.mtimeMs)throw new Error('PDF destination changed during inspection');
+  const after=await handle.stat(),named=await fs.promises.lstat(target);if(after.size!==stat.size||after.mtimeMs!==stat.mtimeMs||after.nlink!==1||!named.isFile()||named.isSymbolicLink()||named.nlink!==1||named.dev!==stat.dev||named.ino!==stat.ino||named.size!==stat.size)throw new Error('PDF destination changed during inspection');
   return {dev:stat.dev,ino:stat.ino,size:stat.size,mtimeMs:stat.mtimeMs,sha256:createHash('sha256').update(bytes).digest('hex')};
  }finally{await handle.close();}
 }

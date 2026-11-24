@@ -34,6 +34,17 @@ const scrub=(input)=>String(input??'')
   .replace(/\bBearer\s+[^\s]+/gi,'Bearer <REDACTED>')
   .replace(/\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization)\s*[:=]\s*['\"]?[^'\"\s,}]+/gi,'<REDACTED_CREDENTIAL>')
   .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,'<REDACTED_EMAIL>');
+/** Hash/read the checked descriptor rather than following a replaced pathname. */
+function checkedSourceBytes(file,limit=64*1024*1024){
+ let fd;
+ try{fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));}
+ catch(error){if(error?.code==='ENOENT')throw new Error('Required source file missing');throw error;}
+ try{
+  const initial=fs.fstatSync(fd);
+  const verify=()=>{const stat=fs.fstatSync(fd),named=fs.lstatSync(file);if(!stat.isFile()||!named.isFile()||named.isSymbolicLink()||stat.nlink!==1||named.nlink!==1||stat.dev!==named.dev||stat.ino!==named.ino||stat.size!==initial.size||stat.size!==named.size||stat.mtimeMs!==initial.mtimeMs||stat.size>limit)throw new Error('Unsafe or changed regular source file');};
+  verify();const bytes=Buffer.alloc(initial.size);let offset=0;while(offset<bytes.length){const count=fs.readSync(fd,bytes,offset,bytes.length-offset,offset);if(!count)throw new Error('Changed source file');offset+=count;}verify();return bytes;
+ }finally{fs.closeSync(fd);}
+}
 /** Canonical tracked object identities, independent of platform checkout line endings. */
 function gitProvenance(folder,requireGit=false){
  const git=(...args)=>spawnSync('git',args,{cwd:folder,encoding:'utf8',timeout:30000,maxBuffer:8*1024*1024,windowsHide:true});
@@ -49,8 +60,7 @@ function gitProvenance(folder,requireGit=false){
   if(!match)throw new Error('Unsupported tracked source object');
   const [,mode,blob,rel]=match,abs=path.resolve(folder,rel);
   if(!abs.startsWith(path.resolve(folder)+path.sep))throw new Error('Tracked path escapes checkout');
-  const stat=fs.lstatSync(abs);if(!stat.isFile()||stat.isSymbolicLink())throw new Error('Tracked source is not a regular file');
-  return {path:rel,mode,blob,rawSha256:sha(fs.readFileSync(abs))};
+  return {path:rel,mode,blob,rawSha256:sha(checkedSourceBytes(abs))};
  }).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
  const manifestSha256=sha(JSON.stringify(files.map(({path,mode,blob})=>({path,mode,blob}))));
  return {status:'CLEAN_GIT_CHECKOUT',commit,tree,manifestSha256,files};
@@ -61,6 +71,7 @@ if(args.includes('--git-provenance-self-test')){
   const git=(...args)=>{const r=spawnSync('git',args,{cwd:fixture,encoding:'utf8',windowsHide:true});if(r.status!==0)throw new Error('Synthetic Git setup failed');};
   git('init','-q');fs.writeFileSync(path.join(fixture,'fixture.txt'),'synthetic\n');git('add','fixture.txt');git('-c','user.name=Proof fixture','-c','user.email=proof@example.invalid','commit','-qm','synthetic fixture');
   const good=gitProvenance(fixture,true);if(good.status!=='CLEAN_GIT_CHECKOUT'||good.files.length!==1)throw new Error('Clean Git fixture rejected');
+  const alias=path.join(path.dirname(fixture),path.basename(fixture)+'-alias');try{fs.linkSync(path.join(fixture,'fixture.txt'),alias);let refused=false;try{gitProvenance(fixture,true);}catch{refused=true;}if(!refused)throw new Error('Hardlinked tracked source accepted');}finally{fs.rmSync(alias,{force:true});}
   for(const dirty of ['tracked','untracked']){
    const file=path.join(fixture,dirty==='tracked'?'fixture.txt':'unexpected.txt');fs.writeFileSync(file,'changed');let refused=false;
    try{gitProvenance(fixture,true);}catch{refused=true;}if(!refused)throw new Error('Dirty Git fixture accepted');

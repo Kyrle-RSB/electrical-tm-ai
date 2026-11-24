@@ -27,7 +27,7 @@ import {storeImmutablePdf} from '../../../../packages/pdf/src/common/stored-pdf'
 import {LocalOperationQueue} from '../../../../packages/application/src/use-cases/backup-restore';
 import {createCockpitWindow} from './window';
 import {establishSingleInstance} from './os/single-instance';
-import {createStartupRecorder,resolveLifecycleProof} from './bootstrap';
+import {createStartupRecorder,resolveLifecycleProof,createShutdownCoordinator} from './bootstrap';
 
 protocol.registerSchemesAsPrivileged([{scheme:'tmapp',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 // Internal construction profile is intentionally separate from the owner's previously
@@ -56,6 +56,9 @@ const DATA_ROOT=paths.dataRoot;
 let store:LocalStore;
 let currentUrl:string;
 const operationQueue=new LocalOperationQueue();
+const shutdown=createShutdownCoordinator({drain:()=>operationQueue.drain(),close:()=>store?.close(),
+ record:state=>recorder.record('shutdown',state),quit:()=>app.quit(),exit:code=>app.exit(code)});
+app.on('before-quit',event=>shutdown.beforeQuit(()=>event.preventDefault()));
 const backupPreference=new BackupDestinationPreference(paths.settings,P2_TEST_PROFILE);
 const DEV_URL=typeof MAIN_WINDOW_VITE_DEV_SERVER_URL==='string'?MAIN_WINDOW_VITE_DEV_SERVER_URL:undefined;
 async function run(){
@@ -128,7 +131,7 @@ async function run(){
   registerBrandingHandlers(registerBackup,()=>store,async()=>{const selected=await nativeDialogs.pickLogo();return selected===null?null:importImageFromPickedFile(selected,path.join(DATA_ROOT,'vault'));});
   registerBackupHandlers(registerBackup,{dialogs:nativeDialogs,preference:backupPreference,dataRoot:DATA_ROOT,migrationsDir,
     getStore:()=>store,setStore:value=>{store=value;},reopen:()=>new LocalStore(paths.database,migrationsDir),
-    onFatalRecovery:()=>{recorder.record('restore.recovery','fail');app.exit(1);}});
+    onFatalRecovery:()=>{try{recorder.record('restore.recovery','fail');}catch{/* Fail closed even when diagnostics are unavailable. */}shutdown.fail();}});
   const secret=new ProtectedSecretFile(safeStorage,paths.secret);
   safeHandle(CHANNELS.fakeSecretStore,(e,r)=>operationQueue.run(async()=>{
     const val=guard(e,r);
@@ -355,24 +358,10 @@ async function run(){
     app.exit(succeeded?0:1);
   }}
   app.whenReady().then(run).catch(_error=>{
-    recorder.record('startup','fail');
+    try{recorder.record('startup','fail');}catch{/* Fail closed even when diagnostics are unavailable. */}
     console.error('Electrical T&M startup failed; see local diagnostics/startup.jsonl (no secrets logged).');
-    app.exit(1);
+    shutdown.fail();
   });
-let shutdownRequested=false;
-app.on('before-quit',event=>{
-  if(shutdownRequested)return;
-  shutdownRequested=true;
-  event.preventDefault();
-  void operationQueue.drain().then(()=>{
-    store?.close();
-    recorder.record('shutdown','pass');
-    app.quit();
-  }).catch(()=>{
-    recorder.record('shutdown','fail');
-    app.exit(1);
-  });
-});
 // This single-window Phase 1 proof exits fully on macOS as well: no hidden
 // app instance retaining a lock or requiring a separate process cleanup.
 app.on('window-all-closed',()=>app.quit());

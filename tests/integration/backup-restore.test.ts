@@ -223,3 +223,17 @@ test('optional managed business logo survives backup, removal and restore; omiss
   await assert.rejects(verifyBackup(saved.backupPath,migrations),/Referenced backup evidence missing or altered/);
  }finally{db?.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('backup and restore refuse hardlinked external evidence and manifests without modifying unrelated data',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-link-evidence-')),live=path.join(root,'live'),dest=path.join(root,'external');
+ const db=new LocalStore(path.join(live,'db','app.sqlite'),migrations);
+ try{
+  db.initializeFictionalCompany();const unrelated=path.join(root,'unrelated.bin');fs.writeFileSync(unrelated,'SYNTHETIC UNRELATED');
+  const folder=path.join(live,'vault','images');fs.mkdirSync(folder,{recursive:true});const linked=path.join(folder,'linked.png');fs.linkSync(unrelated,linked);
+  await assert.rejects(createBackup(db,live,dest),/regular|Unsafe|linked|changed/i);
+  fs.unlinkSync(linked);const saved=await createBackup(db,live,dest);
+  const mf=path.join(saved.backupPath,'manifest.json'),outside=path.join(root,'external-manifest.json');fs.copyFileSync(mf,outside);fs.unlinkSync(mf);fs.linkSync(outside,mf);
+  await assert.rejects(verifyBackup(saved.backupPath,migrations),/regular|Unsafe|linked|changed/i);
+  assert.equal(fs.readFileSync(unrelated,'utf8'),'SYNTHETIC UNRELATED');
+ }finally{db.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

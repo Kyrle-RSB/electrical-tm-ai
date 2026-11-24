@@ -14,13 +14,14 @@ export async function storeImmutablePdf(artifactsRoot:string,pdf:Buffer):Promise
  catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;
    const stat=await fs.promises.lstat(file);
    if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.size!==pdf.length)throw new Error('Immutable PDF content hash collision or tampering');
-   const handle=await fs.promises.open(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+   const handle=await fs.promises.open(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
    try{
     const opened=await handle.stat();
     if(opened.dev!==stat.dev||opened.ino!==stat.ino||opened.size!==stat.size||opened.nlink!==1)throw new Error('Immutable PDF changed during inspection');
     const previous=Buffer.alloc(pdf.length);
     const {bytesRead}=await handle.read(previous,0,previous.length,0);
-    if(bytesRead!==pdf.length||(await handle.stat()).size!==pdf.length||!previous.equals(pdf))throw new Error('Immutable PDF content hash collision or tampering');
+    const after=await handle.stat(),named=await fs.promises.lstat(file);
+    if(bytesRead!==pdf.length||after.size!==pdf.length||after.nlink!==1||after.mtimeMs!==opened.mtimeMs||!named.isFile()||named.isSymbolicLink()||named.nlink!==1||named.dev!==opened.dev||named.ino!==opened.ino||!previous.equals(pdf))throw new Error('Immutable PDF content hash collision or tampering');
    }finally{await handle.close();}
  }
  return {sha256,relativePath:relativePath.split(path.sep).join('/')};
