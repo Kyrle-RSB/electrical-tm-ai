@@ -5,8 +5,8 @@
 - Persist and sum currency in integer minor units, not JavaScript floating-point dollars.
 - Decimal quantity multiplication rounds to currency minor units using explicitly coded half-away-from-zero rounding. Negative adjustments need an audited credit flow.
 - Markup is applied to supplier net unit cost. Markup percentage and gross margin are distinct.
-- Labor contribution estimate equals customer labor bill-out minus **fully burdened** estimated employee hourly cost. It is not payroll accounting.
-- Estimated profit equals material resale spread + labor spread + other revenue - other direct costs - allocated daily overhead; label every output **Estimated Profit**.
+- Labor contribution estimate equals customer labor bill-out minus **fully burdened** estimated employee hourly cost. It is not payroll accounting. Reject missing or negative rates/hours and hourly or extended amounts that exceed signed SQLite integer storage.
+- Estimated profit equals material resale spread + labor spread + other revenue - other direct costs - allocated daily overhead; label every output **Estimated Profit**. Required estimate inputs are nonnegative integer cents within storage bounds; explicit credit adjustments remain separate. A loss is a valid negative result, not a value to clamp.
 - The approved overhead capacity example is $300/day and one half-day job = $150 assigned and $150 **unallocated**. Two separate half-day jobs each receive $150.
 - The general rule when recorded project workload exceeds two half-day slots on one calendar day remains a narrow owner decision. The current pure function fails closed and never silently apportions overbooked days.
 - Issued invoices and payment receipts have append-only/immutable snapshot groundwork. Actual accounting workflow tests and tax/legal review remain outstanding.
