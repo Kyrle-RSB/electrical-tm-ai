@@ -2,6 +2,10 @@ import test from 'node:test';import {strict as assert} from 'node:assert';
 import fs from 'node:fs';import path from 'node:path';import os from 'node:os';
 import {makeSyntheticInvoicePdf,saveSyntheticInvoicePdf,capturePdfExportTarget} from '../../packages/pdf/src/invoices/render-invoice';
 import {storeImmutablePdf} from '../../packages/pdf/src/common/stored-pdf';
+// Bind injection to a physical directory and leaf name, not platform-specific realpath spelling.
+function sameDirectory(a:string,b:string):boolean{
+ const left=fs.statSync(a),right=fs.statSync(b);return left.dev===right.dev&&left.ino===right.ino;
+}
 const fixture={company:'Demo Electric',customer:'Fake',project:'X',invoiceNumber:'TEST-001',taxId:'FAKE',contractorLicense:'FAKE',amount:'25.00'};
 test('issued PDF bytes stored immutably and repeated same-content export does not duplicate',async()=>{
  const folder=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-immutable-pdf-'));
@@ -108,11 +112,11 @@ test('new export rejects a selected parent redirected into managed storage durin
   const managed=path.join(root,'managed'),outside=path.join(root,'outside'),parked=path.join(root,'parked');
   fs.mkdirSync(managed);fs.mkdirSync(outside);const target=path.join(outside,'new.pdf');let swapped=false;
   fs.promises.lstat=(async(...args:Parameters<typeof originalLstat>)=>{
-   if(String(args[0])===target&&!swapped){swapped=true;fs.renameSync(outside,parked);fs.symlinkSync(managed,outside,process.platform==='win32'?'junction':'dir');}
+   if(!swapped&&path.basename(String(args[0]))==='new.pdf'&&sameDirectory(path.dirname(String(args[0])),outside)){swapped=true;fs.renameSync(outside,parked);fs.symlinkSync(managed,outside,process.platform==='win32'?'junction':'dir');}
    return originalLstat(...args);
   }) as typeof originalLstat;
-  await assert.rejects(saveSyntheticInvoicePdf(target,fixture,{protectedRoots:[managed]}),/managed application data|directory changed/);
-  assert.equal(swapped,true);assert.deepEqual(fs.readdirSync(managed),[]);assert.deepEqual(fs.readdirSync(parked),[]);
+  let failure:unknown;try{await saveSyntheticInvoicePdf(target,fixture,{protectedRoots:[managed]});}catch(error){failure=error;}
+  assert.equal(swapped,true,'redirection fixture must fire');assert.ok(failure instanceof Error);assert.match(failure.message,/managed application data|directory changed/);assert.deepEqual(fs.readdirSync(managed),[]);assert.deepEqual(fs.readdirSync(parked),[]);
  }finally{fs.promises.lstat=originalLstat;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
 
@@ -122,13 +126,32 @@ test('confirmed replace refuses same-size staged byte tampering and preserves th
  try{
   await saveSyntheticInvoicePdf(target,fixture);const original=fs.readFileSync(target);let tampered=false;
   fs.promises.open=(async(...args:Parameters<typeof nativeOpen>)=>{
-   if(String(args[0])===target&&!tampered){
+   if(!tampered&&path.basename(String(args[0]))==='existing.pdf'&&sameDirectory(path.dirname(String(args[0])),root)){
     const staged=fs.readdirSync(root).find(name=>name.startsWith('existing.pdf.tmp-'));
     if(staged){const file=path.join(root,staged),bytes=fs.readFileSync(file);bytes[10]^=1;fs.writeFileSync(file,bytes);tampered=true;}
    }
    return nativeOpen(...args);
   }) as typeof nativeOpen;
-  await assert.rejects(saveSyntheticInvoicePdf(target,{...fixture,amount:'99.00'},{allowReplace:true}),/staged file changed/);
-  assert.equal(tampered,true);assert.deepEqual(fs.readFileSync(target),original);assert.deepEqual(fs.readdirSync(root),['existing.pdf']);
+  let failure:unknown;try{await saveSyntheticInvoicePdf(target,{...fixture,amount:'99.00'},{allowReplace:true});}catch(error){failure=error;}
+  assert.equal(tampered,true,'staged tamper fixture must fire');assert.ok(failure instanceof Error);assert.match(failure.message,/staged file changed/);assert.deepEqual(fs.readFileSync(target),original);assert.deepEqual(fs.readdirSync(root),['existing.pdf']);
  }finally{fs.promises.open=nativeOpen;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+
+test('redirected parent during replacement preserves original export and retains stage without unsafe cleanup',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-pdf-stage-redirect-'));
+ const managed=path.join(root,'managed'),outside=path.join(root,'outside'),parked=path.join(root,'parked'),target=path.join(outside,'existing.pdf');
+ const originalLstat=fs.promises.lstat;
+ try{
+  fs.mkdirSync(managed);fs.mkdirSync(outside);await saveSyntheticInvoicePdf(target,fixture);const original=fs.readFileSync(target);let redirected=false;
+  fs.promises.lstat=(async(...args:Parameters<typeof originalLstat>)=>{
+   if(!redirected&&path.basename(String(args[0]))==='existing.pdf'&&sameDirectory(path.dirname(String(args[0])),outside)&&fs.readdirSync(outside).some(name=>name.startsWith('existing.pdf.tmp-'))){
+    fs.renameSync(outside,parked);fs.symlinkSync(managed,outside,process.platform==='win32'?'junction':'dir');redirected=true;
+   }
+   return originalLstat(...args);
+  }) as typeof originalLstat;
+  let failure:unknown;try{await saveSyntheticInvoicePdf(target,{...fixture,amount:'99.00'},{allowReplace:true,protectedRoots:[managed]});}catch(error){failure=error;}
+  assert.equal(redirected,true,'redirection fixture must fire');assert.ok(failure instanceof AggregateError);assert.equal(failure.errors.length,2);assert.match(failure.message,/staged file retained/);
+  assert.deepEqual(fs.readFileSync(path.join(parked,'existing.pdf')),original);assert.deepEqual(fs.readdirSync(managed),[]);assert.ok(fs.readdirSync(parked).some(name=>name.startsWith('existing.pdf.tmp-')));
+ }finally{fs.promises.lstat=originalLstat;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });

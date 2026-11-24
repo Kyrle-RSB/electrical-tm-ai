@@ -11,3 +11,5 @@
 The manifest is checked against durable receipt and issued-document references inside a disposable copy of the SQLite snapshot, not only against the files listed by the manifest. Missing or altered referenced evidence blocks publication or restoration. Portable paths reject traversal, device names and case-normalized collisions. This does not authenticate a hostile rewrite of both the database and archive.
 
 Migration 0007 adds a distinct local business logo reference using the existing managed image vault. Verify backup completeness against this reference as well as receipts and issued documents. No historical migration bytes were edited.
+
+The main-process confirmation captures a canonical SHA-256 identity of the validated manifest, including file paths, sizes and content hashes. Restore re-verifies the selected archive against that identity before staging or moving active data; a different valid archive is not a valid substitute after consent. Staged bytes are rechecked against both recorded length and hash. This is content binding, not a cross-process filesystem lock.

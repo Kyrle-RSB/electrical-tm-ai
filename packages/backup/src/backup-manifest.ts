@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import type {DatabaseSync} from 'node:sqlite';
 
 export type Manifest = {schema:'tm-phase1-backup-v1';createdUtc:string;files:Array<{path:string;bytes:number;sha256:string}>;excluded:string[]};
@@ -23,6 +24,11 @@ export function validateManifest(value:unknown):Manifest {
  }
  if(!m.files.some(e=>e.path==='db/app.sqlite'))throw new Error('Backup missing SQLite database');
  return m;
+}
+/** Stable identity of the validated archive content authorized by the user. */
+export function backupManifestIdentity(m:Manifest):string {
+ const entries=m.files.map(({path,bytes,sha256})=>({path,bytes,sha256})).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+ return createHash('sha256').update(JSON.stringify({schema:m.schema,createdUtc:m.createdUtc,files:entries,excluded:[...m.excluded].sort()})).digest('hex');
 }
 /** A syntactically intact manifest is insufficient: all durable document references must resolve. */
 export function assertReferencedEvidence(db:DatabaseSync,manifest:Manifest):void {

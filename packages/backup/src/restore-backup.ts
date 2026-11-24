@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import {DatabaseSync} from 'node:sqlite';
 import { hashFile, traverseRegularFiles, readBoundedBackupFile, copyRegularBackupFile } from './create-backup';
-import {assertReferencedEvidence,validateManifest,type Manifest} from './backup-manifest';
+import {assertReferencedEvidence,validateManifest,backupManifestIdentity,type Manifest} from './backup-manifest';
 import { LocalStore } from '../../persistence-sqlite/src/connection';
 import {canonicalBackupPath,backupPathsOverlap} from './backup-destination';
 export async function verifyBackup(backupPath:string,migrationsDir?:string):Promise<Manifest>{
@@ -49,7 +49,7 @@ export async function verifyBackup(backupPath:string,migrationsDir?:string):Prom
   return m;
 }
 /** Close live SQLite connection before calling. Returns rollback directory to retain until user confirms. */
-export async function restoreBackup(backupPath:string,activeRoot:string,migrationsDir?:string):Promise<{rollbackPath:string|null}> {
+export async function restoreBackup(backupPath:string,activeRoot:string,migrationsDir?:string,expectedIdentity?:string):Promise<{rollbackPath:string|null}> {
   // Reject redirected managed directory objects before realpath can erase the link identity.
   for(const root of [backupPath,activeRoot]){
     try{const stat=await fs.promises.lstat(root);if(stat.isSymbolicLink()||!stat.isDirectory())throw new Error('Unsupported filesystem object in restore root');}
@@ -59,6 +59,7 @@ export async function restoreBackup(backupPath:string,activeRoot:string,migratio
   if(backupPathsOverlap(target,source))throw new Error('Cannot restore onto backup');
   backupPath=source;
   const manifest=await verifyBackup(backupPath,migrationsDir);
+  if(expectedIdentity!==undefined&&backupManifestIdentity(manifest)!==expectedIdentity)throw new Error('Backup changed after verification; select and verify it again');
   const parent=path.dirname(target);
   await fs.promises.mkdir(parent,{recursive:true});
   const nonce=crypto.randomBytes(5).toString('hex'),stage=path.join(parent,`.tm-restore-${nonce}`),rollback=path.join(parent,`.tm-rollback-${nonce}`);
@@ -70,7 +71,7 @@ export async function restoreBackup(backupPath:string,activeRoot:string,migratio
       await fs.promises.mkdir(path.dirname(dest),{recursive:true});
       await copyRegularBackupFile(path.join(backupPath,entry.path),dest);
     }
-    for(const entry of manifest.files) if(await hashFile(path.join(stage,entry.path))!==entry.sha256) throw new Error('Restore staging mismatch');
+    for(const entry of manifest.files) if(await hashFile(path.join(stage,entry.path),entry.bytes)!==entry.sha256) throw new Error('Restore staging mismatch');
     if(fs.existsSync(target)){await fs.promises.rename(target,rollback);rolledBack=true;}
     try{await fs.promises.rename(stage,target);}catch(e){if(rolledBack)await fs.promises.rename(rollback,target);throw e;}
     return {rollbackPath:rolledBack?rollback:null};

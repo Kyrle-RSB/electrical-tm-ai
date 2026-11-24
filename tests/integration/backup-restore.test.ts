@@ -237,3 +237,30 @@ test('backup and restore refuse hardlinked external evidence and manifests witho
   assert.equal(fs.readFileSync(unrelated,'utf8'),'SYNTHETIC UNRELATED');
  }finally{db.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+
+test('restore confirmation is bound to the originally verified archive even if a different valid backup replaces it',async()=>{
+ const {registerBackupHandlers}=await import('../../apps/desktop/src/main/ipc/handlers/backups');
+ const {BackupDestinationPreference}=await import('../../packages/backup/src/backup-destination');
+ const {CHANNELS}=await import('../../packages/contracts/src');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-restore-consent-')),live=path.join(root,'profile','data'),dbPath=path.join(live,'db','app.sqlite');
+ let db:LocalStore|undefined;
+ try{
+  db=new LocalStore(dbPath,migrations);db.initializeFictionalCompany();db.createProject({code:'FIRST',customer:'Synthetic',siteAddress:'Site'});
+  const first=await createBackup(db,live,path.join(root,'first'));
+  db.createProject({code:'SECOND',customer:'Synthetic',siteAddress:'Site'});
+  const second=await createBackup(db,live,path.join(root,'second'));
+  db.createProject({code:'LATEST',customer:'Synthetic',siteAddress:'Site'});
+  let swapped=false,fatal=false;
+  const pref=new BackupDestinationPreference(path.join(root,'profile','settings','backup.json'),path.join(root,'profile'));
+  const handlers=new Map<string,()=>Promise<unknown>>();
+  registerBackupHandlers((channel,validate,operation)=>{handlers.set(channel,async()=>operation('synthetic',validate(undefined)));},{
+   dialogs:{chooseFolder:async()=>first.backupPath,confirmRestore:async()=>{fs.renameSync(first.backupPath,first.backupPath+'-retained');fs.renameSync(second.backupPath,first.backupPath);swapped=true;return true;}},
+   preference:pref,dataRoot:live,migrationsDir:migrations,getStore:()=>db!,setStore:value=>{db=value;},reopen:()=>new LocalStore(dbPath,migrations),onFatalRecovery:()=>{fatal=true;}
+  });
+  let failure:unknown;try{await handlers.get(CHANNELS.backupRestore)!();}catch(error){failure=error;}
+  assert.equal(swapped,true);assert.ok(failure instanceof Error,'different valid archive must be rejected');assert.match(failure.message,/changed after verification/);
+  assert.equal(fatal,false);assert.deepEqual(db.listProjects().map(p=>p.project_code),['FIRST','LATEST','SECOND']);
+  assert.deepEqual(fs.readdirSync(path.dirname(live)),['data']);
+ }finally{try{db?.close();}catch{}fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

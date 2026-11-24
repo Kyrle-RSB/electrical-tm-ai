@@ -2,6 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 const MAX_CIPHERTEXT_BYTES=1024*1024;
+function sameCredentialFile(a:fs.Stats|null,b:fs.Stats|null):boolean{
+ if(a===null||b===null)return a===b;
+ return a.isFile()&&b.isFile()&&a.nlink===1&&b.nlink===1&&a.dev===b.dev&&a.ino===b.ino&&a.size===b.size&&a.mtimeMs===b.mtimeMs&&a.ctimeMs===b.ctimeMs;
+}
 export interface AsyncProtection {
   isAsyncEncryptionAvailable():Promise<boolean>;
   encryptStringAsync(plain:string):Promise<Buffer>;
@@ -41,18 +45,20 @@ export class ProtectedSecretFile {
     if(!plaintext.startsWith('TEST-FAKE-'))throw new Error('Proof rejects non-test credentials');
     await this.storeEncrypted(plaintext);
   }
-  private async storeEncrypted(plaintext:string):Promise<void>{
+  private async storeEncrypted(plaintext:string,expected?:fs.Stats):Promise<void>{
     await this.ensureAvailable();
+    const before=await this.inspectFile();
+    if(expected!==undefined&&!sameCredentialFile(expected,before))throw new Error('Unsafe credential storage file changed');
     const cipher=await this.provider.encryptStringAsync(plaintext);
     if(!Buffer.isBuffer(cipher)||!cipher.length||cipher.length>MAX_CIPHERTEXT_BYTES||cipher.includes(Buffer.from(plaintext,'utf8')))
       throw new Error('Credential encryption returned unsafe ciphertext');
     await this.storageDirectory(true);
-    await this.inspectFile();
+    if(!sameCredentialFile(before,await this.inspectFile()))throw new Error('Unsafe credential storage file changed');
     const tmp=this.file+`.new-${crypto.randomBytes(8).toString('hex')}`;
     try {
       const handle=await fs.promises.open(tmp,'wx',0o600);
       try{await handle.writeFile(cipher);await handle.sync();}finally{await handle.close();}
-      await this.inspectFile();
+      if(!sameCredentialFile(before,await this.inspectFile()))throw new Error('Unsafe credential storage file changed');
       await fs.promises.rename(tmp,this.file);
     }finally{await fs.promises.rm(tmp,{force:true});}
   }
@@ -66,19 +72,21 @@ export class ProtectedSecretFile {
     await this.ensureAvailable();
     const before=await this.inspectFile();
     if(!before)throw new Error('Protected credential not configured');
-    const file=await fs.promises.open(this.file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+    const file=await fs.promises.open(this.file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
     let cipher:Buffer;
     try{
       const opened=await file.stat();
-      if(!opened.isFile()||opened.nlink!==1||opened.dev!==before.dev||opened.ino!==before.ino||opened.size!==before.size)
+      if(!sameCredentialFile(before,opened))
         throw new Error('Unsafe credential storage file changed');
       cipher=Buffer.alloc(opened.size);
-      const {bytesRead}=await file.read(cipher,0,cipher.length,0);
-      if(bytesRead!==cipher.length||(await file.stat()).size!==opened.size)throw new Error('Unsafe credential storage file changed');
+      let offset=0;
+      while(offset<cipher.length){const {bytesRead}=await file.read(cipher,offset,cipher.length-offset,offset);if(!bytesRead)throw new Error('Unsafe credential storage file changed');offset+=bytesRead;}
+      if(!sameCredentialFile(opened,await file.stat())||!sameCredentialFile(opened,await this.inspectFile()))throw new Error('Unsafe credential storage file changed');
     }finally{await file.close();}
     const {result,shouldReEncrypt}=await this.provider.decryptStringAsync(cipher);
     if(typeof result!=='string'||!result||result.length>65536)throw new Error('Invalid protected value');
-    if(shouldReEncrypt)await this.storeEncrypted(result);
+    if(!sameCredentialFile(before,await this.inspectFile()))throw new Error('Unsafe credential storage file changed');
+    if(shouldReEncrypt)await this.storeEncrypted(result,before);
     return result;
   }
   async remove():Promise<void>{if(await this.inspectFile())await fs.promises.rm(this.file,{force:true});}

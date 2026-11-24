@@ -65,3 +65,44 @@ test('protected credential operations refuse redirected storage and preserve out
   assert.deepEqual(fs.readFileSync(path.join(outside,'probe.bin')),before);
  }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+
+test('asynchronous credential re-encryption cannot resurrect a revoked record',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-secret-revoke-rotation-')),file=path.join(root,'probe.bin');
+ try{
+  await new ProtectedSecretFile(demoProvider,file).storeFakeToken('TEST-FAKE-revoked');
+  let revoked=false;
+  const vault=new ProtectedSecretFile({...demoProvider,decryptStringAsync:async(bytes:Buffer)=>{
+   const value=await demoProvider.decryptStringAsync(bytes);fs.unlinkSync(file);revoked=true;return {...value,shouldReEncrypt:true};
+  }},file);
+  let failure:unknown;try{await vault.readFakeToken();}catch(error){failure=error;}
+  assert.equal(revoked,true);assert.ok(failure instanceof Error,'revoked credential must not be returned');assert.match(failure.message,/credential storage file changed/);
+  assert.equal(await vault.exists(),false);assert.deepEqual(fs.readdirSync(root),[]);
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('protected credential read completes bounded short descriptor reads',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-secret-short-read-')),file=path.join(root,'probe.bin');
+ const nativeOpen=fs.promises.open;
+ try{
+  const vault=new ProtectedSecretFile(demoProvider,file);await vault.storeFakeToken('TEST-FAKE-partial-read');let reads=0;
+  fs.promises.open=(async(...args:Parameters<typeof nativeOpen>)=>{
+   const handle=await nativeOpen(...args);
+   if(String(args[0])===file){const read=handle.read.bind(handle);handle.read=(async(buffer:Buffer,offset:number,length:number,position:number)=>{reads++;return read(buffer,offset,Math.min(length,3),position);}) as typeof handle.read;}
+   return handle;
+  }) as typeof nativeOpen;
+  assert.equal(await vault.readFakeToken(),'TEST-FAKE-partial-read');assert.ok(reads>1);
+ }finally{fs.promises.open=nativeOpen;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+
+test('credential rotation succeeds for an unchanged record and fails closed if revoked during encryption',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-secret-rotate-')),file=path.join(root,'probe.bin');
+ try{
+  const original=new ProtectedSecretFile(demoProvider,file);await original.storeFakeToken('TEST-FAKE-rotation');
+  let rotations=0;const rotate={...demoProvider,decryptStringAsync:async(bytes:Buffer)=>({...await demoProvider.decryptStringAsync(bytes),shouldReEncrypt:true}),encryptStringAsync:async(plain:string)=>{rotations++;return demoProvider.encryptStringAsync(plain);}};
+  assert.equal(await new ProtectedSecretFile(rotate,file).readFakeToken(),'TEST-FAKE-rotation');assert.equal(rotations,1);assert.equal(await original.readFakeToken(),'TEST-FAKE-rotation');
+  let revoked=false;const interrupted=new ProtectedSecretFile({...rotate,encryptStringAsync:async(plain:string)=>{fs.unlinkSync(file);revoked=true;return rotate.encryptStringAsync(plain);}},file);
+  await assert.rejects(interrupted.readFakeToken(),/credential storage file changed/);assert.equal(revoked,true);assert.equal(await original.exists(),false);assert.deepEqual(fs.readdirSync(root),[]);
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

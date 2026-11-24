@@ -14,3 +14,5 @@ A modified file or corrupted backup is rejected. Missing receipts or issued PDF 
 Check the exact candidate native receipts. The automated synthetic backup verifies referenced assets and restore; separate manual interaction and recovery witnesses remain required. Do not delete your only working database to test restoration.
 
 Optional logo: select a synthetic PNG/JPEG in Business profile. Its managed asset ID and checksum are stored locally and included in backup verification; cancel preserves the previous reference. Removing a logo reference retains historical managed bytes. A production logo-rendering invoice template is outside Phase 2.
+
+The restore confirmation is bound to the verified backup manifest and file hashes. If the selected archive changes while you are confirming, the restore is refused. Select and verify the intended backup again; your active database remains the original one.

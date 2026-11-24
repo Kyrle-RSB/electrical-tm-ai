@@ -111,7 +111,7 @@ export async function saveSyntheticInvoicePdf(
     await fs.promises.writeFile(target,pdf,{flag:'wx',mode:0o600});
   }else{
     const temp=target+`.tmp-${randomUUID()}`;
-    let stagedIdentity:fs.Stats|undefined,activated=false;
+    let stagedIdentity:fs.Stats|undefined;
     try{
       await checkParent();
       const handle=await fs.promises.open(temp,'wx',0o600);
@@ -122,14 +122,19 @@ export async function saveSyntheticInvoicePdf(
       if(!staged||staged.dev!==stagedIdentity?.dev||staged.ino!==stagedIdentity?.ino||staged.size!==pdf.length||staged.sha256!==createHash('sha256').update(pdf).digest('hex'))throw new Error('PDF staged file changed');
       if(!sameIdentity(identity,await inspectExportIdentity(target)))throw new Error('PDF destination changed before replacement');
       await checkParent();
-      await fs.promises.rename(temp,target);activated=true;
-    }finally{
-      // Never clean up through a redirected directory or delete a substituted file.
-      if(!activated&&stagedIdentity){
-        try{await checkParent();}catch{throw new Error('PDF destination directory changed; staged file retained for recovery');}
-        const staged=await fs.promises.lstat(temp);
-        if(staged.isFile()&&!staged.isSymbolicLink()&&staged.nlink===1&&staged.dev===stagedIdentity.dev&&staged.ino===stagedIdentity.ino)await fs.promises.rm(temp);
+      await fs.promises.rename(temp,target);
+    }catch(error){
+      // Preserve the primary error and never clean through a redirected parent or substituted file.
+      if(stagedIdentity){
+        try{
+          await checkParent();
+          const staged=await fs.promises.lstat(temp);
+          if(staged.isFile()&&!staged.isSymbolicLink()&&staged.nlink===1&&staged.dev===stagedIdentity.dev&&staged.ino===stagedIdentity.ino)await fs.promises.rm(temp);
+        }catch(cleanupError){
+          if((cleanupError as NodeJS.ErrnoException).code!=='ENOENT')throw new AggregateError([error,cleanupError],'PDF export failed; staged file retained for recovery');
+        }
       }
+      throw error;
     }
   }
   return target;

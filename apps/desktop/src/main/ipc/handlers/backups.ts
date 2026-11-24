@@ -4,6 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {CHANNELS,assertNoPayload} from '../../../../../../packages/contracts/src';
 import {LocalStore} from '../../../../../../packages/persistence-sqlite/src/connection';
 import {createBackup} from '../../../../../../packages/backup/src/create-backup';
+import {backupManifestIdentity} from '../../../../../../packages/backup/src/backup-manifest';
 import {restoreBackup,verifyBackup} from '../../../../../../packages/backup/src/restore-backup';
 import type {BackupDestinationPreference} from '../../../../../../packages/backup/src/backup-destination';
 import type {NativeFileDialogs} from '../../os/file-dialogs';
@@ -33,12 +34,12 @@ export function registerBackupHandlers(register:ValidatedRegistrar,opts:BackupHa
  });
  register(CHANNELS.backupRestore,assertNoPayload,async()=>{
   const selected=await dialogs.chooseFolder(false);if(selected===null)return null;
-  await verifyBackup(selected,migrationsDir);
+  const expectedIdentity=backupManifestIdentity(await verifyBackup(selected,migrationsDir));
   if(!await dialogs.confirmRestore())return null;
   opts.getStore().close();
   let restored:{rollbackPath:string|null}|null=null;
   try{
-   restored=await restoreBackup(selected,dataRoot,migrationsDir);
+   restored=await restoreBackup(selected,dataRoot,migrationsDir,expectedIdentity);
    opts.setStore(opts.reopen());return {restored:true,rollbackPath:restored.rollbackPath};
   }catch(error){
    try{
