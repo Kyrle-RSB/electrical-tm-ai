@@ -13,3 +13,5 @@
 * Additional automated test files and GitHub pull request template, preserving their existing package owner/type boundaries.
 
 These are additive implementation files, **not changes to tenant scope, runtime, financial authority or module ownership**. The independent architecture auditor must still reconcile them against the owner-approved 239-path register. The one-file Vite HTML root exception remains awaiting explicit owner decision.
+
+Native evidence contract v3 binds a clean CI checkout to its canonical Git commit, tree and tracked blob manifest (plus raw checkout hashes, which may differ with line endings). The collector rechecks source identity after the build. Archive-only host tests are labelled as lacking Git provenance. The smoke runner retains the existing seven packaged checks and requires three actual clean process exits with a stable synthetic project ID/date and same-user fake-token persistence/revocation. Native evidence is not formal acceptance or authorization to distribute unsigned binaries.

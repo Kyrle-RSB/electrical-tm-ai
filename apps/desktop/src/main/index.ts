@@ -21,14 +21,15 @@ import {registerFoundationHandlers} from './ipc/register';
 import {LocalOperationQueue} from '../../../../packages/application/src/use-cases/backup-restore';
 import {createCockpitWindow} from './window';
 import {establishSingleInstance} from './os/single-instance';
-import {createStartupRecorder} from './bootstrap';
+import {createStartupRecorder,resolveLifecycleProof} from './bootstrap';
 
 protocol.registerSchemesAsPrivileged([{scheme:'tmapp',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 // Internal construction profile is intentionally separate from the owner's previously
 // verified Phase 1 Mac data. Do not switch to a production data root before migration/backup proofs.
 const isPackagedSmoke=process.argv.includes('--tm-smoke');
+const lifecycleProof=isPackagedSmoke?resolveLifecycleProof(process.env):null;
 const P2_TEST_PROFILE=isPackagedSmoke
-  ? fs.mkdtempSync(path.join(os.tmpdir(),'electrical-tm-packaged-smoke-'))
+  ? lifecycleProof?.profile??fs.mkdtempSync(path.join(os.tmpdir(),'electrical-tm-packaged-smoke-'))
   : path.join(app.getPath('appData'),'ElectricalTMCockpit-P2-Internal');
 fs.mkdirSync(P2_TEST_PROFILE,{recursive:true,mode:0o700});
 app.setPath('userData',P2_TEST_PROFILE);
@@ -182,6 +183,44 @@ async function run(){
   }));
   if(DEV_URL)await mainWindow.loadURL(DEV_URL);else await mainWindow.loadURL(currentUrl);
   recorder.record('renderer.load','pass');
+  if(lifecycleProof){
+    // The runner launches the same packaged executable three separate times.
+    // Every mutation/read here uses the real isolated renderer bridge.
+    if(!app.isPackaged||DEV_URL)throw new Error('Lifecycle proof requires a packaged executable');
+    const stage=lifecycleProof.stage;
+    const result=await win.webContents.executeJavaScript(`(async()=>{
+      const stage=${JSON.stringify(stage)};
+      if(stage==='seed'){
+        if((await window.tmBridge.listProjectsDetailed()).length!==0)throw new Error('Lifecycle seed profile not empty');
+        await window.tmBridge.createProject({code:'LIFECYCLE-001',customer:'Synthetic Lifecycle',siteAddress:'1 Site Rd',details:{name:'Lifecycle fixture',billingAddress:'2 Billing Rd',notes:'Synthetic only'}});
+        await window.tmBridge.storeFakeSecretProof();
+      }
+      const rows=await window.tmBridge.listProjectsDetailed();
+      if(rows.length!==1)throw new Error('Unexpected lifecycle fixture count');
+      const row=rows[0];
+      if(row.project_code!=='LIFECYCLE-001'||row.site_address!=='1 Site Rd'||row.billing_address!=='2 Billing Rd'||row.project_name!=='Lifecycle fixture')throw new Error('Lifecycle fixture mismatch');
+      const before=await window.tmBridge.checkFakeSecretProof();
+      if(stage==='revoked'?(before.stored||before.works):(!before.stored||!before.works))throw new Error('Lifecycle credential state mismatch');
+      if(stage==='reopen'){
+        await window.tmBridge.removeFakeSecretProof();
+        const after=await window.tmBridge.checkFakeSecretProof();
+        if(after.stored||after.works)throw new Error('Lifecycle revocation failed');
+      }
+      if(stage!=='seed'){
+        const deadline=Date.now()+10000;
+        while(Date.now()<deadline&&!document.querySelector('.project-list')?.textContent?.includes('LIFECYCLE-001'))await new Promise(resolve=>setTimeout(resolve,50));
+        if(!document.querySelector('.project-list')?.textContent?.includes('LIFECYCLE-001')||!document.querySelector('.project-list')?.textContent?.includes('2 Billing Rd'))throw new Error('Project not rendered automatically after restart');
+      }
+      return {projectId:row.id,openedUtc:row.opened_utc,credential:stage==='revoked'?'absent':stage==='reopen'?'read-and-revoked':'stored',automaticReload:stage!=='seed'};
+    })()`);
+    if(stage==='seed'){
+      const ciphertext=fs.readFileSync(path.join(P2_TEST_PROFILE,'secrets','phase1-fake.bin'));
+      if(ciphertext.includes(Buffer.from('TEST-FAKE-EXAMPLE')))throw new Error('Lifecycle credential plaintext');
+    }
+    fs.writeFileSync(path.join(P2_TEST_PROFILE,`lifecycle-${stage}.json`),JSON.stringify({schema:'tm-lifecycle-v1',stage,nonce:lifecycleProof.nonce,pid:process.pid,synthetic:true,...result})+'\n',{flag:'wx',mode:0o600});
+    recorder.record('packaged.lifecycle.'+stage,'pass');
+    app.quit();return;
+  }
   if(isPackagedSmoke){
     // A native packaged smoke runs ONLY with its own temporary synthetic profile.
     // This test is not a substitute for a clean-machine or independent human review.

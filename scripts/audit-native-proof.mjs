@@ -1,5 +1,6 @@
 /** Check receipt integrity. A PASS here means the evidence package is intact, NOT that the app passes Phase 2. */
 import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';
+import {validateLifecycleReceipts,NATIVE_REQUIRED_CHECKS} from './run-packaged-smoke.mjs';
 const dir=path.resolve(process.argv[2]||'');
 if(!process.argv[2]||!fs.existsSync(dir)){console.error('Usage: node scripts/audit-native-proof.mjs <extracted-evidence-directory>');process.exit(2)}
 const fail=(reason)=>{console.error(JSON.stringify({integrity:'FAIL',reason}));process.exit(1)};
@@ -20,5 +21,20 @@ try{
  if(r.verdict==='NATIVE_AUTOMATED_SUBSET_PASS'&&
   (r.steps.length!==expectedSteps.length||r.steps.some((x,i)=>x.status!=='PASS'||x.id!==expectedSteps[i])))
   fail('Unsupported PASS conclusion');
+ if(r.contractVersion==='3'){
+  const provenance=JSON.parse(file('source-provenance.json').toString());
+  if(r.sourceProvenance?.status!==provenance.status)fail('Source provenance status mismatch');
+  if(r.verdict==='NATIVE_AUTOMATED_SUBSET_PASS'&&r.sourceAfterVerified!==true)fail('Source drift was not excluded');
+  if(provenance.status==='CLEAN_GIT_CHECKOUT'){
+   if(!/^[a-f0-9]{40}$/.test(provenance.commit)||!/^[a-f0-9]{40}$/.test(provenance.tree)||!Array.isArray(provenance.files)||!provenance.files.length)fail('Incomplete Git provenance');
+   if(provenance.files.some(x=>!['100644','100755'].includes(x.mode)||!(/^[a-f0-9]{40}$/.test(x.blob))||!(/^[a-f0-9]{64}$/.test(x.rawSha256)))||new Set(provenance.files.map(x=>x.path)).size!==provenance.files.length)fail('Invalid tracked manifest entry');
+   const canonical=sha(JSON.stringify(provenance.files.map(({path,mode,blob})=>({path,mode,blob}))));
+   if(canonical!==provenance.manifestSha256||r.sourceProvenance.commit!==provenance.commit||r.sourceProvenance.tree!==provenance.tree||r.sourceProvenance.manifestSha256!==canonical)fail('Git manifest identity mismatch');
+  }else if(provenance.status!=='ARCHIVE_ONLY_NO_GIT_PROOF')fail('Unknown source provenance');
+  if(r.verdict==='NATIVE_AUTOMATED_SUBSET_PASS'){
+   const smoke=JSON.parse(file('logs/native-packaged-smoke.log').toString());
+   if(smoke.verdict!=='PASS'||JSON.stringify(smoke.checks)!==JSON.stringify(NATIVE_REQUIRED_CHECKS)||smoke.lifecycle?.verdict!=='PASS'||smoke.lifecycle?.shutdowns!==3||!validateLifecycleReceipts(smoke.lifecycle?.receipts,smoke.lifecycle?.receipts?.[0]?.nonce??'')||smoke.lifecycle?.runs?.length!==3||smoke.lifecycle.runs.some(x=>x.exitCode!==0||x.failed))fail('Full process lifecycle proof missing');
+  }
+ }
  console.log(JSON.stringify({integrity:'PASS',filesVerified:man.files.length,nativeSubsetVerdict:r.verdict,formalAcceptance:'UNASSESSED',sourceFingerprint:r.testedSourceFingerprint},null,2));
 }catch(e){fail(e.message)}

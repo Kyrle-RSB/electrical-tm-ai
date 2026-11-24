@@ -16,6 +16,7 @@ const execution=args.includes('--execute');
 const plan=args.includes('--plan') || !execution;
 const projectPkg=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'));
 const expectedPkg='pnpm@12.21.0';
+const expectedNode=fs.readFileSync(path.join(root,'.nvmrc'),'utf8').trim();
 const commands=[
   ['install',['--yes',expectedPkg,'install','--frozen-lockfile']],
   ['local-tests',['--yes',expectedPkg,'test']],
@@ -33,6 +34,43 @@ const scrub=(input)=>String(input??'')
   .replace(/\bBearer\s+[^\s]+/gi,'Bearer <REDACTED>')
   .replace(/\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization)\s*[:=]\s*['\"]?[^'\"\s,}]+/gi,'<REDACTED_CREDENTIAL>')
   .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,'<REDACTED_EMAIL>');
+/** Canonical tracked object identities, independent of platform checkout line endings. */
+function gitProvenance(folder,requireGit=false){
+ const git=(...args)=>spawnSync('git',args,{cwd:folder,encoding:'utf8',timeout:30000,maxBuffer:8*1024*1024,windowsHide:true});
+ const inside=git('rev-parse','--show-toplevel');
+ if(inside.status!==0){if(requireGit)throw new Error('CI must run from a Git checkout');return {status:'ARCHIVE_ONLY_NO_GIT_PROOF'};}
+ if(path.relative(fs.realpathSync(folder),fs.realpathSync(inside.stdout.trim()))!=='')throw new Error('Evidence source is not the Git root');
+ const read=(...args)=>{const r=git(...args);if(r.status!==0||r.error)throw new Error('Git provenance command failed');return r.stdout;};
+ const commit=read('rev-parse','HEAD').trim(),tree=read('rev-parse','HEAD^{tree}').trim();
+ if(!/^[a-f0-9]{40}$/.test(commit)||!/^[a-f0-9]{40}$/.test(tree))throw new Error('Invalid Git object identity');
+ if(read('status','--porcelain=v1','--untracked-files=all').trim())throw new Error('Git checkout contains modified or untracked source');
+ const files=read('ls-tree','-r','-z','HEAD').split('\0').filter(Boolean).map(line=>{
+  const match=/^(100644|100755) blob ([a-f0-9]{40})\t([^\0]+)$/.exec(line);
+  if(!match)throw new Error('Unsupported tracked source object');
+  const [,mode,blob,rel]=match,abs=path.resolve(folder,rel);
+  if(!abs.startsWith(path.resolve(folder)+path.sep))throw new Error('Tracked path escapes checkout');
+  const stat=fs.lstatSync(abs);if(!stat.isFile()||stat.isSymbolicLink())throw new Error('Tracked source is not a regular file');
+  return {path:rel,mode,blob,rawSha256:sha(fs.readFileSync(abs))};
+ }).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+ const manifestSha256=sha(JSON.stringify(files.map(({path,mode,blob})=>({path,mode,blob}))));
+ return {status:'CLEAN_GIT_CHECKOUT',commit,tree,manifestSha256,files};
+}
+if(args.includes('--git-provenance-self-test')){
+ const fixture=fs.mkdtempSync(path.join(os.tmpdir(),'tm-git-provenance-'));
+ try{
+  const git=(...args)=>{const r=spawnSync('git',args,{cwd:fixture,encoding:'utf8',windowsHide:true});if(r.status!==0)throw new Error('Synthetic Git setup failed');};
+  git('init','-q');fs.writeFileSync(path.join(fixture,'fixture.txt'),'synthetic\n');git('add','fixture.txt');git('-c','user.name=Proof fixture','-c','user.email=proof@example.invalid','commit','-qm','synthetic fixture');
+  const good=gitProvenance(fixture,true);if(good.status!=='CLEAN_GIT_CHECKOUT'||good.files.length!==1)throw new Error('Clean Git fixture rejected');
+  for(const dirty of ['tracked','untracked']){
+   const file=path.join(fixture,dirty==='tracked'?'fixture.txt':'unexpected.txt');fs.writeFileSync(file,'changed');let refused=false;
+   try{gitProvenance(fixture,true);}catch{refused=true;}if(!refused)throw new Error('Dirty Git fixture accepted');
+   if(dirty==='tracked')git('checkout','--','fixture.txt');else fs.unlinkSync(file);
+  }
+  if(gitProvenance(fixture,true).manifestSha256!==good.manifestSha256)throw new Error('Canonical manifest not stable');
+  console.log('PASS: Git provenance clean, dirty, untracked and stable identity fixtures');
+ }finally{fs.rmSync(fixture,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+ process.exit(0);
+}
 const stopWords=new Set(['node_modules','.git','.vite','out','dist','dist-probe','.local-evidence','coverage','.next']);
 function walk(dir,prefix=''){
   const all=[];
@@ -51,6 +89,7 @@ function checkPrereqs(){
   const failures=[];
   if(!fs.existsSync(path.join(root,'pnpm-workspace.yaml')))failures.push('No pnpm-workspace.yaml at source root');
   if(Number(process.versions.node.split('.')[0])<24)failures.push('Node 24+ required to execute (use Node 24 for preferred proof)');
+  if(process.env.GITHUB_ACTIONS==='true'&&process.versions.node!==expectedNode)failures.push('CI Node version does not match the pinned .nvmrc');
   if(!['darwin','win32'].includes(process.platform))failures.push('Execution must run on macOS or Windows, not Linux');
   if(process.platform==='darwin'&&process.arch!=='arm64')failures.push('This proof targets macOS arm64; separate evidence needed for Mac x64');
   if(process.platform==='win32'&&process.arch!=='x64')failures.push('This proof targets Windows x64');
@@ -68,6 +107,8 @@ const stamp=dateId();
 const out=path.join(root,'.local-evidence',`native-${process.platform}-${process.arch}-${stamp}`);
 fs.mkdirSync(path.join(out,'logs'),{recursive:true,mode:0o700});
 const source=walk(root); const sourceFingerprint=sha(source.map(x=>`${x.path}\t${x.sha256}`).join('\n'));
+const provenance=gitProvenance(root,process.env.GITHUB_ACTIONS==='true');
+fs.writeFileSync(path.join(out,'source-provenance.json'),JSON.stringify(provenance,null,2)+'\n');
 const host={platform:process.platform,architecture:process.arch,release:os.release(),osType:os.type(),node:process.version,pnpmPinned:expectedPkg,appVersion:projectPkg.version,sourceFingerprint};
 fs.writeFileSync(path.join(out,'host.json'),JSON.stringify(host,null,2)+'\n');
 let tests=[];
@@ -95,8 +136,10 @@ if(fs.existsSync(make)){
     }
   };gather(make);
 }
-const overall=tests.length===commands.length&&tests.every(x=>x.status==='PASS')?'NATIVE_AUTOMATED_SUBSET_PASS':'NATIVE_AUTOMATED_SUBSET_FAIL';
-const report={kind:'fork-b-native-proof',contractVersion:'2',verdict:overall,formalAcceptanceVerdict:'UNASSESSED',testedSourceFingerprint:sourceFingerprint,host,steps:tests,artifactHashes:candidates,manualTests:'NOT_EXECUTED_BY_AUTOMATION',independentReview:'NOT_EXECUTED_BY_AUTOMATION',notice:'This report does not certify 30/30 acceptance cases, novice installation, OS secrets storage or release.'};
+let sourceAfterVerified=false;
+try{const after=gitProvenance(root,process.env.GITHUB_ACTIONS==='true');sourceAfterVerified=JSON.stringify(after)===JSON.stringify(provenance)&&sha(walk(root).map(x=>`${x.path}\t${x.sha256}`).join('\n'))===sourceFingerprint;}catch{/* Source drift invalidates otherwise green native steps. */}
+const overall=sourceAfterVerified&&tests.length===commands.length&&tests.every(x=>x.status==='PASS')?'NATIVE_AUTOMATED_SUBSET_PASS':'NATIVE_AUTOMATED_SUBSET_FAIL';
+const report={kind:'fork-b-native-proof',contractVersion:'3',sourceAfterVerified,sourceProvenance:{status:provenance.status,commit:provenance.commit??null,tree:provenance.tree??null,manifestSha256:provenance.manifestSha256??null},verdict:overall,formalAcceptanceVerdict:'UNASSESSED',testedSourceFingerprint:sourceFingerprint,host,steps:tests,artifactHashes:candidates,manualTests:'NOT_EXECUTED_BY_AUTOMATION',independentReview:'NOT_EXECUTED_BY_AUTOMATION',notice:'This report does not certify 30/30 acceptance cases, novice installation, OS secrets storage or release.'};
 fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(report,null,2)+'\n');
 fs.writeFileSync(path.join(out,'manual-evidence-template.json'),JSON.stringify({hostFingerprint:sourceFingerprint,scenarios:[],reviewer:null,notes:'Use only synthetic data; link screenshot file hashes; unrun cases stay NOT_RUN'},null,2)+'\n');
 fs.writeFileSync(path.join(out,'SHARE_SAFELY.md'),`# Fork B native evidence\n\nResult: ${overall}\n\nGenerated from source fingerprint ${sourceFingerprint}.\n\nThis folder contains best-effort redacted logs, hashes and no intentional project data. **Inspect every log before uploading; never upload real keys, customer files or Application Support data.**\n\nAll 30 formal acceptance cases remain unassessed until per-case proof and review.\n`);

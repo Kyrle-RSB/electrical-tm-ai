@@ -14,7 +14,7 @@ An open-source, single-company, single-operator local Electron application in de
 
 ## Local source probe (developers only)
 
-Install Node 24+ (the owner also used Node 26 successfully) and use the exact pinned pnpm version from root `package.json`, then from repository root:
+For reproducible CI use Node 24.22.3 (the `.nvmrc` pin verified on both native runners) and the exact pinned pnpm version from root `package.json`, then from repository root:
 
 ```sh
 npx --yes pnpm@12.21.0 install --frozen-lockfile
