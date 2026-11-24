@@ -12,6 +12,9 @@ function isSafeRelative(p:string):boolean{
   return normalized===p&&!p.startsWith('../')&&!p.includes('/../')&&!p.startsWith('./')&&p!=='..';
 }
 export async function verifyBackup(backupPath:string,migrationsDir?:string):Promise<Manifest>{
+  // Check the archive tree before opening its manifest or any listed content.
+  const onDisk=await traverseRegularFiles(backupPath);
+  if(!onDisk.includes('manifest.json'))throw new Error('Backup missing manifest');
   const p=path.join(backupPath,'manifest.json');
   const m=JSON.parse(await fs.promises.readFile(p,'utf8')) as Manifest;
   if(m.schema!=='tm-phase1-backup-v1'||!Array.isArray(m.files)||m.files.length===0||m.files.length>10000)throw new Error('Unsupported backup manifest');
@@ -28,7 +31,6 @@ export async function verifyBackup(backupPath:string,migrationsDir?:string):Prom
     const stat=await fs.promises.stat(actual);
     if(!stat.isFile()||stat.size!==entry.bytes||await hashFile(actual)!==entry.sha256)throw new Error(`Backup integrity failure: ${entry.path}`);
   }
-  const onDisk=await traverseRegularFiles(backupPath);
   if(onDisk.length!==m.files.length+1||onDisk.some(f=>f!=='manifest.json'&&!listed.has(f.split(path.sep).join('/'))))throw new Error('Backup contains unexpected files');
   if(!listed.has('db/app.sqlite'))throw new Error('Backup missing SQLite database');
   // SQLite may create transient WAL/SHM files on open; inspect a disposable copy, not the archive itself.

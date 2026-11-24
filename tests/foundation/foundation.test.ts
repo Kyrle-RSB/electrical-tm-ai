@@ -263,6 +263,14 @@ test('repository audit rejects unexplained paths and floating workflow action ve
  const dir=mkTemp();try{
   fs.mkdirSync(path.join(dir,'scripts'));fs.mkdirSync(path.join(dir,'.github','workflows'),{recursive:true});
   fs.copyFileSync('scripts/audit-repo-structure.mjs',path.join(dir,'scripts','audit-repo-structure.mjs'));
+  // The audit now uses the pinned TypeScript parser and project resolution config.
+  // Preserve the original extra-path/action-pin failure and clean-pass oracles.
+  fs.mkdirSync(path.join(dir,'apps','desktop'),{recursive:true});
+  fs.mkdirSync(path.join(dir,'node_modules'),{recursive:true});
+  fs.symlinkSync(path.dirname(require.resolve('typescript/package.json')),path.join(dir,'node_modules','typescript'),process.platform==='win32'?'junction':'dir');
+  fs.copyFileSync('tsconfig.base.json',path.join(dir,'tsconfig.base.json'));
+  fs.copyFileSync('apps/desktop/tsconfig.json',path.join(dir,'apps','desktop','tsconfig.json'));
+
   const workflow=path.join(dir,'.github','workflows','ci.yml');
   fs.writeFileSync(workflow,'steps:\n  - uses: actions/checkout@v4\n');
   fs.writeFileSync(path.join(dir,'unexpected-source.ts'),'export const x=1;');
@@ -275,5 +283,29 @@ test('repository audit rejects unexplained paths and floating workflow action ve
   fs.writeFileSync(workflow,'steps:\n  - uses: actions/checkout@'+'a'.repeat(40)+'\n');
   const success=spawnSync(process.execPath,[path.join(dir,'scripts','audit-repo-structure.mjs')],{encoding:'utf8',windowsHide:true});
   assert.equal(success.status,0,success.stderr);assert.equal(JSON.parse(success.stdout).status,'PASS');
+ }finally{rm(dir);}
+});
+
+test('database mutation operation IDs cannot be replayed after reopen or reused across channels',async()=>{
+ const dir=mkTemp();try{
+  const primary={id:21},url='tmapp://app/index.html',frame:any={url};frame.top=frame;
+  const handlers=new Map<string,(event:any,request:any)=>Promise<unknown>>();
+  const file=path.join(dir,'app.sqlite');let db=new LocalStore(file);db.initializeFictionalCompany();
+  try{
+   const event={sender:primary,senderFrame:frame};
+   const register=()=>registerFoundationHandlers({handle:(ch,h)=>handlers.set(ch,h)},{primary,url,getStore:()=>db});
+   register();const id=db.createProject({code:'REPLAY',customer:'Before',siteAddress:'Site'});
+   const op=crypto.randomUUID();const invoke=(ch:string,requestId:string,payload:unknown)=>handlers.get(ch)!(event,{requestId,version:1,payload});
+   await invoke(CHANNELS.projectEdit,op,{id,code:'REPLAY',customer:'After',siteAddress:'Site'});
+   db.close();db=new LocalStore(file);handlers.clear();register();
+   await assert.rejects(()=>invoke(CHANNELS.projectEdit,op,{id,code:'REPLAY',customer:'Unexpected replay',siteAddress:'Site'}),/duplicate mutation/);
+   await assert.rejects(()=>invoke(CHANNELS.projectStatus,op,{id,status:'archived'}),/duplicate mutation/);
+   assert.equal(db.listProjectsDetailed()[0].customer_name,'After');assert.equal(db.listProjectsDetailed()[0].status,'active');
+   assert.equal((db.db.prepare('SELECT count(*) AS n FROM audit_events').get() as {n:number}).n,2);
+   const failed=crypto.randomUUID();
+   await assert.rejects(()=>invoke(CHANNELS.projectAdd,failed,{code:'REPLAY',customer:'Duplicate',siteAddress:'Site'}));
+   await invoke(CHANNELS.projectAdd,failed,{code:'RECOVERED',customer:'Recovered',siteAddress:'Site'});
+   assert.equal(db.listProjects().length,2);
+  }finally{db.close();}
  }finally{rm(dir);}
 });

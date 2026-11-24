@@ -3,6 +3,7 @@
 This build is **not ready for actual client information**. Open the standalone Electron window using the source development commands in the root README. The app uses an isolated internal test profile.
 
 - Enter a unique synthetic project code and fictional customer/site address. Click **Create fictional project**.
+- Enter a fictional project name, separate billing address and notes if needed. Edit saves those fields together with project code/customer/site; the original project ID remains unchanged.
 - Saved projects load automatically after app restart. Click **Refresh** to verify.
 - Each project has an Archive/Reopen button, preserving audit history rather than deleting historical records.
 - The Business profile form stores a fictional company identity, contact address, tax ID and contractor-license ID in the local SQLite database. Do not input genuine credentials into the proof app.

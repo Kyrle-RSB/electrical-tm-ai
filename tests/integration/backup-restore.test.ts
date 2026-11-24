@@ -105,3 +105,20 @@ test('backup and restore reject directory aliases overlapping live application d
   }finally{db.close();}
  }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('backup refuses a managed vault root junction or symlink to unrelated files',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-vault-root-'));
+ const live=path.join(root,'live'),external=path.join(root,'outside'),destination=path.join(root,'backups');
+ try{
+  const db=new LocalStore(path.join(live,'db','app.sqlite'),migrations);
+  try{
+   db.initializeFictionalCompany();const id=db.createProject({code:'SAFE-ROOT',customer:'Synthetic',siteAddress:'1 Test Road'});
+   fs.mkdirSync(external);const canary=path.join(external,'synthetic-private.txt');fs.writeFileSync(canary,'SYNTHETIC CANARY');
+   fs.symlinkSync(external,path.join(live,'vault'),process.platform==='win32'?'junction':'dir');
+   await assert.rejects(createBackup(db,live,destination),/Unsupported filesystem object/);
+   assert.deepEqual(db.listProjects().map(p=>p.id),[id]);
+   assert.equal(fs.readFileSync(canary,'utf8'),'SYNTHETIC CANARY');
+   assert.equal(fs.existsSync(destination)?fs.readdirSync(destination).length:0,0);
+  }finally{db.close();}
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

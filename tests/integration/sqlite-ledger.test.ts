@@ -6,7 +6,7 @@ const temp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'tm-p2-sqlite-'));
 test('historical migrations apply exactly once, business and project details survive restart',()=>{
  const dir=temp();try{
   const file=path.join(dir,'app.sqlite');let store=new LocalStore(file);store.initializeFictionalCompany();
-  assert.deepEqual((store.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as {version:number}[]).map(x=>x.version),[1,2,3,4,5]);
+  assert.deepEqual((store.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as {version:number}[]).map(x=>x.version),[1,2,3,4,5,6]);
   const id=store.createProject({code:'SITE-01',customer:'Synthetic Customer',siteAddress:'101 Example'});
   store.updateBusinessProfile({legalName:'Demo Electric',tradeName:'Demo',phone:'555',email:'demo@example.test',mailingAddress:'PO Box 2',taxId:'TEST-TAX',contractorLicense:'TEST-ELEC'});
   store.updateProjectDetails(id,{name:'Panel change',billingAddress:'100 Billing St',notes:'Saturday work'});
@@ -14,7 +14,7 @@ test('historical migrations apply exactly once, business and project details sur
   assert.equal(store.getBusinessProfile().contractorLicense,'TEST-ELEC');
   assert.equal(store.listProjectsDetailed()[0].billing_address,'100 Billing St');
   assert.equal(store.listProjectsDetailed()[0].status,'complete');
-  assert.equal((store.db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get() as any).count,5);
+  assert.equal((store.db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get() as any).count,6);
   store.setProjectStatus(id,'archived');store.setProjectStatus(id,'active');
   assert.equal(store.listProjectsDetailed()[0].status,'active');
   store.close();
@@ -27,4 +27,19 @@ test('migration tamper detection refuses altered installed SQL',()=>{
   fs.appendFileSync(path.join(tmp,'0002-material-dispositions.sql'),'\n-- tamper\n');
   assert.throws(()=>new LocalStore(dbFile,tmp),/Migration history mismatch/);
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('missing middle migration record fails closed without rewriting history',()=>{
+ const dir=temp();try{
+  const file=path.join(dir,'app.sqlite');let db=new LocalStore(file);db.initializeFictionalCompany();
+  db.createProject({code:'HISTORY-GAP',customer:'Synthetic',siteAddress:'1 Test Road'});
+  db.db.prepare('DELETE FROM schema_migrations WHERE version=2').run();
+  const before=db.db.prepare('SELECT version,checksum FROM schema_migrations ORDER BY version').all();db.close();
+  assert.throws(()=>new LocalStore(file),/Migration history mismatch/);
+  const {DatabaseSync}=require('node:sqlite') as typeof import('node:sqlite');
+  const inspect=new DatabaseSync(file,{readOnly:true});try{
+   assert.deepEqual(inspect.prepare('SELECT version,checksum FROM schema_migrations ORDER BY version').all(),before);
+   assert.equal((inspect.prepare('SELECT count(*) AS n FROM projects').get() as {n:number}).n,1);
+  }finally{inspect.close();}
+ }finally{fs.rmSync(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });

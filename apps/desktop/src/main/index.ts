@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {LocalStore} from '../../../../packages/persistence-sqlite/src/connection';
-import {CHANNELS,assertEnvelope,assertNoPayload,createRequestReplayGuard,type IpcResult} from '../../../../packages/contracts/src';
+import {CHANNELS,assertEnvelope,assertNoPayload,createRequestReplayGuard,requestCorrelationId,type IpcResult} from '../../../../packages/contracts/src';
 import {classifyIpcError} from '../../../../packages/contracts/src/ipc/error-envelope';
 import {importImageFromPickedFile} from '../../../../packages/asset-vault/src/import-file';
 import {verifyManagedImage} from '../../../../packages/asset-vault/src/verify-image';
@@ -73,7 +73,7 @@ async function run(){
   const claimRequest=createRequestReplayGuard();
   const safeHandle=(channel:string,handler:(event:Electron.IpcMainInvokeEvent,request:unknown)=>Promise<unknown>)=>{
     ipcMain.handle(channel,async(event,request):Promise<IpcResult<unknown>>=>{
-      let requestId:string=randomUUID();
+      let requestId:string=requestCorrelationId(request)??randomUUID();
       try{
         if(!isTrustedSender(event as any,mainWindow.webContents as any,currentUrl))throw new Error('SECURITY: sender rejected');
         assertEnvelope(request);

@@ -10,7 +10,13 @@ export async function hashFile(file:string):Promise<string>{
   return crypto.createHash('sha256').update(await fs.promises.readFile(file)).digest('hex');
 }
 export async function traverseRegularFiles(root:string,rel=''):Promise<string[]> {
-  if(!fs.existsSync(root))return [];
+  // A managed folder itself may be a symlink/junction, not just its children.
+  // Never traverse it, even if all of its descendants are ordinary files.
+  const current=path.join(root,rel);
+  let stat:fs.Stats;
+  try{stat=await fs.promises.lstat(current);}
+  catch(error){if(!rel&&(error as NodeJS.ErrnoException).code==='ENOENT')return [];throw error;}
+  if(stat.isSymbolicLink()||!stat.isDirectory())throw new Error('Unsupported filesystem object in data vault');
   const output:string[]=[];
   for(const entry of await fs.promises.readdir(path.join(root,rel),{withFileTypes:true})){
     if(entry.isSymbolicLink()||(!entry.isDirectory()&&!entry.isFile()))throw new Error('Unsupported filesystem object in data vault');

@@ -53,7 +53,7 @@ test('interrupted SQLite schema transaction is rolled back on process restart',(
    assert.equal(db.db.prepare("SELECT name FROM sqlite_master WHERE name='interrupted_probe'").get(),undefined);
    assert.equal((db.db.prepare('PRAGMA quick_check').get() as any).quick_check,'ok');
    assert.deepEqual(db.db.prepare('PRAGMA foreign_key_check').all(),[]);
-   assert.deepEqual(db.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r:any)=>r.version),[1,2,3,4,5]);
+   assert.deepEqual(db.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r:any)=>r.version),[1,2,3,4,5,6]);
   }finally{db.close();}
  }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
