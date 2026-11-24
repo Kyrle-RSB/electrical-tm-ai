@@ -3,29 +3,19 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import {DatabaseSync} from 'node:sqlite';
-import { hashFile, traverseRegularFiles, Manifest } from './create-backup';
+import { hashFile, traverseRegularFiles } from './create-backup';
+import {assertReferencedEvidence,validateManifest,type Manifest} from './backup-manifest';
 import { LocalStore } from '../../persistence-sqlite/src/connection';
 import {canonicalBackupPath,backupPathsOverlap} from './backup-destination';
-function isSafeRelative(p:string):boolean{
-  if(!p||p.includes('\\')||path.posix.isAbsolute(p))return false;
-  const normalized=path.posix.normalize(p);
-  return normalized===p&&!p.startsWith('../')&&!p.includes('/../')&&!p.startsWith('./')&&p!=='..';
-}
 export async function verifyBackup(backupPath:string,migrationsDir?:string):Promise<Manifest>{
   // Check the archive tree before opening its manifest or any listed content.
   const onDisk=await traverseRegularFiles(backupPath);
   if(!onDisk.includes('manifest.json'))throw new Error('Backup missing manifest');
   const p=path.join(backupPath,'manifest.json');
-  const m=JSON.parse(await fs.promises.readFile(p,'utf8')) as Manifest;
-  if(m.schema!=='tm-phase1-backup-v1'||!Array.isArray(m.files)||m.files.length===0||m.files.length>10000)throw new Error('Unsupported backup manifest');
-  if(typeof m.createdUtc!=='string'||!Array.isArray(m.excluded))throw new Error('Malformed backup metadata');
-  const listed=new Set<string>();
+  if((await fs.promises.stat(p)).size>8*1024*1024)throw new Error('Backup manifest exceeds size limit');
+  const m=validateManifest(JSON.parse(await fs.promises.readFile(p,'utf8')));
+  const listed=new Set(m.files.map(entry=>entry.path));
   for(const entry of m.files){
-    if(!entry||typeof entry.path!=='string'||!isSafeRelative(entry.path)||listed.has(entry.path))throw new Error('Unsafe backup manifest path');
-    if(!/^(db\/app\.sqlite|vault\/.+|artifacts\/.+)$/.test(entry.path)||
-      !Number.isSafeInteger(entry.bytes)||entry.bytes<0||typeof entry.sha256!=='string'||!/^[0-9a-f]{64}$/.test(entry.sha256))
-      throw new Error('Malformed backup file entry');
-    listed.add(entry.path);
     const actual=path.join(backupPath,entry.path);
     if((await fs.promises.lstat(actual)).isSymbolicLink())throw new Error('Backup contains symlink');
     const stat=await fs.promises.stat(actual);
@@ -43,6 +33,7 @@ export async function verifyBackup(backupPath:string,migrationsDir?:string):Prom
       const integrity=backupDb.prepare('PRAGMA quick_check').get() as {quick_check:string}|undefined;
       if(integrity?.quick_check!=='ok')throw new Error('Backup SQLite integrity check failed');
       if(backupDb.prepare('PRAGMA foreign_key_check').all().length)throw new Error('Backup contains invalid foreign keys');
+      assertReferencedEvidence(backupDb,m);
       if(migrationsDir){
         const schemaTable=backupDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get();
         if(!schemaTable)throw new Error('Backup does not contain Fork B schema migration history');

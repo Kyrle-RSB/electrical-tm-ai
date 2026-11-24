@@ -2,12 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import {backup} from 'node:sqlite';
+import {backup,DatabaseSync} from 'node:sqlite';
 import { LocalStore } from '../../persistence-sqlite/src/connection';
 import {canonicalBackupPath,backupPathsOverlap} from './backup-destination';
-export type Manifest = {schema:'tm-phase1-backup-v1';createdUtc:string;files:Array<{path:string;bytes:number;sha256:string}>;excluded:string[]};
+import {assertReferencedEvidence,validateManifest,type Manifest} from './backup-manifest';
+export type {Manifest} from './backup-manifest';
 export async function hashFile(file:string):Promise<string>{
-  return crypto.createHash('sha256').update(await fs.promises.readFile(file)).digest('hex');
+  const hash=crypto.createHash('sha256');
+  for await(const chunk of fs.createReadStream(file))hash.update(chunk);
+  return hash.digest('hex');
 }
 export async function traverseRegularFiles(root:string,rel=''):Promise<string[]> {
   // A managed folder itself may be a symlink/junction, not just its children.
@@ -52,6 +55,15 @@ export async function createBackup(store:LocalStore,dataRoot:string,backupDestin
       manifest.files.push({path:relative.split(path.sep).join('/'),bytes:(await fs.promises.stat(filepath)).size,sha256:await hashFile(filepath)});
     }
     manifest.files.sort((a,b)=>a.path.localeCompare(b.path));
+    validateManifest(manifest);
+    // Read a disposable copy: opening a WAL database may create sidecars even read-only.
+    const inspectionDir=await fs.promises.mkdtemp(path.join(os.tmpdir(),'tm-backup-inspect-'));
+    try{
+      const copy=path.join(inspectionDir,'app.sqlite');
+      await fs.promises.copyFile(path.join(temp,'db','app.sqlite'),copy);
+      const snapshot=new DatabaseSync(copy,{readOnly:true});
+      try{assertReferencedEvidence(snapshot,manifest);}finally{snapshot.close();}
+    }finally{await fs.promises.rm(inspectionDir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
     await fs.promises.writeFile(path.join(temp,'manifest.json'),JSON.stringify(manifest,null,2),{mode:0o600,flag:'wx'});
     await fs.promises.rename(temp,finished);
     return {backupPath:finished,manifest};

@@ -18,15 +18,18 @@ jobs:
         with:
           node-version-file: '.nvmrc'
           cache: pnpm
+      - run: node scripts/audit-requirements.mjs --bootstrap
       - run: pnpm install --frozen-lockfile
       - run: pnpm proof:typecheck
       - run: pnpm desktop:typecheck
       - run: pnpm test
+      - run: pnpm lint
+      - run: node scripts/audit-requirements.mjs --self-test --toolchain-negative --bootstrap
       - run: node scripts/audit-repo-structure.mjs --self-test
       - run: node scripts/capture-native-proof.mjs --git-provenance-self-test
       - run: node scripts/run-packaged-smoke.mjs --self-test
       - run: node scripts/audit-source-secrets.mjs
-      - run: node scripts/verify-licenses.mjs
+      - run: node scripts/verify-licenses.mjs --self-test
       - run: node scripts/audit-requirements.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure()

@@ -122,3 +122,35 @@ test('backup refuses a managed vault root junction or symlink to unrelated files
   }finally{db.close();}
  }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+// P2-AC12/14: a manifest may be internally consistent while omitting DB-owned evidence.
+test('backup refuses missing DB-referenced receipt and issued PDF; restore rejects a rehashed incomplete archive',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-reference-integrity-'));
+ const live=path.join(root,'live'),dest=path.join(root,'backups');
+ const hash=(b:Buffer)=>crypto.createHash('sha256').update(b).digest('hex');
+ const receipt=Buffer.from('synthetic receipt evidence');const pdf=Buffer.from('%PDF-1.4\nsynthetic issued evidence');
+ const locator='images/synthetic-receipt.png',pdfLocator='issued/synthetic.pdf';
+ const stamp='2026-11-24T00:00:00Z';
+ let db:LocalStore|undefined;
+ try{
+  db=new LocalStore(path.join(live,'db','app.sqlite'),migrations);db.initializeFictionalCompany();
+  const project=db.createProject({code:'REFERENCES',customer:'Synthetic',siteAddress:'Site'});
+  db.db.prepare('INSERT INTO purchase_sources(id,business_id,source_hash,kind,vault_locator,added_utc) VALUES(?,?,?,?,?,?)').run('synthetic-source','local',hash(receipt),'receipt',locator,stamp);
+  db.db.prepare('INSERT INTO issued_invoices(id,project_id,invoice_number,immutable_body_json,issued_utc,amount_cents,pdf_sha256,pdf_locator) VALUES(?,?,?,?,?,?,?,?)').run('synthetic-invoice',project,'REF-01','{}',stamp,100,hash(pdf),pdfLocator);
+  await assert.rejects(createBackup(db,live,dest),/Referenced backup evidence missing or altered/);
+  fs.mkdirSync(path.join(live,'vault','images'),{recursive:true});fs.writeFileSync(path.join(live,'vault',locator),receipt);
+  fs.mkdirSync(path.join(live,'artifacts','issued'),{recursive:true});fs.writeFileSync(path.join(live,'artifacts',pdfLocator),pdf);
+  const saved=await createBackup(db,live,dest);await verifyBackup(saved.backupPath,migrations);
+  const relative='artifacts/'+pdfLocator;
+  fs.rmSync(path.join(saved.backupPath,relative));
+  const manifestFile=path.join(saved.backupPath,'manifest.json');
+  const manifest=JSON.parse(fs.readFileSync(manifestFile,'utf8'));
+  manifest.files=manifest.files.filter((entry:{path:string})=>entry.path!==relative);
+  fs.writeFileSync(manifestFile,JSON.stringify(manifest));
+  db.close();db=undefined;
+  const before=fs.readFileSync(path.join(live,'db','app.sqlite'));
+  await assert.rejects(restoreBackup(saved.backupPath,live,migrations),/Referenced backup evidence missing or altered/);
+  assert.deepEqual(fs.readFileSync(path.join(live,'db','app.sqlite')),before);
+  assert.deepEqual(fs.readFileSync(path.join(live,'artifacts',pdfLocator)),pdf);
+ }finally{db?.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

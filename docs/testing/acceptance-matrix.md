@@ -38,3 +38,339 @@
 **Evidence receipt for each case must include:** source/archive SHA, exact test command, host OS and architecture, build version, synthetic fixture/checksum, observed outcome, reviewer type, date, and whether the test was mock/unit/native/packaged/novice.
 
 **Formal full Phase 2 acceptance:** 30/30 verified in each required environment, reviewed, with owner sign-off. Do not promote individual Node-only test passes to cross-platform PASS.
+
+## Source traceability inventory
+
+The following machine-readable inventory preserves each original Phase 2 task and mapped case. `implementedPaths` means file present, not behavior certified; `pendingPaths` explicitly records original implementation ownership gaps. Update in the same commit when an approved path is implemented. No private planning records are published.
+
+```json
+[
+  {
+    "task": "P2-F01",
+    "requirements": [
+      "APP-001",
+      "FB-R26"
+    ],
+    "cases": [
+      "P2-AC01",
+      "P2-AC02",
+      "P2-AC03",
+      "P2-AC30"
+    ],
+    "implementedPaths": [
+      "README.md",
+      "LICENSE",
+      "CONTRIBUTING.md",
+      "SECURITY.md",
+      "PRIVACY.md",
+      ".npmrc",
+      "pnpm-workspace.yaml",
+      "pnpm-lock.yaml",
+      "package.json",
+      "tsconfig.base.json",
+      "eslint.config.mjs",
+      "scripts/audit-repo-structure.mjs",
+      "scripts/audit-source-secrets.mjs",
+      ".github/workflows/ci.yml",
+      ".github/workflows/security.yml",
+      ".github/PULL_REQUEST_TEMPLATE.md"
+    ],
+    "pendingPaths": []
+  },
+  {
+    "task": "P2-F02",
+    "requirements": [
+      "APP-001",
+      "APP-002",
+      "FB-R01"
+    ],
+    "cases": [
+      "P2-AC04",
+      "P2-AC05",
+      "P2-AC06",
+      "P2-AC07",
+      "P2-AC18",
+      "P2-AC28"
+    ],
+    "implementedPaths": [
+      "apps/desktop/src/main/index.ts",
+      "apps/desktop/src/main/bootstrap.ts",
+      "apps/desktop/src/main/window.ts",
+      "apps/desktop/src/main/os/single-instance.ts",
+      "apps/desktop/forge.config.ts",
+      "apps/desktop/vite.main.config.ts",
+      "apps/desktop/vite.preload.config.ts",
+      "apps/desktop/vite.renderer.config.ts",
+      "apps/desktop/src/renderer/main.tsx"
+    ],
+    "pendingPaths": [],
+    "approvedExceptions": {
+      "apps/desktop/src/renderer/index.html": "apps/desktop/index.html"
+    }
+  },
+  {
+    "task": "P2-F03",
+    "requirements": [
+      "APP-002",
+      "FB-R27"
+    ],
+    "cases": [
+      "P2-AC03",
+      "P2-AC17",
+      "P2-AC18"
+    ],
+    "implementedPaths": [
+      "packages/contracts/src/index.ts",
+      "packages/contracts/src/ipc/channel-map.ts",
+      "packages/contracts/src/ipc/request-envelope.ts",
+      "packages/contracts/src/ipc/error-envelope.ts",
+      "packages/contracts/src/ipc/projects.contract.ts",
+      "apps/desktop/src/main/ipc/register.ts",
+      "apps/desktop/src/main/ipc/sender-guard.ts",
+      "apps/desktop/src/preload/index.ts",
+      "apps/desktop/src/preload/bridge.ts",
+      "apps/desktop/src/preload/globals.d.ts",
+      "tests/security/ipc-security.test.ts"
+    ],
+    "pendingPaths": []
+  },
+  {
+    "task": "P2-F04",
+    "requirements": [
+      "APP-003",
+      "FB-R03"
+    ],
+    "cases": [
+      "P2-AC08",
+      "P2-AC09",
+      "P2-AC10",
+      "P2-AC11"
+    ],
+    "implementedPaths": [
+      "packages/persistence-sqlite/src/connection.ts",
+      "packages/persistence-sqlite/src/migrations/0001-initial.sql",
+      "packages/persistence-sqlite/src/migrations/0002-material-dispositions.sql",
+      "packages/persistence-sqlite/src/migrations/0003-overhead-profit.sql",
+      "packages/persistence-sqlite/src/migrations/0004-payment-receipts-branding.sql",
+      "packages/persistence-sqlite/src/transactions/unit-of-work.ts",
+      "packages/persistence-sqlite/src/repos/project-repo.ts",
+      "tests/integration/sqlite-ledger.test.ts"
+    ],
+    "pendingPaths": [
+      "apps/desktop/src/main/os/paths.ts"
+    ]
+  },
+  {
+    "task": "P2-F05",
+    "requirements": [
+      "APP-004"
+    ],
+    "cases": [
+      "P2-AC08",
+      "P2-AC09",
+      "P2-AC22",
+      "P2-AC23",
+      "P2-AC24",
+      "P2-AC25"
+    ],
+    "implementedPaths": [
+      "packages/domain/src/index.ts",
+      "packages/domain/src/shared/money.ts",
+      "packages/domain/src/shared/quantity.ts",
+      "packages/domain/src/labor/rate-snapshots.ts",
+      "packages/domain/src/overhead/allocation.ts",
+      "packages/domain/src/profitability/estimated-profit.ts",
+      "packages/application/src/ports/port-types.ts",
+      "tests/unit/money.test.ts",
+      "tests/unit/overhead-allocation.test.ts",
+      "tests/unit/estimated-profit.test.ts"
+    ],
+    "pendingPaths": [
+      "packages/domain/src/shared/clock.ts",
+      "packages/domain/src/materials/markup.ts"
+    ]
+  },
+  {
+    "task": "P2-F06",
+    "requirements": [
+      "APP-005",
+      "FB-R27"
+    ],
+    "cases": [
+      "P2-AC15",
+      "P2-AC16"
+    ],
+    "implementedPaths": [
+      "apps/desktop/src/main/os/keychain.ts",
+      "apps/desktop/src/main/ipc/handlers/settings.ts",
+      "packages/application/src/ports/port-types.ts",
+      "tests/security/no-secret-leak.test.ts",
+      "docs/user/privacy-secrets.md"
+    ],
+    "pendingPaths": []
+  },
+  {
+    "task": "P2-F07",
+    "requirements": [
+      "APP-006",
+      "FB-R18",
+      "FB-R28"
+    ],
+    "cases": [
+      "P2-AC19",
+      "P2-AC20",
+      "P2-AC21",
+      "P2-AC22"
+    ],
+    "implementedPaths": [
+      "packages/asset-vault/src/import-file.ts",
+      "packages/asset-vault/src/verify-image.ts",
+      "packages/asset-vault/src/hash.ts",
+      "packages/asset-vault/src/resolve-managed-asset.ts",
+      "packages/pdf/src/invoices/render-invoice.ts",
+      "packages/pdf/src/common/stored-pdf.ts",
+      "tests/security/asset-import.test.ts"
+    ],
+    "pendingPaths": [
+      "apps/desktop/src/main/os/file-dialogs.ts"
+    ]
+  },
+  {
+    "task": "P2-F08",
+    "requirements": [
+      "APP-006",
+      "FB-R17",
+      "FB-R28"
+    ],
+    "cases": [
+      "P2-AC11",
+      "P2-AC12",
+      "P2-AC13",
+      "P2-AC14"
+    ],
+    "implementedPaths": [
+      "packages/backup/src/create-backup.ts",
+      "packages/backup/src/restore-backup.ts",
+      "packages/backup/src/backup-manifest.ts",
+      "packages/backup/src/backup-destination.ts",
+      "apps/desktop/src/renderer/features/settings/BackupLocation.tsx",
+      "tests/integration/backup-restore.test.ts"
+    ],
+    "pendingPaths": [
+      "apps/desktop/src/main/ipc/handlers/backups.ts"
+    ]
+  },
+  {
+    "task": "P2-F09",
+    "requirements": [
+      "APP-003",
+      "FB-R03",
+      "PRJ-001"
+    ],
+    "cases": [
+      "P2-AC07",
+      "P2-AC26"
+    ],
+    "implementedPaths": [
+      "packages/application/src/use-cases/projects.ts",
+      "packages/persistence-sqlite/src/repos/project-repo.ts",
+      "apps/desktop/src/main/ipc/handlers/projects.ts",
+      "apps/desktop/src/main/ipc/handlers/settings.ts",
+      "apps/desktop/src/renderer/features/projects/ProjectsPanel.tsx",
+      "apps/desktop/src/renderer/features/settings/BusinessBranding.tsx",
+      "packages/contracts/src/ipc/projects.contract.ts"
+    ],
+    "pendingPaths": [
+      "tests/e2e/cockpit-flow.spec.ts"
+    ]
+  },
+  {
+    "task": "P2-F10",
+    "requirements": [
+      "FB-R10",
+      "UX-001",
+      "UX-003",
+      "UX-008"
+    ],
+    "cases": [
+      "P2-AC18",
+      "P2-AC27"
+    ],
+    "implementedPaths": [
+      "apps/desktop/src/renderer/App.tsx",
+      "apps/desktop/src/renderer/shell/CockpitShell.tsx",
+      "apps/desktop/src/renderer/components/GlassCard.tsx",
+      "apps/desktop/src/renderer/theme/tokens.css",
+      "apps/desktop/src/renderer/theme/system-theme.ts",
+      "apps/desktop/src/renderer/features/help/HelpDrawer.tsx",
+      "docs/user/00-start-here.md"
+    ],
+    "pendingPaths": []
+  },
+  {
+    "task": "P2-F11",
+    "requirements": [
+      "APP-002",
+      "FB-R02"
+    ],
+    "cases": [
+      "P2-AC01",
+      "P2-AC04",
+      "P2-AC05",
+      "P2-AC06",
+      "P2-AC07",
+      "P2-AC15",
+      "P2-AC29",
+      "P2-AC30"
+    ],
+    "implementedPaths": [
+      "apps/desktop/forge.config.ts",
+      ".github/workflows/package-macos.yml",
+      ".github/workflows/package-windows.yml",
+      "scripts/run-packaged-smoke.mjs",
+      "tests/platform/macos-install.md",
+      "tests/platform/windows-install.md",
+      "docs/releases/RELEASE-CHECKLIST.md",
+      "docs/user/install-macos.md",
+      "docs/user/install-windows.md"
+    ],
+    "pendingPaths": [
+      "apps/desktop/assets/icon.icns",
+      "apps/desktop/assets/icon.ico"
+    ]
+  },
+  {
+    "task": "P2-F12",
+    "requirements": [
+      "APP-001",
+      "DOC-001",
+      "FB-R26"
+    ],
+    "cases": [
+      "P2-AC01",
+      "P2-AC02",
+      "P2-AC03",
+      "P2-AC26",
+      "P2-AC28",
+      "P2-AC29",
+      "P2-AC30"
+    ],
+    "implementedPaths": [
+      ".github/workflows/ci.yml",
+      ".github/workflows/security.yml",
+      "scripts/audit-requirements.mjs",
+      "scripts/verify-licenses.mjs",
+      "scripts/make-fixtures.mjs",
+      "scripts/run-packaged-smoke.mjs",
+      "docs/testing/acceptance-matrix.md",
+      "docs/testing/clean-machine-install.md",
+      "docs/testing/security-and-financial-tests.md",
+      "docs/user/00-start-here.md",
+      "docs/user/backups-restore.md",
+      "docs/build-journal/iteration-template.md",
+      "docs/releases/RELEASE-CHECKLIST.md"
+    ],
+    "pendingPaths": []
+  }
+]
+```
