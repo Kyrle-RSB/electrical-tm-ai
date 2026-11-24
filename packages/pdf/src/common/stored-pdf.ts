@@ -17,11 +17,12 @@ export async function storeImmutablePdf(artifactsRoot:string,pdf:Buffer):Promise
    const handle=await fs.promises.open(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
    try{
     const opened=await handle.stat();
-    if(opened.dev!==stat.dev||opened.ino!==stat.ino||opened.size!==stat.size||opened.nlink!==1)throw new Error('Immutable PDF changed during inspection');
+    if(!opened.isFile()||opened.dev!==stat.dev||opened.ino!==stat.ino||opened.size!==stat.size||opened.nlink!==1||opened.mtimeMs!==stat.mtimeMs||opened.ctimeMs!==stat.ctimeMs)throw new Error('Immutable PDF changed during inspection');
     const previous=Buffer.alloc(pdf.length);
-    const {bytesRead}=await handle.read(previous,0,previous.length,0);
+    let offset=0;
+    while(offset<previous.length){const {bytesRead}=await handle.read(previous,offset,previous.length-offset,offset);if(!bytesRead)throw new Error('Immutable PDF changed during inspection');offset+=bytesRead;}
     const after=await handle.stat(),named=await fs.promises.lstat(file);
-    if(bytesRead!==pdf.length||after.size!==pdf.length||after.nlink!==1||after.mtimeMs!==opened.mtimeMs||!named.isFile()||named.isSymbolicLink()||named.nlink!==1||named.dev!==opened.dev||named.ino!==opened.ino||!previous.equals(pdf))throw new Error('Immutable PDF content hash collision or tampering');
+    if(!after.isFile()||after.size!==pdf.length||after.nlink!==1||after.mtimeMs!==opened.mtimeMs||after.ctimeMs!==opened.ctimeMs||!named.isFile()||named.isSymbolicLink()||named.nlink!==1||named.dev!==opened.dev||named.ino!==opened.ino||named.size!==opened.size||named.mtimeMs!==opened.mtimeMs||named.ctimeMs!==opened.ctimeMs||!previous.equals(pdf))throw new Error('Immutable PDF content hash collision or tampering');
    }finally{await handle.close();}
  }
  return {sha256,relativePath:relativePath.split(path.sep).join('/')};

@@ -84,3 +84,17 @@ test('valid progressive JPEG is accepted and hash verified; oversized container 
   assert.equal(fs.readdirSync(path.join(vault,'images')).length,1);
  }finally{fs.rmSync(home,{recursive:true,force:true});}
 });
+
+test('receipt import and managed verification reject multiply-linked image identities',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-image-link-'));
+ try{
+  const selected=path.join(root,'picked.png'),alias=path.join(root,'alias.png'),vault=path.join(root,'vault');
+  fs.copyFileSync('tests/fixtures/synthetic-receipt.png',selected);fs.linkSync(selected,alias);
+  await assert.rejects(importImageFromPickedFile(selected,vault),/regular permitted file|changed during secure import/);
+  assert.equal(fs.existsSync(vault),false);fs.unlinkSync(alias);
+  const receipt=await importImageFromPickedFile(selected,vault),managed=resolveManagedImage(vault,receipt.relativePath);
+  fs.linkSync(managed,alias);
+  await assert.rejects(verifyManagedImage(vault,receipt.relativePath,receipt.sha256),/regular permitted file|changed during secure import/);
+  assert.deepEqual(fs.readFileSync(alias),fs.readFileSync(selected));
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

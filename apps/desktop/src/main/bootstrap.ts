@@ -16,7 +16,7 @@ function readProofJson(file:string,maxBytes:number,label:string):unknown{
   fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
   const opened=ownedDescriptor(file,fd,maxBytes),bytes=Buffer.alloc(opened.size);
   let offset=0;while(offset<bytes.length){const n=fs.readSync(fd,bytes,offset,bytes.length-offset,offset);if(n===0)throw new Error('Changed proof file');offset+=n;}
-  const after=ownedDescriptor(file,fd,maxBytes);if(after.size!==opened.size||after.mtimeMs!==opened.mtimeMs)throw new Error('Changed proof file');
+  const after=ownedDescriptor(file,fd,maxBytes);if(after.size!==opened.size||after.mtimeMs!==opened.mtimeMs||after.ctimeMs!==opened.ctimeMs)throw new Error('Changed proof file');
   return JSON.parse(bytes.toString('utf8'));
  }catch{throw new Error(label);}finally{if(fd!==undefined)fs.closeSync(fd);}
 }
@@ -47,7 +47,7 @@ export function resolveLifecycleProof(env:NodeJS.ProcessEnv):LifecycleProof|null
  if(!nonce||!/^[a-f0-9]{32}$/.test(nonce))throw new Error('Invalid lifecycle nonce');
  if(!profile||!path.isAbsolute(profile)||!fs.existsSync(profile))throw new Error('Invalid lifecycle profile');
  const stat=fs.lstatSync(profile);
- if(stat.isSymbolicLink()||!stat.isDirectory())throw new Error('Invalid lifecycle profile object');
+ if(stat.isSymbolicLink()||!stat.isDirectory()||(process.platform!=='win32'&&((stat.mode&0o077)!==0||stat.uid!==process.getuid?.())))throw new Error('Invalid lifecycle profile object');
  const real=fs.realpathSync(profile),tmp=fs.realpathSync(os.tmpdir()),relative=path.relative(tmp,real);
  if(!/^tm-native-lifecycle-[a-zA-Z0-9]+$/.test(relative))throw new Error('Invalid lifecycle profile root');
  const marker=path.join(real,'.tm-lifecycle.json');
@@ -67,6 +67,8 @@ export function resolveLifecycleProof(env:NodeJS.ProcessEnv):LifecycleProof|null
   if(!previous||previous.schema!=='tm-lifecycle-v1'||previous.nonce!==nonce||previous.stage!==prior||previous.synthetic!==true)throw new Error('Invalid prior lifecycle receipt');
   for(const name of ownedRoots){const item=path.join(real,name);if(fs.existsSync(item))visit(item);}
  }
+ const current=fs.lstatSync(real);
+ if(!current.isDirectory()||current.isSymbolicLink()||current.dev!==stat.dev||current.ino!==stat.ino||(process.platform!=='win32'&&((current.mode&0o077)!==0||current.uid!==process.getuid?.())))throw new Error('Invalid lifecycle profile identity');
  return {profile:real,stage,nonce};
 }
 

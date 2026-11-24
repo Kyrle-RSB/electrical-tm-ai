@@ -7,3 +7,5 @@ If the PDF filename is already in use, the native Save dialog can offer Replace.
 Issued financial invoices and payment receipts are represented by immutable database snapshot constraints. Actual invoice approvals, allocations, credit notes, payment receipts, company-logo PDF layouts, customer email drafts and Gmail sending are not built yet.
 
 Do not distribute or use this construction build for client billing.
+
+The export writer rechecks the selected destination directory and the staged content hash before replacement. If a directory is redirected while a replacement is in progress, the app refuses the detected unsafe path; a staged file may be retained rather than cleaned up through a redirected path. Do not delete an original issued artifact to recover a synthetic export.

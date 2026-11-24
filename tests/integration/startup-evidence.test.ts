@@ -93,3 +93,17 @@ test('orderly shutdown remains clean and cleanup errors force a single nonzero e
   assert.deepEqual(events,['prevent','drain','close',failure?'fail':'pass',failure?'exit:1':'quit']);
  }
 });
+
+test('lifecycle proof requires a private runner-owned temporary profile on POSIX',async()=>{
+ const {resolveLifecycleProof}=await import('../../apps/desktop/src/main/bootstrap');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'tm-native-lifecycle-'));
+ const nonce='0123456789abcdef0123456789abcdef',env={TM_LIFECYCLE_PROFILE:root,TM_LIFECYCLE_STAGE:'seed',TM_LIFECYCLE_NONCE:nonce};
+ try{
+  fs.writeFileSync(path.join(root,'.tm-lifecycle.json'),JSON.stringify({schema:'tm-lifecycle-v1',nonce}),{flag:'wx',mode:0o600});
+  assert.equal(resolveLifecycleProof(env)?.profile,fs.realpathSync(root));
+  if(process.platform!=='win32'){
+   fs.chmodSync(root,0o777);assert.throws(()=>resolveLifecycleProof(env),/Invalid lifecycle profile/);
+   fs.chmodSync(root,0o700);assert.equal(resolveLifecycleProof(env)?.profile,fs.realpathSync(root));
+  }
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

@@ -17,3 +17,5 @@
 | OS-protected token unavailable | Verify secure storage is actually available | Stop: no plaintext fallback is permitted |
 
 Local startup events are saved as **redacted stage IDs only** in the current internal test profile's `diagnostics/startup.jsonl`. Do not publish logs containing file paths or client data. Exact current profile paths may differ across machines. The app may show system security prompts; read and understand them before authorizing access.
+
+For synthetic lifecycle proof runs, the runner-created POSIX temp directory must belong to the current user and grant no group/other access. Do not relax its permissions; create a fresh runner-owned test profile instead. A detected redirected PDF destination or changed staged export is a refusal, not authorization to overwrite the original. Preserve any staged recovery file until the destination and previous export have been checked.
