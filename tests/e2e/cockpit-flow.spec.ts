@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import {createHash} from 'node:crypto';
 /** Executed inside the isolated --tm-smoke packaged runtime on native hosts only.
  * No renderer-provided code, external services or actual customer data. */
 interface CockpitWindow {
@@ -78,6 +80,24 @@ export const PACKAGED_SECURITY_METHODS=Object.freeze([
  'backUpToSelectedFolder','chooseBackupAndRestore','storeFakeSecretProof','checkFakeSecretProof','removeFakeSecretProof'
 ]);
 const SECURITY_CSP="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'";
+/** Exact expression sent to the packaged renderer; independently executable in a JS-only fixture. */
+export const RENDERER_ISOLATION_EXPRESSION=`({
+ requireAbsent:typeof require==='undefined',processAbsent:typeof process==='undefined',
+ bridgeKeys:Object.keys(window.tmBridge),csp:document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content
+})`;
+/** Synthetic probe only. Bind bytes to the checked file and verify the named identity again.
+ * Never follow an unchecked final symlink or read an unbounded synthetic fixture. */
+export function hashSyntheticCensusFile(file:string,expected:fs.Stats):string{
+ const fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
+ try{
+  const same=(stat:fs.Stats)=>stat.isFile()&&!stat.isSymbolicLink()&&stat.nlink===1&&stat.dev===expected.dev&&stat.ino===expected.ino&&stat.size===expected.size&&stat.mtimeMs===expected.mtimeMs&&stat.ctimeMs===expected.ctimeMs;
+  if(expected.size>25*1024*1024||!same(expected)||!same(fs.fstatSync(fd))||!same(fs.lstatSync(file)))throw new Error('Synthetic census file identity changed');
+  const hash=createHash('sha256'),buffer=Buffer.alloc(64*1024);let offset=0;
+  while(offset<expected.size){const n=fs.readSync(fd,buffer,0,Math.min(buffer.length,expected.size-offset),offset);if(!n)throw new Error('Synthetic census short read');hash.update(buffer.subarray(0,n));offset+=n;}
+  if(!same(fs.fstatSync(fd))||!same(fs.lstatSync(file)))throw new Error('Synthetic census file identity changed');
+  return hash.digest('hex');
+ }finally{fs.closeSync(fd);}
+}
 interface SecurityWindow{
  webContents:{executeJavaScript(code:string,userGesture?:boolean):Promise<unknown>;getURL():string};
 }
@@ -126,10 +146,7 @@ export async function runPackagedSecurityFlow(primary:SecurityWindow,foreign:Sec
  })()`);
  const effectsAfterInvokes=snapshot()===baseline;
  const actualPrefs=readPackagedRuntimePrefs(primary.webContents);
- const isolation=await primary.webContents.executeJavaScript(`({
-  requireAbsent:typeof require==='undefined',processAbsent:typeof process==='undefined',
-  bridgeKeys:Object.keys(window.tmBridge),csp:document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content
- })()`);
+ const isolation=await primary.webContents.executeJavaScript(RENDERER_ISOLATION_EXPRESSION);
  const security=await primary.webContents.executeJavaScript(`(async()=>{
   const events=[];const observe=e=>events.push({directive:e.effectiveDirective,blocked:e.blockedURI});
   document.addEventListener('securitypolicyviolation',observe);

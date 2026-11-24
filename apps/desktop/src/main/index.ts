@@ -2,7 +2,7 @@
  * Native packaged tests must be repeated on this exact source revision. */
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, nativeTheme } from 'electron';
 import os from 'node:os';
-import {createHash,randomUUID} from 'node:crypto';
+import {randomUUID} from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -22,7 +22,7 @@ import {registerBackupHandlers} from './ipc/handlers/backups';
 import {registerBrandingHandlers} from './ipc/handlers/settings';
 import {createNativeFileDialogs} from './os/file-dialogs';
 import {prepareApplicationPaths} from './os/paths';
-import {runPackagedCockpitFlow,runPackagedSecurityFlow} from '../../../../tests/e2e/cockpit-flow.spec';
+import {hashSyntheticCensusFile,runPackagedCockpitFlow,runPackagedSecurityFlow} from '../../../../tests/e2e/cockpit-flow.spec';
 import {storeImmutablePdf} from '../../../../packages/pdf/src/common/stored-pdf';
 import {LocalOperationQueue} from '../../../../packages/application/src/use-cases/backup-restore';
 import {createCockpitWindow} from './window';
@@ -221,7 +221,7 @@ async function run(){
           const abs=path.join(P2_TEST_PROFILE,relative);if(!fs.existsSync(abs))return;
           const stat=fs.lstatSync(abs);if(stat.isSymbolicLink())throw new Error('Unexpected synthetic security probe alias');
           if(stat.isDirectory()){files.push([relative,'directory']);for(const name of fs.readdirSync(abs).sort())visit(path.join(relative,name));}
-          else if(stat.isFile())files.push([relative,createHash('sha256').update(fs.readFileSync(abs)).digest('hex')]);
+          else if(stat.isFile())files.push([relative,hashSyntheticCensusFile(abs,stat)]);
           else throw new Error('Unexpected synthetic security probe file');
         };
         for(const relative of ['local-data/vault','local-data/artifacts','local-data/migration-rescues','settings','secrets'])visit(relative);

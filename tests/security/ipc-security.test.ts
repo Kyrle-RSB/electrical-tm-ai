@@ -80,3 +80,27 @@ test('native proof preferences accessor fails closed instead of substituting con
  assert.throws(()=>readPackagedRuntimePrefs({getLastWebPreferences:()=>({...observed,webSecurity:undefined})}),/missing runtime preference webSecurity/);
  assert.deepEqual(readPackagedRuntimePrefs({getLastWebPreferences:()=>observed}),observed);
 });
+
+
+test('packaged renderer isolation expression returns observations rather than calling an object',async()=>{
+ const {RENDERER_ISOLATION_EXPRESSION}=await import('../e2e/cockpit-flow.spec');
+ const {runInNewContext}=await import('node:vm');
+ const sandbox={window:{tmBridge:{ping(){return null;}}},document:{querySelector(){return {content:'synthetic-csp'};}}};
+ const inspect=(context:object)=>JSON.parse(JSON.stringify(runInNewContext(RENDERER_ISOLATION_EXPRESSION,context)));
+ assert.deepEqual(inspect(sandbox),{requireAbsent:true,processAbsent:true,bridgeKeys:['ping'],csp:'synthetic-csp'});
+ assert.deepEqual(inspect({...sandbox,require:()=>null,process:{}}),{requireAbsent:false,processAbsent:false,bridgeKeys:['ping'],csp:'synthetic-csp'});
+});
+
+
+test('synthetic file census rejects a substituted named object before hashing',async()=>{
+ const {hashSyntheticCensusFile}=await import('../e2e/cockpit-flow.spec');
+ const fs=await import('node:fs');const os=await import('node:os');const path=await import('node:path');const {createHash}=await import('node:crypto');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-census-test-')),file=path.join(root,'probe.bin'),other=path.join(root,'other.bin');
+ try{
+  fs.writeFileSync(file,'synthetic initial');fs.writeFileSync(other,'synthetic substitute');const original=fs.lstatSync(file);
+  assert.equal(hashSyntheticCensusFile(file,original),createHash('sha256').update('synthetic initial').digest('hex'));
+  fs.renameSync(file,path.join(root,'parked.bin'));fs.renameSync(other,file);
+  assert.throws(()=>hashSyntheticCensusFile(file,original),/identity changed/);
+  fs.linkSync(file,path.join(root,'alias.bin'));assert.throws(()=>hashSyntheticCensusFile(file,fs.lstatSync(file)),/identity changed/);
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
