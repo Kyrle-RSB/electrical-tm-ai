@@ -7,7 +7,7 @@
   "scripts": {
     "proof:typecheck": "tsc --project tsconfig.probe.json --noEmit",
     "proof:compile": "tsc --project tsconfig.probe.json",
-    "proof:run": "node --test \"dist-probe/tests/**/*.test.js\"",
+    "proof:run": "node scripts/run-foundation-tests.mjs",
     "dev": "pnpm --filter @electrical-tm/desktop start",
     "package:mac": "pnpm --filter @electrical-tm/desktop make --platform=darwin --arch=arm64",
     "package:win": "pnpm --filter @electrical-tm/desktop make --platform=win32 --arch=x64",

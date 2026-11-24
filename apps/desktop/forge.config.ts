@@ -7,7 +7,7 @@ const config:ForgeConfig={
     executableName:'electrical-tm',
     extraResource:['../../packages/persistence-sqlite/src/migrations']
   },
-  makers:[{name:'@electron-forge/maker-zip',platforms:['darwin','win32']}],
+  makers:[{name:'@electron-forge/maker-zip',platforms:['darwin','win32'],config:{}}],
   plugins:[new VitePlugin({
     build:[
       {entry:{main:'src/main/index.ts'},config:'vite.main.config.ts',target:'main'},
