@@ -1,0 +1,26 @@
+{
+  "name": "electrical-tm",
+  "version": "0.2.0-dev.2",
+  "private": true,
+  "license": "MIT",
+  "packageManager": "pnpm@12.21.0",
+  "scripts": {
+    "proof:typecheck": "tsc --project tsconfig.probe.json --noEmit",
+    "proof:compile": "tsc --project tsconfig.probe.json",
+    "proof:run": "node --test \"dist-probe/tests/**/*.test.js\"",
+    "dev": "pnpm --filter @electrical-tm/desktop start",
+    "package:mac": "pnpm --filter @electrical-tm/desktop make --platform=darwin --arch=arm64",
+    "package:win": "pnpm --filter @electrical-tm/desktop make --platform=win32 --arch=x64",
+    "test": "pnpm proof:compile && pnpm proof:run",
+    "desktop:typecheck": "tsc --project apps/desktop/tsconfig.json --noEmit",
+    "quality:source": "node scripts/audit-source-secrets.mjs && node scripts/verify-licenses.mjs && node scripts/audit-requirements.mjs"
+  },
+  "description": "Fork B standalone local Electron application, active construction source. Not certified for actual billing or public distribution.",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "@types/node": "24.10.1"
+  }
+}

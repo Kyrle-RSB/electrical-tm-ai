@@ -1,0 +1,37 @@
+import test from 'node:test';import {strict as assert} from 'node:assert';
+import fs from 'node:fs';import path from 'node:path';import os from 'node:os';
+import {DatabaseSync} from 'node:sqlite';
+import {LocalStore} from '../../packages/persistence-sqlite/src/connection';
+test('upgrading a populated old schema creates a verified rescue copy and preserves records',()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-upgrade-'));
+ const fresh=path.join(root,'original'),full='packages/persistence-sqlite/src/migrations';
+ const dbPath=path.join(root,'local-data','db','app.sqlite');fs.mkdirSync(fresh);
+ try {
+  fs.copyFileSync(path.join(full,'0001-initial.sql'),path.join(fresh,'0001-initial.sql'));
+  const v1=new LocalStore(dbPath,fresh);v1.initializeFictionalCompany();
+  const id=v1.createProject({code:'OLD-01',customer:'Fictional',siteAddress:'100 Old Street'});v1.close();
+  const upgraded=new LocalStore(dbPath,full);assert.equal(upgraded.listProjects()[0].id,id);
+  assert.ok(upgraded.lastMigrationRescuePath);assert.ok(fs.existsSync(upgraded.lastMigrationRescuePath!));
+  const rescue=new DatabaseSync(upgraded.lastMigrationRescuePath!,{readOnly:true});
+  try {assert.equal((rescue.prepare('SELECT count(*) AS n FROM projects').get() as any).n,1);
+       assert.equal((rescue.prepare('SELECT count(*) AS n FROM schema_migrations').get() as any).n,1);}
+  finally{rescue.close();}upgraded.close();
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+test('a failed new migration rolls back and keeps both original DB and rescue',()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-upgrade-fail-'));
+ const old=path.join(root,'old'),broken=path.join(root,'broken'),file=path.join(root,'data','db','app.sqlite');
+ const full='packages/persistence-sqlite/src/migrations';fs.mkdirSync(old);fs.mkdirSync(broken);
+ try{
+  const v1=path.join(full,'0001-initial.sql');for(const dir of [old,broken])fs.copyFileSync(v1,path.join(dir,'0001-initial.sql'));
+  fs.writeFileSync(path.join(broken,'0002-bad.sql'),'CREATE TABLE failure_probe(x INTEGER);\nTHIS IS INVALID;');
+  let db=new LocalStore(file,old);db.initializeFictionalCompany();db.createProject({code:'BEFORE',customer:'Fictional',siteAddress:'Stable'});db.close();
+  assert.throws(()=>new LocalStore(file,broken),/syntax error|near/);
+  db=new LocalStore(file,old);assert.equal(db.listProjects()[0].project_code,'BEFORE');
+  assert.equal((db.db.prepare('SELECT count(*) AS n FROM schema_migrations').get() as any).n,1);
+  assert.equal(db.db.prepare("SELECT name FROM sqlite_master WHERE name='failure_probe'").get(),undefined);
+  db.close();
+  const rescues=fs.readdirSync(path.join(root,'data','migration-rescues'));
+  assert.equal(rescues.length,1);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});

@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "include": ["src/**/*.ts", "src/**/*.tsx", "forge.config.ts", "vite.*.ts", "../../packages/**/*.ts"],
+  "exclude": ["node_modules", ".vite", "out", "../../dist-probe"]
+}

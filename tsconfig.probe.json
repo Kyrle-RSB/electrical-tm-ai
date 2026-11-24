@@ -1,0 +1,42 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "outDir": "dist-probe",
+    "rootDir": ".",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "types": [
+      "node"
+    ],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmitOnError": true
+  },
+  "include": [
+    "packages/persistence-sqlite/src/**/*.ts",
+    "packages/contracts/src/**/*.ts",
+    "packages/asset-vault/src/**/*.ts",
+    "packages/pdf/src/**/*.ts",
+    "packages/backup/src/**/*.ts",
+    "tests/foundation/**/*.ts",
+    "apps/desktop/src/main/os/keychain.ts",
+    "apps/desktop/src/main/ipc/sender-guard.ts",
+    "apps/desktop/src/main/ipc/register.ts",
+    "packages/domain/src/**/*.ts",
+    "tests/unit/**/*.ts",
+    "tests/integration/**/*.ts",
+    "tests/security/**/*.ts",
+    "packages/application/src/**/*.ts",
+    "apps/desktop/src/main/bootstrap.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist-probe"
+  ]
+}

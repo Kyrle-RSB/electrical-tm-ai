@@ -1,0 +1,22 @@
+node_modules/
+dist/
+dist-probe/
+.out/
+out/
+coverage/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.DS_Store
+*.log
+*.pem
+*.key
+*.p12
+*.pfx
+vendor-secrets/
+
+# Local verification packets, never commit or publish
+.local-evidence/

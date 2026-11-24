@@ -1,0 +1,38 @@
+# Public-source development CI only. UNSIGNED artifacts; never a public product release.
+name: Macos arm64 packaged foundation verification
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: fork-b-macos-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native-verification:
+    runs-on: macos-15
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Execute complete native evidence collector
+        run: node scripts/capture-native-proof.mjs --execute
+      - name: Upload redacted native proof, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-b-macos-arm64-evidence
+          path: .local-evidence/native-*/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload UNSIGNED candidate package (not a release)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: UNSIGNED-DO-NOT-DISTRIBUTE-macos-arm64
+          path: apps/desktop/out/make/
+          if-no-files-found: error
+          retention-days: 3

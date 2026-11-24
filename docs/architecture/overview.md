@@ -1,0 +1,31 @@
+# Foundation layer boundaries and current evidence
+
+```text
+[React renderer: untrusted] --exact DTOs--> [sandboxed preload allowlist]
+                --> [Electron main: IPC sender + input guards]
+                    --> [use cases & pure deterministic domain (future)]
+                    --> [SQLite connection and migrations]
+                    --> [managed image/document vault]
+                    --> [PDF engine]
+                    --> [backup/verified restore]
+                    --> [asynchronous OS-protected credentials]
+```
+
+`Electron main` is the only process permitted to request files or secrets. No raw `ipcRenderer`, Node `fs`, SQL strings or arbitrary URL redirects are exposed to React. No permanent HTTP server. Do not import UI or Electron into deterministic financial domain code. Database and document generation cannot call Claude or Gmail to finalize invoices or payment receipts.
+
+Initial schema (`packages/persistence-sqlite/src/migrations/0001-initial.sql`) contains **only synthetic business, project and audit proof tables**. It is not the reconciled 43-table financial design and not a committed V1 production migration. Production schema requires separate migrations, financial triggers, migration/backfill review, credits, payment receipts, overhead, labor snapshots and disposition ledgers. Original 135 requirement/54 acceptance definitions remain source-of-truth.
+
+SQLite core `node:sqlite` is a provisional driver. It ran in Linux Node 22.16.0; its real behavior inside Electron 45 (Node 24.22.x) and Forge 8 packaging must be verified before lock. This is not a vendor claim.
+
+The synthetic PDF proof is ASCII-only and omits logo rendering and full invoice accounting. It must be replaced by a reviewed production PDF adapter before any real invoice is generated. An ASCII visual proof does not establish Unicode, multipage, tax, rounding, printing, accessibility or logo behavior.
+
+Security threat-model limitations: no network listener, but malicious renderer, hostile PDF/image uploads, local malware/other OS users, backup replacement, rollback, and public binary trust must still be reviewed. Testing actual OS vaults and signing is mandatory.
+
+
+## ADR-P2-001 accepted: Vite renderer HTML entry (Owner, 2026-11-23)
+
+The owner explicitly approved retaining `apps/desktop/index.html` as the only
+exception to the previously approved 239-path repository map. The production
+renderer is built from this HTML entry. All other approved boundaries remain
+unchanged. This is a narrow, tested path exception, **not** permission to
+reorganize the rest of the repository.
