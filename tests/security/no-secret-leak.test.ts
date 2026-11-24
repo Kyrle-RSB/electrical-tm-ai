@@ -48,3 +48,20 @@ test('persisted encrypted mock record fails closed on unavailable or damaged pro
   assert.equal(await new ProtectedSecretFile(demoProvider,file).exists(),false);
  }finally{fs.rmSync(folder,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('protected credential operations refuse redirected storage and preserve outside files',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-secret-boundary-'));
+ try{
+  const outside=path.join(root,'outside');fs.mkdirSync(outside);
+  const original=new ProtectedSecretFile(demoProvider,path.join(outside,'probe.bin'));
+  await original.storeFakeToken('TEST-FAKE-original');
+  const before=fs.readFileSync(path.join(outside,'probe.bin'));
+  const linked=path.join(root,'secrets');fs.symlinkSync(outside,linked,process.platform==='win32'?'junction':'dir');
+  const redirected=new ProtectedSecretFile(demoProvider,path.join(linked,'probe.bin'));
+  await assert.rejects(redirected.exists(),/Unsafe credential storage/);
+  await assert.rejects(redirected.readFakeToken(),/Unsafe credential storage/);
+  await assert.rejects(redirected.storeFakeToken('TEST-FAKE-replacement'),/Unsafe credential storage/);
+  await assert.rejects(redirected.remove(),/Unsafe credential storage/);
+  assert.deepEqual(fs.readFileSync(path.join(outside,'probe.bin')),before);
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

@@ -17,7 +17,7 @@ function auditTrace(matrix,hasFile){
  const rows=[...matrix.matchAll(/^\| (P2-AC\d{2}) \|/gm)].map(m=>m[1]);
  if(rows.length!==30||new Set(rows).size!==30||cases.some(id=>!rows.includes(id)))errors.push('Original 30 acceptance IDs missing, duplicated or changed');
  let data;
- try{data=JSON.parse(matrix.split('## Source traceability inventory')[1].match(/```json\n([\s\S]*?)\n```/)[1]);}catch{throw new Error('Traceability inventory malformed or missing');}
+ try{data=JSON.parse(matrix.split('## Source traceability inventory')[1].match(/```json\r?\n([\s\S]*?)\r?\n```/)[1]);}catch{throw new Error('Traceability inventory malformed or missing');}
  if(!Array.isArray(data))throw new Error('Traceability inventory not an array');
  for(const row of data){
   if(!tasks.includes(row.task)||seenTasks.has(row.task)){errors.push('Unexpected or duplicate task ID');continue;}
@@ -53,9 +53,10 @@ function checkLock(dir,requireGit=false){
 }
 function selfTest(matrix){
  const yes=()=>true;
- const data=JSON.parse(matrix.split('## Source traceability inventory')[1].match(/```json\n([\s\S]*?)\n```/)[1]);
+ const data=JSON.parse(matrix.split('## Source traceability inventory')[1].match(/```json\r?\n([\s\S]*?)\r?\n```/)[1]);
  const present=new Set(data.flatMap(r=>[...r.implementedPaths,...Object.values(r.approvedExceptions??{})]));
  assert.equal(auditTrace(matrix,p=>present.has(p)).errors.length,0);
+ assert.equal(auditTrace(matrix.replace(/\r?\n/g,'\r\n'),p=>present.has(p)).errors.length,0);
  assert.ok(auditTrace(matrix.replace('| P2-AC01 |','| P2-AC99 |'),p=>present.has(p)).errors.length);
  const removed=data[0].implementedPaths[0];assert.ok(auditTrace(matrix,p=>p!==removed&&present.has(p)).errors.some(x=>x.includes(removed)));
  assert.throws(()=>checkLinker('isolated'),/hoisted/);

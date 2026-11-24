@@ -40,3 +40,47 @@ test('receipt import rejects an image swapped after lstat and before open (TOCTO
    fs.rmSync(root,{recursive:true,force:true});
  }
 });
+
+test('managed image import and verification reject redirected vault directories',async()=>{
+ const home=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-image-boundary-'));
+ try{
+  const selected=path.join(home,'sample.png');fs.copyFileSync('tests/fixtures/synthetic-receipt.png',selected);
+  const outside=path.join(home,'outside'),receipt=await importImageFromPickedFile(selected,outside);
+  const vault=path.join(home,'vault');fs.mkdirSync(vault);
+  fs.symlinkSync(path.join(outside,'images'),path.join(vault,'images'),process.platform==='win32'?'junction':'dir');
+  const before=fs.readdirSync(path.join(outside,'images'));
+  await assert.rejects(importImageFromPickedFile(selected,vault),/Unsafe managed image directory/);
+  await assert.rejects(verifyManagedImage(vault,receipt.relativePath,receipt.sha256),/Unsafe managed image directory/);
+  assert.deepEqual(fs.readdirSync(path.join(outside,'images')),before);
+  const alias=path.join(home,'alias');fs.symlinkSync(outside,alias,process.platform==='win32'?'junction':'dir');
+  await assert.rejects(importImageFromPickedFile(selected,alias),/Unsafe managed image directory/);
+ }finally{fs.rmSync(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('malformed image containers with matching superficial signatures are rejected',async()=>{
+ const home=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-image-invalid-'));
+ try{
+  const valid=fs.readFileSync('tests/fixtures/synthetic-receipt.png');
+  const corrupt=Buffer.from(valid);corrupt[29]^=1; // corrupt the IHDR checksum
+  const bogusJpeg=Buffer.concat([Buffer.from([255,216]),Buffer.alloc(30),Buffer.from([255,217])]);
+  for(const [name,bytes] of [['crc.png',corrupt],['fake.jpg',bogusJpeg]] as const){
+   const selected=path.join(home,name);fs.writeFileSync(selected,bytes);
+   await assert.rejects(importImageFromPickedFile(selected,path.join(home,'vault')),/PNG|JPEG/);
+  }
+  assert.equal(fs.existsSync(path.join(home,'vault')),false);
+ }finally{fs.rmSync(home,{recursive:true,force:true});}
+});
+
+
+test('valid progressive JPEG is accepted and hash verified; oversized container rejected',async()=>{
+ const home=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-jpeg-'));
+ try{
+  const selected=path.join(home,'sample.jpg');fs.writeFileSync(selected,Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wgARCAADAAQDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAVAQEBAAAAAAAAAAAAAAAAAAADBP/aAAwDAQACEAMQAAABmRQP/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABAH/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxB//9k=','base64'));
+  const vault=path.join(home,'vault'),receipt=await importImageFromPickedFile(selected,vault);
+  assert.equal(receipt.mime,'image/jpeg');
+  assert.equal((await verifyManagedImage(vault,receipt.relativePath,receipt.sha256)).mime,'image/jpeg');
+  const oversized=path.join(home,'large.jpg');fs.writeFileSync(oversized,Buffer.alloc(12*1024*1024+1));
+  await assert.rejects(importImageFromPickedFile(oversized,vault),/regular permitted file/);
+  assert.equal(fs.readdirSync(path.join(vault,'images')).length,1);
+ }finally{fs.rmSync(home,{recursive:true,force:true});}
+});

@@ -5,11 +5,23 @@ export async function storeImmutablePdf(artifactsRoot:string,pdf:Buffer):Promise
  if(pdf.length>25*1024*1024)throw new Error('PDF exceeds storage limit');
  const sha256=crypto.createHash('sha256').update(pdf).digest('hex');
  const relativePath=path.join('issued',`${sha256}.pdf`),root=path.resolve(artifactsRoot),file=path.join(root,relativePath);
- await fs.promises.mkdir(path.dirname(file),{recursive:true,mode:0o700});
+ for(const directory of [root,path.dirname(file)]){
+  await fs.promises.mkdir(directory,{recursive:true,mode:0o700});
+  const stat=await fs.promises.lstat(directory);
+  if(!stat.isDirectory()||stat.isSymbolicLink())throw new Error('Unsafe immutable PDF directory');
+ }
  try{await fs.promises.writeFile(file,pdf,{flag:'wx',mode:0o600});}
  catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;
-   const previous=await fs.promises.readFile(file);
-   if(!previous.equals(pdf))throw new Error('Immutable PDF content hash collision or tampering');
+   const stat=await fs.promises.lstat(file);
+   if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.size!==pdf.length)throw new Error('Immutable PDF content hash collision or tampering');
+   const handle=await fs.promises.open(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));
+   try{
+    const opened=await handle.stat();
+    if(opened.dev!==stat.dev||opened.ino!==stat.ino||opened.size!==stat.size||opened.nlink!==1)throw new Error('Immutable PDF changed during inspection');
+    const previous=Buffer.alloc(pdf.length);
+    const {bytesRead}=await handle.read(previous,0,previous.length,0);
+    if(bytesRead!==pdf.length||(await handle.stat()).size!==pdf.length||!previous.equals(pdf))throw new Error('Immutable PDF content hash collision or tampering');
+   }finally{await handle.close();}
  }
  return {sha256,relativePath:relativePath.split(path.sep).join('/')};
 }

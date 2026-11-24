@@ -43,3 +43,14 @@ test('confirmed synthetic export cannot overwrite an issued original in managed 
   assert.deepEqual(fs.readFileSync(outside),original);
  }finally{fs.rmSync(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('immutable PDF storage refuses redirected issued directory without external writes',async()=>{
+ const home=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-pdf-boundary-'));
+ try{
+  const outside=path.join(home,'outside');fs.mkdirSync(outside);
+  const artifacts=path.join(home,'artifacts');fs.mkdirSync(artifacts);
+  fs.symlinkSync(outside,path.join(artifacts,'issued'),process.platform==='win32'?'junction':'dir');
+  await assert.rejects(storeImmutablePdf(artifacts,makeSyntheticInvoicePdf(fixture)),/Unsafe immutable PDF directory/);
+  assert.deepEqual(fs.readdirSync(outside),[]);
+ }finally{fs.rmSync(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

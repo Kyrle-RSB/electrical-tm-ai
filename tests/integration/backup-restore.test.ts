@@ -50,7 +50,7 @@ test('complete synthetic foundation chain survives backup/restore with PDF and i
    db.initializeFictionalCompany();
    const projectId=db.createProject({code:'SMOKE-001',customer:'Synthetic Check',siteAddress:'1 Test Road'});
    const photo=path.join(root,'synthetic.png');
-   fs.writeFileSync(photo,Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64'));
+   fs.writeFileSync(photo,Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIklEQVR4nGP8//8/AzUAE1VMGTVo1KBRg0YNGjVo1CCKAAAZ0QMtxqFhfwAAAABJRU5ErkJggg==','base64'));
    const imported=await importImageFromPickedFile(photo,path.join(working,'vault'));
    const checked=await verifyManagedImage(path.join(working,'vault'),imported.relativePath,imported.sha256);
    assert.equal(checked.mime,'image/png');

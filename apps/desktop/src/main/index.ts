@@ -304,7 +304,7 @@ async function run(){
       currentCheck='asset-vault';
       const fixturePath=path.join(P2_TEST_PROFILE,'smoke-input.png');
       // One synthetic 1x1 PNG; never use a contractor receipt in automated smoke.
-      fs.writeFileSync(fixturePath,Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/nwAAAABJRU5ErkJggg==','base64'),{mode:0o600});
+      fs.writeFileSync(fixturePath,Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIklEQVR4nGP8//8/AzUAE1VMGTVo1KBRg0YNGjVo1CCKAAAZ0QMtxqFhfwAAAABJRU5ErkJggg==','base64'),{mode:0o600});
       const imported=await importImageFromPickedFile(fixturePath,path.join(DATA_ROOT,'vault'));
       const verified=await verifyManagedImage(path.join(DATA_ROOT,'vault'),imported.relativePath,imported.sha256);
       if(verified.mime!=='image/png')throw new Error('Synthetic receipt import failed verification');

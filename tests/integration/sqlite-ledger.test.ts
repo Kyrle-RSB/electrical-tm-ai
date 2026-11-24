@@ -1,6 +1,8 @@
 import {test} from 'node:test';
 import {strict as assert} from 'node:assert';
 import fs from 'node:fs';import path from 'node:path';import os from 'node:os';
+import {DatabaseSync} from 'node:sqlite';
+import {withImmediateTransaction} from '../../packages/persistence-sqlite/src/transactions/unit-of-work';
 import {LocalStore} from '../../packages/persistence-sqlite/src/connection';
 const temp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'tm-p2-sqlite-'));
 test('historical migrations apply exactly once, business and project details survive restart',()=>{
@@ -42,4 +44,34 @@ test('missing middle migration record fails closed without rewriting history',()
    assert.equal((inspect.prepare('SELECT count(*) AS n FROM projects').get() as {n:number}).n,1);
   }finally{inspect.close();}
  }finally{fs.rmSync(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+
+test('two independent SQLite connections safely conflict and retry without duplicate invoice allocation or audit rows',()=>{
+ const dir=temp(),file=path.join(dir,'ledger.sqlite');
+ let first:LocalStore|undefined,second:DatabaseSync|undefined;
+ try{
+  first=new LocalStore(file);first.initializeFictionalCompany();
+  const project=first.createProject({code:'CONTENTION',customer:'Synthetic',siteAddress:'Test'});
+  second=new DatabaseSync(file,{timeout:0});second.exec('PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=ON; PRAGMA busy_timeout=0;');
+  const write=(db:DatabaseSync,id:string,number:string)=>{
+   db.prepare('INSERT INTO audit_events(action,entity_id,occurred_utc) VALUES(?,?,?)').run('synthetic.reserve',id,'2026-11-23T00:00:00Z');
+   db.prepare('INSERT INTO issued_invoices(id,project_id,invoice_number,immutable_body_json,issued_utc,amount_cents,pdf_sha256,pdf_locator) VALUES(?,?,?,?,?,?,?,?)').run(id,project,number,'{}','2026-11-23T00:00:00Z',1000,'a'.repeat(64),'issued/synthetic.pdf');
+  };
+  const a=first.db,b=second;
+  withImmediateTransaction(a,()=>{
+   write(a,'first','SYN-001');
+   assert.throws(()=>withImmediateTransaction(b,()=>write(b,'second','SYN-001')),/locked|busy/i);
+   assert.equal((b.prepare('SELECT count(*) AS n FROM issued_invoices').get() as {n:number}).n,0);
+  });
+  assert.throws(()=>withImmediateTransaction(b,()=>write(b,'second','SYN-001')),/UNIQUE constraint/i);
+  assert.throws(()=>withImmediateTransaction(b,()=>{write(b,'rollback','SYN-002');throw new Error('Synthetic interruption after reservation');}),/interruption/);
+  withImmediateTransaction(b,()=>write(b,'retry','SYN-002'));
+  second.close();second=undefined;first.close();first=undefined;
+  first=new LocalStore(file);
+  assert.deepEqual(first.db.prepare('SELECT invoice_number,id FROM issued_invoices ORDER BY invoice_number').all().map(r=>[r.invoice_number,r.id]),[['SYN-001','first'],['SYN-002','retry']]);
+  assert.deepEqual(first.db.prepare("SELECT entity_id FROM audit_events WHERE action='synthetic.reserve' ORDER BY entity_id").all().map(r=>r.entity_id),['first','retry']);
+  assert.equal((first.db.prepare('PRAGMA quick_check').get() as {quick_check:string}).quick_check,'ok');
+  assert.deepEqual(first.db.prepare('PRAGMA foreign_key_check').all(),[]);
+ }finally{second?.close();first?.close();fs.rmSync(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
