@@ -22,3 +22,24 @@ test('existing PDF never overwrites without confirmation; confirmed replace work
   assert.ok(fs.readFileSync(file).includes(Buffer.from('30.00')));
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+test('confirmed synthetic export cannot overwrite an issued original in managed storage',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-issued-export-'));
+ try{
+  const managed=path.join(dir,'private'),artifacts=path.join(managed,'artifacts');
+  const original=makeSyntheticInvoicePdf(fixture);
+  const issued=await storeImmutablePdf(artifacts,original);
+  const target=path.join(artifacts,issued.relativePath);
+  const options={allowReplace:true,protectedRoots:[managed]};
+  await assert.rejects(saveSyntheticInvoicePdf(target,{...fixture,amount:'99.00'},options),/managed application data/);
+  assert.deepEqual(fs.readFileSync(target),original);
+  await assert.rejects(saveSyntheticInvoicePdf(path.join(managed,'new.pdf'),fixture,options),/managed application data/);
+  assert.equal(fs.existsSync(path.join(managed,'new.pdf')),false);
+  const alias=path.join(dir,'alias');
+  fs.symlinkSync(managed,alias,process.platform==='win32'?'junction':'dir');
+  await assert.rejects(saveSyntheticInvoicePdf(path.join(alias,'artifacts',issued.relativePath),fixture,options),/managed application data/);
+  const outside=path.join(dir,'export.pdf');
+  await saveSyntheticInvoicePdf(outside,fixture,options);
+  assert.deepEqual(fs.readFileSync(outside),original);
+ }finally{fs.rmSync(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

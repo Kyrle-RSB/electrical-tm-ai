@@ -1,14 +1,27 @@
-export type IpcRequest<T> = { requestId: string; payload: T };
+import type {SafeIpcErrorCode} from './error-envelope';
+export const IPC_VERSION=1 as const;
+export type IpcRequest<T> = { requestId: string; version: typeof IPC_VERSION; payload: T };
 export type IpcResult<T> =
   | { ok: true; requestId: string; data: T }
-  | { ok: false; requestId: string; code: 'VALIDATION' | 'UNAVAILABLE' | 'SECURITY' | 'CONFLICT' | 'INTERNAL'; message: string };
-const hexUuid = /^[a-f0-9-]{20,72}$/i;
+  | { ok: false; requestId: string; error: {code:SafeIpcErrorCode;message:string;retryable:boolean;correlationId:string} };
+const hexUuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 export function assertEnvelope(v: unknown): asserts v is IpcRequest<unknown> {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error('Invalid request envelope');
   const r = v as Record<string, unknown>;
-  if (Object.keys(r).some(k => !['requestId','payload'].includes(k))) throw new Error('Unknown envelope property');
+  if (Object.keys(r).length!==3||Object.keys(r).some(k => !['requestId','version','payload'].includes(k))) throw new Error('Invalid envelope properties');
   if (typeof r.requestId !== 'string' || !hexUuid.test(r.requestId)) throw new Error('Invalid request ID');
-  if (JSON.stringify(r).length > 16_384) throw new Error('IPC request too large');
+  if (r.version!==IPC_VERSION||!Object.prototype.hasOwnProperty.call(r,'payload')) throw new Error('Unsupported IPC version or missing payload');
+  if (JSON.stringify(r).length > 16_384) throw new Error('IPC request exceeds size limit');
+}
+/** Session-scoped replay rejection. Never evict an accepted ID and then permit its replay. */
+export function createRequestReplayGuard(limit=100000){
+  const used=new Set<string>();
+  return (id:string)=>{
+    id=id.toLowerCase();
+    if(used.has(id))throw new Error('SECURITY: duplicate IPC request ID');
+    if(used.size>=limit)throw new Error('IPC session capacity unavailable; restart the application');
+    used.add(id);
+  };
 }
 export function validateProjectInput(v: unknown): { code: string; customer: string; siteAddress: string } {
   if (typeof v !== 'object' || !v || Array.isArray(v)) throw new Error('Expected project object');
@@ -54,7 +67,7 @@ export function validateProjectDetailsInput(v:unknown):{id:string;name:string;bi
 export function validateProjectStatusInput(v:unknown):{id:string;status:'planned'|'active'|'on-hold'|'complete'|'closed'|'archived'}{
  const d=requirePlainRecord(v,['id','status']);const id=limitedText(d.id,36,true);
  if(!ID.test(id))throw new Error('Invalid project identity');
- if(!['planned','active','on-hold','complete','closed','archived'].includes(String(d.status)))throw new Error('Invalid project status');
+ if(typeof d.status!=='string'||!['planned','active','on-hold','complete','closed','archived'].includes(d.status))throw new Error('Invalid project status');
  return {id,status:d.status as 'planned'|'active'|'on-hold'|'complete'|'closed'|'archived'};
 }
 

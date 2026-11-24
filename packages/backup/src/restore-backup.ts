@@ -5,6 +5,7 @@ import os from 'node:os';
 import {DatabaseSync} from 'node:sqlite';
 import { hashFile, traverseRegularFiles, Manifest } from './create-backup';
 import { LocalStore } from '../../persistence-sqlite/src/connection';
+import {canonicalBackupPath,backupPathsOverlap} from './backup-destination';
 function isSafeRelative(p:string):boolean{
   if(!p||p.includes('\\')||path.posix.isAbsolute(p))return false;
   const normalized=path.posix.normalize(p);
@@ -56,9 +57,10 @@ export async function verifyBackup(backupPath:string,migrationsDir?:string):Prom
 }
 /** Close live SQLite connection before calling. Returns rollback directory to retain until user confirms. */
 export async function restoreBackup(backupPath:string,activeRoot:string,migrationsDir?:string):Promise<{rollbackPath:string|null}> {
+  const target=await canonicalBackupPath(activeRoot), source=await canonicalBackupPath(backupPath);
+  if(backupPathsOverlap(target,source))throw new Error('Cannot restore onto backup');
+  backupPath=source;
   const manifest=await verifyBackup(backupPath,migrationsDir);
-  const target=path.resolve(activeRoot), source=path.resolve(backupPath);
-  if(target===source||target.startsWith(source+path.sep)||source.startsWith(target+path.sep))throw new Error('Cannot restore onto backup');
   const parent=path.dirname(target);
   await fs.promises.mkdir(parent,{recursive:true});
   const nonce=crypto.randomBytes(5).toString('hex'),stage=path.join(parent,`.tm-restore-${nonce}`),rollback=path.join(parent,`.tm-rollback-${nonce}`);

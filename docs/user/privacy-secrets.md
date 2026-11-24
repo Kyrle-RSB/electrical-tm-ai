@@ -10,3 +10,5 @@ Fork B runs locally for one user. It does not create staff accounts, host a serv
 * Backups are not encrypted by this application. Users are responsible for secured storage and tested recovery.
 * On a shared computer, other programs with the same OS user identity may access the local data. Use OS account protections, full-disk encryption and good backup hygiene.
 * The OS credential protection must be proved on actual macOS Keychain and Windows mechanisms before it can be certified. The Linux fake provider test is not that proof.
+
+In the internal cockpit use **Revoke fake token** to remove the synthetic credential; do not enter real credentials. On this revision the main process still accepts only the fixed synthetic probe token through the renderer.

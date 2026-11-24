@@ -30,3 +30,21 @@ test('unavailable vault fails closed, never writes a fallback plaintext file',as
   assert.equal(fs.existsSync(file),false);
  }finally{fs.rmSync(folder,{recursive:true,force:true});}
 });
+
+test('persisted encrypted mock record fails closed on unavailable or damaged provider and remains revoked on reopen',async()=>{
+ const folder=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-secret-reopen-'));
+ try{
+  const file=path.join(folder,'probe.bin');
+  await new ProtectedSecretFile(demoProvider,file).storeFakeToken('TEST-FAKE-restart');
+  const bytes=fs.readFileSync(file);
+  assert.equal(await new ProtectedSecretFile(demoProvider,file).readFakeToken(),'TEST-FAKE-restart');
+  const unavailable=new ProtectedSecretFile({...demoProvider,isAsyncEncryptionAvailable:async()=>false},file);
+  await assert.rejects(unavailable.readFakeToken(),/fail closed/);
+  assert.deepEqual(fs.readFileSync(file),bytes);
+  const damaged=new ProtectedSecretFile({...demoProvider,decryptStringAsync:async()=>{throw new Error('Synthetic decryption failure');}},file);
+  await assert.rejects(damaged.readFakeToken(),/decryption failure/);
+  assert.deepEqual(fs.readFileSync(file),bytes);
+  await damaged.remove();
+  assert.equal(await new ProtectedSecretFile(demoProvider,file).exists(),false);
+ }finally{fs.rmSync(folder,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

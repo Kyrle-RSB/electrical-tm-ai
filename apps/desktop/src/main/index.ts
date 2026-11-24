@@ -2,11 +2,12 @@
  * Native packaged tests must be repeated on this exact source revision. */
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage } from 'electron';
 import os from 'node:os';
+import {randomUUID} from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {LocalStore} from '../../../../packages/persistence-sqlite/src/connection';
-import {CHANNELS,assertEnvelope,assertNoPayload} from '../../../../packages/contracts/src';
+import {CHANNELS,assertEnvelope,assertNoPayload,createRequestReplayGuard,type IpcResult} from '../../../../packages/contracts/src';
 import {classifyIpcError} from '../../../../packages/contracts/src/ipc/error-envelope';
 import {importImageFromPickedFile} from '../../../../packages/asset-vault/src/import-file';
 import {verifyManagedImage} from '../../../../packages/asset-vault/src/verify-image';
@@ -68,14 +69,21 @@ async function run(){
   win.webContents.on('render-process-gone',()=>recorder.record('renderer.process','fail'));
   recorder.record('renderer.load','begin');
   currentUrl=DEV_URL?new URL(DEV_URL).toString():'tmapp://app/index.html';
-  // Sanitize backend exceptions before they cross the untrusted renderer boundary.
+  // All privileged channels use one versioned, replay-checked and sanitized boundary.
+  const claimRequest=createRequestReplayGuard();
   const safeHandle=(channel:string,handler:(event:Electron.IpcMainInvokeEvent,request:unknown)=>Promise<unknown>)=>{
-    ipcMain.handle(channel,async(event,request)=>{
-      try{return await handler(event,request);}
-      catch(error){
+    ipcMain.handle(channel,async(event,request):Promise<IpcResult<unknown>>=>{
+      let requestId:string=randomUUID();
+      try{
+        if(!isTrustedSender(event as any,mainWindow.webContents as any,currentUrl))throw new Error('SECURITY: sender rejected');
+        assertEnvelope(request);
+        requestId=request.requestId;
+        claimRequest(requestId);
+        return {ok:true,requestId,data:await handler(event,request)};
+      }catch(error){
         const publicError=classifyIpcError(error);
         recorder.record('ipc.'+publicError.code.toLowerCase(),'info');
-        throw new Error(`${publicError.code}: ${publicError.message}`);
+        return {ok:false,requestId,error:{...publicError,retryable:publicError.code==='UNAVAILABLE',correlationId:requestId}};
       }
     });
   };
@@ -109,7 +117,7 @@ async function run(){
       if(confirmation.response!==1)return null;
       allowReplace=true;
     }
-    return saveSyntheticInvoicePdf(selected.filePath,{company:'Synthetic Demo Electric Ltd.',customer:'Demo Customer',project:'SYNTHETIC-01',invoiceNumber:'TEST-0001',taxId:'FAKE-TAX-ID',contractorLicense:'FAKE-LICENSE',amount:'125.00'},{allowReplace});
+    return saveSyntheticInvoicePdf(selected.filePath,{company:'Synthetic Demo Electric Ltd.',customer:'Demo Customer',project:'SYNTHETIC-01',invoiceNumber:'TEST-0001',taxId:'FAKE-TAX-ID',contractorLicense:'FAKE-LICENSE',amount:'125.00'},{allowReplace,protectedRoots:[P2_TEST_PROFILE]});
   }));
   safeHandle(CHANNELS.backupGetLocation,(e,r)=>operationQueue.run(async()=>{
     assertNoPayload(guard(e,r));return {folder:await backupPreference.get()};
@@ -190,11 +198,51 @@ async function run(){
           document.body?.textContent?.includes('Local foundation')};
       })()`);
       if(!probe?.ok)throw new Error('Packaged renderer or IPC failed');
+      // A distinct native WebContents with the same preload and URL must still be denied.
+      const foreign=createCockpitWindow(__dirname,true);
+      try{
+        await foreign.loadURL(currentUrl);
+        const rejected=await foreign.webContents.executeJavaScript(`(async()=>{
+          try{await window.tmBridge.ping();return false;}
+          catch(error){return String(error).includes('SECURITY');}
+        })()`);
+        if(rejected!==true)throw new Error('Foreign renderer IPC was not rejected');
+      }finally{foreign.destroy();}
+      const isolation=await win.webContents.executeJavaScript(`({
+        requireAbsent:typeof require==='undefined',processAbsent:typeof process==='undefined',
+        bridgeKeys:Object.keys(window.tmBridge),
+        csp:document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content
+      })`);
+      if(!isolation.requireAbsent||!isolation.processAbsent||!Array.isArray(isolation.bridgeKeys)||
+         isolation.bridgeKeys.includes('invoke')||!isolation.csp?.includes("connect-src 'none'")||
+         isolation.csp.includes('unsafe-inline')||isolation.csp.includes('unsafe-eval'))
+        throw new Error('Packaged isolation or CSP policy mismatch');
+      const inlineBlocked=await win.webContents.executeJavaScript(`(async()=>{
+        const script=document.createElement('script');
+        script.textContent='window.__tmForbiddenInlineProbe=true';
+        document.head.appendChild(script);
+        await new Promise(resolve=>setTimeout(resolve,100));
+        script.remove();return window.__tmForbiddenInlineProbe!==true;
+      })()`);
+      if(inlineBlocked!==true)throw new Error('Packaged CSP allowed inline script');
       checks.push(currentCheck);
 
       currentCheck='sqlite-persistence';
       const id=store.createProject({code:'SMOKE-001',customer:'Synthetic Check',siteAddress:'1 Test Road'});
       if(!store.listProjects().some(p=>p.id===id))throw new Error('Project could not be read back');
+      // Reopen the actual database and reload the renderer: no manual Refresh action.
+      store.close();
+      store=new LocalStore(path.join(DATA_ROOT,'db','app.sqlite'),migrationsDir);
+      await win.loadURL(currentUrl);
+      const visible=await win.webContents.executeJavaScript(`(async()=>{
+        const deadline=Date.now()+10000;
+        while(Date.now()<deadline){
+          if(document.querySelector('.project-list')?.textContent?.includes('SMOKE-001'))return true;
+          await new Promise(resolve=>setTimeout(resolve,50));
+        }
+        return false;
+      })()`);
+      if(visible!==true)throw new Error('Persisted project did not load in renderer');
       checks.push(currentCheck);
 
       currentCheck='pdf-create-and-replace';
@@ -229,8 +277,10 @@ async function run(){
         throw new Error('OS protected secret cannot be round-tripped');
       const ciphertext=fs.readFileSync(path.join(P2_TEST_PROFILE,'secrets','phase1-fake.bin'));
       if(ciphertext.includes(Buffer.from('TEST-FAKE-EXAMPLE')))throw new Error('Secret stored as plaintext');
-      await secret.remove();
-      if(await secret.exists())throw new Error('OS protected secret could not be revoked');
+      const reopenedSecret=new ProtectedSecretFile(safeStorage,path.join(P2_TEST_PROFILE,'secrets','phase1-fake.bin'));
+      if(await reopenedSecret.readFakeToken()!=='TEST-FAKE-EXAMPLE')throw new Error('Persisted protected secret could not be reopened');
+      await reopenedSecret.remove();
+      if(await new ProtectedSecretFile(safeStorage,path.join(P2_TEST_PROFILE,'secrets','phase1-fake.bin')).exists())throw new Error('OS protected secret could not be revoked');
       checks.push(currentCheck);
 
       currentCheck='backup-integrity-restore';
@@ -240,10 +290,19 @@ async function run(){
       if(!manifest.files.some(f=>f.path.startsWith('vault/images/'))||
          !manifest.files.some(f=>f.path==='artifacts/smoke-invoice.pdf'))
         throw new Error('Backup omitted synthetic assets');
+      // Tamper with the backup artifact, not the live original, and prove rejection.
+      const archivedPdf=path.join(result.backupPath,'artifacts','smoke-invoice.pdf');
+      fs.appendFileSync(archivedPdf,'synthetic-tamper');
+      let tamperRejected=false;
+      try{await verifyBackup(result.backupPath,migrationsDir);}catch{tamperRejected=true;}
+      if(!tamperRejected||!fs.readFileSync(artifactPath).equals(original))throw new Error('Tamper was not safely rejected');
+      fs.writeFileSync(archivedPdf,original);
+      await verifyBackup(result.backupPath,migrationsDir);
+      store.createProject({code:'SMOKE-LATER',customer:'Synthetic Check',siteAddress:'2 Test Road'});
       store.close();
       await restoreBackup(result.backupPath,DATA_ROOT,migrationsDir);
       store=new LocalStore(path.join(DATA_ROOT,'db','app.sqlite'),migrationsDir);
-      if(!store.listProjects().some(p=>p.id===id)||
+      if(!store.listProjects().some(p=>p.id===id)||store.listProjects().some(p=>p.project_code==='SMOKE-LATER')||
          !fs.existsSync(path.join(DATA_ROOT,'artifacts','smoke-invoice.pdf'))||
          !fs.existsSync(path.join(DATA_ROOT,'vault',imported.relativePath)))
         throw new Error('Native backup restore lost project or attachments');

@@ -1,6 +1,6 @@
 # Fork B: Native Electron Foundation Verification (Mac, then Windows)
 
-**Phase 1 development proof only. Not a customer release or an installation guide for end users.** This updated procedure uses the owner's successfully launched macOS source as its input and must be rerun for this repaired build. A clean, independent install and verified signed release have **not** happened.
+**Phase 2 internal development verification only. Not a customer release.** This updated procedure uses the owner's successfully launched macOS source as its input and must be rerun for this repaired build. A clean, independent install and verified signed release have **not** happened.
 
 ## First, retain the source and existing test data safely
 
@@ -13,7 +13,7 @@
 
 Record macOS version, Mac architecture, Node version, pnpm version, installed package versions, test date and whether each step is observed. Record logs/screenshots with personal paths redacted.
 
-From the **new extracted `engineering-proof` folder**:
+From the **fresh source repository root**:
 
 ```bash
 node -v
@@ -24,7 +24,7 @@ npx --yes pnpm@12.21.0 proof:run
 npx --yes pnpm@12.21.0 --filter @electrical-tm/desktop start
 ```
 
-The run should show **14 tests passing** (previous source had 11), then a real Electron window. **Keep the Forge Terminal process running** while you test in development.
+The run must pass the complete current foundation test suite (see the commit-linked CI receipt), then a real Electron window. **Keep the Forge Terminal process running** while you test in development.
 
 Check that:
 
@@ -37,7 +37,7 @@ Check that:
 
 **If any item fails, stop and record its full error and the exact test step.** The Linux/Node checks do not substitute for macOS Electron integration results.
 
-## Native Mac packaging gate (not yet verified)
+## Native Mac packaging gate (repeat on the exact candidate revision)
 
 After the development tests succeed, quit the Electron app and make an unsigned **internal testing package**:
 
@@ -87,3 +87,6 @@ native check must be repaired in source and rerun against the corrected revision
 
 The previous Phase 1 evidence belongs to older revisions and is not substituted
 for this exact source version.
+
+### November 24 continuation
+The earlier commit `761ecde1e7991c8a4afcefb50ae9bdead4a38722` passed Mac/Windows packaged automation. It is not evidence for later changed source. Run `node scripts/capture-native-proof.mjs --execute` on the exact candidate revision and inspect its result; the added native checks cover foreign-window IPC rejection, strict packaged CSP/inline-script rejection, SQLite reopen and automatic UI load, protected-secret re-read/revocation and backup tampering. Full application-process restart, physical OS denial and clean independent install remain separate manual requirements.

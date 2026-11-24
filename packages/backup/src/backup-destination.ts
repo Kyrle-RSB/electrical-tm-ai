@@ -1,6 +1,26 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+/** Canonicalize even a not-yet-created destination using its nearest existing ancestor. */
+export async function canonicalBackupPath(value:string):Promise<string>{
+ let current=path.resolve(value);const tail:string[]=[];
+ for(;;){
+  try{return path.join(await fs.promises.realpath(current),...tail);}
+  catch(error){
+   if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;
+   const parent=path.dirname(current);if(parent===current)throw error;
+   tail.unshift(path.basename(current));current=parent;
+  }
+ }
+}
+export function backupPathsOverlap(a:string,b:string):boolean{
+ const key=(p:string)=>process.platform==='win32'||process.platform==='darwin'?p.toLowerCase():p;
+ const contains=(parent:string,child:string)=>{
+  const relative=path.relative(key(parent),key(child));
+  return relative===''||(!path.isAbsolute(relative)&&relative!=='..'&&!relative.startsWith('..'+path.sep));
+ };
+ return contains(a,b)||contains(b,a);
+}
 /** Non-secret, local-machine-only preference. It is deliberately not in a portable backup. */
 export class BackupDestinationPreference {
  constructor(private readonly preferenceFile:string,private readonly dataRoot:string){}
@@ -15,8 +35,8 @@ export class BackupDestinationPreference {
  async validate(folder:string):Promise<string>{
   if(!path.isAbsolute(folder))throw new Error('Backup folder must be an absolute path');
   const normalized=await fs.promises.realpath(folder);
-  const root=await fs.promises.realpath(this.dataRoot).catch(()=>path.resolve(this.dataRoot));
-  if(normalized===root||normalized.startsWith(root+path.sep)||root.startsWith(normalized+path.sep))
+  const root=await canonicalBackupPath(this.dataRoot);
+  if(backupPathsOverlap(normalized,root))
     throw new Error('Choose a backup location separate from application data');
   if(!(await fs.promises.stat(normalized)).isDirectory())throw new Error('Backup location must be a directory');
   const probe=path.join(normalized,`.tm-folder-check-${crypto.randomBytes(8).toString('hex')}`);

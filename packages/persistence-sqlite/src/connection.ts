@@ -25,6 +25,8 @@ export class LocalStore {
     this.projects=new ProjectRepository(this.db);
     try {
       this.db.exec('PRAGMA foreign_keys=ON');
+      // REPLACE implicitly deletes conflicting rows; immutable delete triggers must run.
+      this.db.exec('PRAGMA recursive_triggers=ON');
       this.db.exec('PRAGMA journal_mode=WAL');
       this.db.exec('PRAGMA busy_timeout=5000');
       this.migrate();

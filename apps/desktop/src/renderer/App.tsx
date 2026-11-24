@@ -42,6 +42,7 @@ export default function App(){
         <button onClick={()=>run('Restore',async()=>{const result=await window.tmBridge.chooseBackupAndRestore();if(result){await refresh();setRestoreGeneration(v=>v+1);}return result;})}>Restore verified backup</button>
         <button onClick={()=>run('Secure fake token',()=>window.tmBridge.storeFakeSecretProof())}>Store FAKE token</button>
         <button onClick={()=>run('Check fake token',()=>window.tmBridge.checkFakeSecretProof())}>Check fake token</button>
+        <button onClick={()=>run('Revoke fake token',()=>window.tmBridge.removeFakeSecretProof())}>Revoke fake token</button>
       </div>
       <div aria-live="polite" className="feedback" role="status">{message}</div>
     </GlassCard>

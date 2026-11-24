@@ -1,5 +1,5 @@
 import {test} from 'node:test';import {strict as assert} from 'node:assert';
-import {validateBusinessInput,validateProjectDetailsInput,validateProjectStatusInput} from '../../packages/contracts/src/ipc/request-envelope';
+import {assertEnvelope,createRequestReplayGuard,validateBusinessInput,validateProjectDetailsInput,validateProjectStatusInput} from '../../packages/contracts/src/ipc/request-envelope';
 test('owner-only form validators reject spoofed fields and unknown states',()=>{
  const good={legalName:'Demo Electric',tradeName:'D',phone:'',email:'',mailingAddress:'',taxId:'',contractorLicense:''};
  assert.equal(validateBusinessInput(good).legalName,'Demo Electric');
@@ -9,4 +9,17 @@ test('owner-only form validators reject spoofed fields and unknown states',()=>{
  assert.equal(validateProjectStatusInput({id,status:'archived'}).status,'archived');
  assert.throws(()=>validateProjectStatusInput({id,status:'deleted'}));
  assert.throws(()=>validateProjectDetailsInput({id,name:'x',billingAddress:'y',notes:'',tenantId:'other'}));
+});
+
+
+test('versioned IPC envelopes reject malformed UUIDs, missing payloads and replayed operation IDs',()=>{
+ const id='aafad558-9329-4876-bd71-2de567501979';
+ assert.doesNotThrow(()=>assertEnvelope({requestId:id,version:1,payload:null}));
+ for(const value of [{requestId:'--------------------',version:1,payload:null},{requestId:id,version:2,payload:null},{requestId:id,version:1},{requestId:id,payload:null}])assert.throws(()=>assertEnvelope(value));
+ const claim=createRequestReplayGuard(2);
+ claim(id);assert.throws(()=>claim(id),/duplicate/);
+ claim('aafad558-9329-4876-bd71-2de567501978');
+ assert.throws(()=>claim('aafad558-9329-4876-bd71-2de567501977'),/capacity/);
+ assert.throws(()=>claim(id),/duplicate/);
+ assert.throws(()=>validateProjectStatusInput({id,status:['active']}));
 });

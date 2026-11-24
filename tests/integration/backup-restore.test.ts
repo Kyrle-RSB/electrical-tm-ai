@@ -83,3 +83,25 @@ test('complete synthetic foundation chain survives backup/restore with PDF and i
    db.close();
  }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('backup and restore reject directory aliases overlapping live application data',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-alias-'));
+ const live=path.join(root,'live'),alias=path.join(root,'alias');
+ try{
+  const db=new LocalStore(path.join(live,'db','app.sqlite'),migrations);
+  try{
+   db.initializeFictionalCompany();
+   fs.symlinkSync(live,alias,process.platform==='win32'?'junction':'dir');
+   const nested=path.join(alias,'nested');
+   await assert.rejects(createBackup(db,live,nested),/outside data directory/);
+   assert.equal(fs.existsSync(path.join(live,'nested')),false);
+   const saved=await createBackup(db,live,path.join(root,'external'));
+   const before=fs.readFileSync(path.join(saved.backupPath,'db','app.sqlite'));
+   const destinationAlias=path.join(root,'backup-alias');
+   fs.symlinkSync(saved.backupPath,destinationAlias,process.platform==='win32'?'junction':'dir');
+   await assert.rejects(restoreBackup(saved.backupPath,path.join(destinationAlias,'nested'),migrations),/Cannot restore onto backup/);
+   assert.deepEqual(fs.readFileSync(path.join(saved.backupPath,'db','app.sqlite')),before);
+   assert.equal(fs.existsSync(path.join(saved.backupPath,'nested')),false);
+  }finally{db.close();}
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

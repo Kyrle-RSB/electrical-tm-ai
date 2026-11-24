@@ -22,10 +22,12 @@ The synthetic PDF proof is ASCII-only and omits logo rendering and full invoice 
 Security threat-model limitations: no network listener, but malicious renderer, hostile PDF/image uploads, local malware/other OS users, backup replacement, rollback, and public binary trust must still be reviewed. Testing actual OS vaults and signing is mandatory.
 
 
-## ADR-P2-001 accepted: Vite renderer HTML entry (Owner, 2026-11-23)
+## ADR-P2-001 accepted: Vite renderer HTML entry (Owner, reaffirmed 2026-11-24)
 
 The owner explicitly approved retaining `apps/desktop/index.html` as the only
 exception to the previously approved 239-path repository map. The production
 renderer is built from this HTML entry. All other approved boundaries remain
 unchanged. This is a narrow, tested path exception, **not** permission to
 reorganize the rest of the repository.
+
+The November 24 continuation uses the public canonical development repository `Kyrle-RSB/electrical-tm-ai`. The owner reaffirmed ADR-P2-001 and explicitly authorized sanitized development-source publication, not customer release. The approved entry replaces the originally catalogued renderer HTML path in the effective audit map; existing support/test paths are separately enumerated and unexpected paths fail the audit.

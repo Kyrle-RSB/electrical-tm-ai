@@ -32,13 +32,41 @@ export function makeSyntheticInvoicePdf(info:{company:string;customer:string;pro
   pdf+=`trailer\n<< /Size ${objects.length+1} /Root 1 0 R >>\nstartxref\n${off}\n%%EOF\n`;
   return Buffer.from(pdf,'ascii');
 }
+/** Resolve the physical parent before allowing an export. Managed data is never a Save/Replace target. */
+async function resolveExportTarget(target:string,protectedRoots:readonly string[]):Promise<string>{
+  const absolute=path.resolve(target);
+  let parent=path.dirname(absolute);
+  const tail=[path.basename(absolute)];
+  // Resolve the nearest existing ancestor; missing directories must not hide a protected path.
+  for(;;){
+    try{parent=await fs.promises.realpath(parent);break;}
+    catch(error){
+      if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;
+      const next=path.dirname(parent);
+      if(next===parent)throw error;
+      tail.unshift(path.basename(parent));parent=next;
+    }
+  }
+  const resolved=path.join(parent,...tail);
+  const comparable=(p:string)=>process.platform==='win32'||process.platform==='darwin'?p.toLowerCase():p;
+  for(const root of protectedRoots){
+    const actual=await fs.promises.realpath(root);
+    for(const candidate of [absolute,resolved]){
+      const relative=path.relative(comparable(actual),comparable(candidate));
+      if(relative===''||(!path.isAbsolute(relative)&&relative!=='..'&&!relative.startsWith('..'+path.sep)))
+        throw new Error('SECURITY: PDF export cannot target managed application data');
+    }
+  }
+  return resolved;
+}
 /** Synthetic proof export only. Issued invoices use immutable, content-addressed storage.
  * Replacement needs an affirmative OS-dialog + app confirmation in Electron main.
  */
 export async function saveSyntheticInvoicePdf(
   target:string,params:Parameters<typeof makeSyntheticInvoicePdf>[0],
-  opts:{allowReplace?:boolean}={}
+  opts:{allowReplace?:boolean;protectedRoots?:readonly string[]}={}
 ):Promise<string>{
+  target=await resolveExportTarget(target,opts.protectedRoots??[]);
   await fs.promises.mkdir(path.dirname(target),{recursive:true});
   let exists=false;
   try{

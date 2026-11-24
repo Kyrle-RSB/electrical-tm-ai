@@ -16,3 +16,19 @@ test('drafts are editable while issued invoices and payment receipts reject upda
   s.close();
  }finally{fs.rmSync(tmp,{recursive:true,force:true});}
 });
+
+test('SQL REPLACE cannot bypass issued invoice delete triggers',()=>{
+ const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'tm-invoice-replace-'));
+ try{
+  const s=new LocalStore(path.join(tmp,'db.sqlite'));s.initializeFictionalCompany();
+  try{
+   const p=s.createProject({code:'SYN-REPLACE',customer:'Fictional',siteAddress:'Test'});
+   s.db.prepare('INSERT INTO issued_invoices VALUES (?,?,?,?,?,?,?,?)').run('inv',p,'INV-001','{}','2026-11-23',10000,'fake-sha','issued/original.pdf');
+   const original=s.db.prepare('SELECT * FROM issued_invoices').all();
+   for(const id of ['inv','different-id']){
+    assert.throws(()=>s.db.prepare('INSERT OR REPLACE INTO issued_invoices VALUES (?,?,?,?,?,?,?,?)').run(id,p,'INV-001','{}','2026-11-23',1,'other-sha','issued/other.pdf'),/immutable/);
+    assert.deepEqual(s.db.prepare('SELECT * FROM issued_invoices').all(),original);
+   }
+  }finally{s.close();}
+ }finally{fs.rmSync(tmp,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

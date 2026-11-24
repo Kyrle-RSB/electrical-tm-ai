@@ -35,3 +35,25 @@ test('a failed new migration rolls back and keeps both original DB and rescue',(
   assert.equal(rescues.length,1);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+
+test('interrupted SQLite schema transaction is rolled back on process restart',()=>{
+ const {spawnSync}=require('node:child_process') as typeof import('node:child_process');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-migration-crash-'));
+ const old=path.join(root,'old'),file=path.join(root,'data','db','app.sqlite');
+ const full='packages/persistence-sqlite/src/migrations';fs.mkdirSync(old);
+ try{
+  fs.copyFileSync(path.join(full,'0001-initial.sql'),path.join(old,'0001-initial.sql'));
+  let db=new LocalStore(file,old);db.initializeFictionalCompany();
+  const id=db.createProject({code:'CRASH-BEFORE',customer:'Fictional',siteAddress:'Stable'});db.close();
+  const interrupted=spawnSync(process.execPath,['-e',`const {DatabaseSync}=require('node:sqlite');const db=new DatabaseSync(process.argv[1]);db.exec('BEGIN IMMEDIATE; CREATE TABLE interrupted_probe(x INTEGER);');process.exit(77);`,file],{encoding:'utf8',windowsHide:true});
+  assert.equal(interrupted.status,77,interrupted.stderr);
+  db=new LocalStore(file,full);
+  try{
+   assert.equal(db.listProjects()[0].id,id);
+   assert.equal(db.db.prepare("SELECT name FROM sqlite_master WHERE name='interrupted_probe'").get(),undefined);
+   assert.equal((db.db.prepare('PRAGMA quick_check').get() as any).quick_check,'ok');
+   assert.deepEqual(db.db.prepare('PRAGMA foreign_key_check').all(),[]);
+   assert.deepEqual(db.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r:any)=>r.version),[1,2,3,4,5]);
+  }finally{db.close();}
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

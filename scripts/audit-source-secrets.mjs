@@ -1,6 +1,6 @@
 import fs from 'node:fs';import path from 'node:path';
 const root=path.resolve(import.meta.dirname,'..');
-const excluded=new Set(['node_modules','dist-probe','.vite','out','.git','coverage','dist']);
+const excluded=new Set(['node_modules','dist-probe','.vite','out','.git','coverage','dist','.local-evidence']);
 const findings=[];
 const privatePatterns=[
   [/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,'private key material'],

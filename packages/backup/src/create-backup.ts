@@ -4,6 +4,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import {backup} from 'node:sqlite';
 import { LocalStore } from '../../persistence-sqlite/src/connection';
+import {canonicalBackupPath,backupPathsOverlap} from './backup-destination';
 export type Manifest = {schema:'tm-phase1-backup-v1';createdUtc:string;files:Array<{path:string;bytes:number;sha256:string}>;excluded:string[]};
 export async function hashFile(file:string):Promise<string>{
   return crypto.createHash('sha256').update(await fs.promises.readFile(file)).digest('hex');
@@ -18,13 +19,11 @@ export async function traverseRegularFiles(root:string,rel=''):Promise<string[]>
   }
   return output;
 }
-function ensureOutside(a:string,b:string){
-  const pa=path.resolve(a),pb=path.resolve(b);
-  if(pa===pb||pa.startsWith(pb+path.sep)||pb.startsWith(pa+path.sep))throw new Error('Backup destination must be outside data directory');
-}
 /** Single-operator proof. App-level write mutex required for full product backup consistency. */
 export async function createBackup(store:LocalStore,dataRoot:string,backupDestination:string):Promise<{backupPath:string;manifest:Manifest}> {
-  ensureOutside(dataRoot,backupDestination);
+  dataRoot=await canonicalBackupPath(dataRoot);
+  backupDestination=await canonicalBackupPath(backupDestination);
+  if(backupPathsOverlap(dataRoot,backupDestination))throw new Error('Backup destination must be outside data directory');
   await fs.promises.mkdir(backupDestination,{recursive:true,mode:0o700});
   const name=`tm-backup-${new Date().toISOString().replace(/[:.]/g,'-')}-${crypto.randomBytes(3).toString('hex')}`;
   const temp=path.join(backupDestination,`.${name}.incomplete`), finished=path.join(backupDestination,name);
