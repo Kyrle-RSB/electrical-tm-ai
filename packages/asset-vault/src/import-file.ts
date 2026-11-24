@@ -37,7 +37,8 @@ export async function importImageFromPickedFile(source:string, vaultRoot:string)
   const mime=validateImageBytes(bytes);
   const sha256=crypto.createHash('sha256').update(bytes).digest('hex');
   const ext=mime==='image/png'?'png':'jpg';
-  const id=crypto.randomUUID(), relativePath=path.join('images',`${id}.${ext}`);
+  // Portable vault locators are always POSIX paths, even on Windows.
+  const id=crypto.randomUUID(), relativePath=`images/${id}.${ext}`;
   await fs.promises.mkdir(path.join(vaultRoot,'images'),{recursive:true,mode:0o700});
   await fs.promises.writeFile(path.join(vaultRoot,relativePath),bytes,{flag:'wx',mode:0o600});
   return {id,relativePath,sha256,mime,size:bytes.length};

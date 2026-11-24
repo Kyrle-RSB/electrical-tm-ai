@@ -19,7 +19,7 @@ test('backup verifies matching schema, restores records and retains original res
   db=new LocalStore(file,migrations);assert.deepEqual(db.listProjects().map(x=>x.project_code),['ORIGINAL']);db.close();
   const prior=new LocalStore(path.join(result.rollbackPath!,'db','app.sqlite'),migrations);
   assert.deepEqual(prior.listProjects().map(x=>x.project_code),['LATER','ORIGINAL']);prior.close();
- }finally{fs.rmSync(root,{recursive:true,force:true});}
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
 test('incompatible migration history is rejected even when attacker fixes manifest hashes',async()=>{
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-incompatible-'));
@@ -35,7 +35,7 @@ test('incompatible migration history is rejected even when attacker fixes manife
   m.files.find((f:any)=>f.path==='db/app.sqlite').bytes=raw.length;
   fs.writeFileSync(manifestPath,JSON.stringify(m));
   await assert.rejects(verifyBackup(saved.backupPath,migrations),/Migration history mismatch/);
- }finally{fs.rmSync(root,{recursive:true,force:true});}
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
 
 test('complete synthetic foundation chain survives backup/restore with PDF and image (MOCK vault only)',async()=>{
@@ -81,5 +81,5 @@ test('complete synthetic foundation chain survives backup/restore with PDF and i
    assert.deepEqual(fs.readFileSync(pdf),original);
    assert.equal((await verifyManagedImage(path.join(working,'vault'),imported.relativePath,imported.sha256)).mime,'image/png');
    db.close();
- }finally{fs.rmSync(root,{recursive:true,force:true});}
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
