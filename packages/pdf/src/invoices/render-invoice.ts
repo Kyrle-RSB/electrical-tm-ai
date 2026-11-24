@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
+import {writeNewPdfExclusive} from '../common/stored-pdf';
 /** Minimal self-contained PDF-1.4 synthetic feasibility renderer; NOT production invoice engine. */
 function asciiSafe(s:string):string {return s.normalize('NFKD').replace(/[^\x20-\x7e]/g,'?').replace(/[()\\]/g,'\\$&').slice(0,110);}
 export function makeSyntheticInvoicePdf(info:{company:string;customer:string;project:string;invoiceNumber:string;taxId:string;contractorLicense:string;amount:string}):Buffer {
@@ -107,8 +108,7 @@ export async function saveSyntheticInvoicePdf(
   // Exclusive new-file create remains the normal path. A confirmed replace is staged
   // into a same-folder temp file, so a failed write never truncates the old document.
   if(!exists){
-    await checkParent();
-    await fs.promises.writeFile(target,pdf,{flag:'wx',mode:0o600});
+    await writeNewPdfExclusive(target,pdf,checkParent);
   }else{
     const temp=target+`.tmp-${randomUUID()}`;
     let stagedIdentity:fs.Stats|undefined;

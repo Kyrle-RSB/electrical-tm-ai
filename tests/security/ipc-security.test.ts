@@ -70,3 +70,13 @@ test('native foreign-window fixture covers the exact fixed bridge method set',as
  assert.deepEqual([...PACKAGED_SECURITY_METHODS],Object.keys(bridge));
  assert.equal(new Set(PACKAGED_SECURITY_METHODS).size,PACKAGED_SECURITY_METHODS.length);
 });
+
+
+test('native proof preferences accessor fails closed instead of substituting configured values',async()=>{
+ const {readPackagedRuntimePrefs}=await import('../e2e/cockpit-flow.spec');
+ const observed={contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,webviewTag:false};
+ assert.throws(()=>readPackagedRuntimePrefs({}),/accessor unavailable/);
+ assert.throws(()=>readPackagedRuntimePrefs({getLastWebPreferences:()=>null}),/preferences invalid/);
+ assert.throws(()=>readPackagedRuntimePrefs({getLastWebPreferences:()=>({...observed,webSecurity:undefined})}),/missing runtime preference webSecurity/);
+ assert.deepEqual(readPackagedRuntimePrefs({getLastWebPreferences:()=>observed}),observed);
+});

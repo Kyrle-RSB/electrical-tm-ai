@@ -155,3 +155,75 @@ test('redirected parent during replacement preserves original export and retains
   assert.deepEqual(fs.readFileSync(path.join(parked,'existing.pdf')),original);assert.deepEqual(fs.readdirSync(managed),[]);assert.ok(fs.readdirSync(parked).some(name=>name.startsWith('existing.pdf.tmp-')));
  }finally{fs.promises.lstat=originalLstat;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+for(const mode of ['new-export','immutable'] as const)test('partial exclusive PDF write leaves no poisoned '+mode+' filename',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-pdf-partial-new-'));
+ const originalOpen=fs.promises.open,originalWrite=fs.promises.writeFile;
+ const bytes=makeSyntheticInvoicePdf(fixture);
+ try{
+   const folder=path.join(root,mode);fs.mkdirSync(folder);let injected=false;
+   const isTarget=(p:unknown)=>typeof p==='string'&&p.endsWith('.pdf')&&path.basename(p).includes(mode==='new-export'?'new.pdf':'.pdf');
+   const error=()=>Object.assign(new Error('Synthetic partial PDF disk full'),{code:'ENOSPC'});
+   // Both old convenience writer and descriptor writer must receive the same partial-write fault.
+   fs.promises.writeFile=(async(...args:Parameters<typeof originalWrite>)=>{
+    if(isTarget(args[0])){await originalWrite(args[0],bytes.subarray(0,20),args[2]);injected=true;throw error();}
+    return originalWrite(...args);
+   }) as typeof originalWrite;
+   fs.promises.open=(async(...args:Parameters<typeof originalOpen>)=>{
+    const handle=await originalOpen(...args);
+    if(isTarget(args[0])&&(args[1]==='wx'||args[1]==='wx+')){
+     handle.writeFile=(async()=>{await handle.write(bytes.subarray(0,20));injected=true;throw error();}) as typeof handle.writeFile;
+    }
+    return handle;
+   }) as typeof originalOpen;
+   const write=()=>mode==='new-export'?saveSyntheticInvoicePdf(path.join(folder,'new.pdf'),fixture):storeImmutablePdf(folder,bytes);
+   await assert.rejects(write(),/partial PDF disk full/);assert.equal(injected,true,'partial-write fault must fire');
+   const leaf=mode==='new-export'?folder:path.join(folder,'issued');assert.deepEqual(fs.readdirSync(leaf),[],'failed exclusive write must not poison the filename');
+   fs.promises.open=originalOpen;fs.promises.writeFile=originalWrite;
+   await write();const written=fs.readdirSync(leaf);assert.equal(written.length,1);assert.deepEqual(fs.readFileSync(path.join(leaf,written[0])),bytes);
+ }finally{fs.promises.open=originalOpen;fs.promises.writeFile=originalWrite;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('replacement partial write, sync failure and read-only rename failure preserve the exact previous PDF',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-pdf-replace-fault-')),file=path.join(root,'existing.pdf');
+ const originalOpen=fs.promises.open,originalRename=fs.promises.rename;
+ try{
+  await saveSyntheticInvoicePdf(file,fixture);const before=fs.readFileSync(file);
+  for(const fault of ['partial-write','sync','read-only-rename'] as const){
+   let injected=false;const error=()=>Object.assign(new Error('Synthetic '+fault),{code:fault==='partial-write'?'ENOSPC':fault==='sync'?'EIO':'EROFS'});
+   fs.promises.open=(async(...args:Parameters<typeof originalOpen>)=>{
+    const handle=await originalOpen(...args);
+    if(typeof args[0]==='string'&&path.basename(args[0]).startsWith('existing.pdf.tmp-')&&args[1]==='wx'){
+     if(fault==='partial-write')handle.writeFile=(async()=>{await handle.write(before.subarray(0,15));injected=true;throw error();}) as typeof handle.writeFile;
+     if(fault==='sync')handle.sync=async()=>{injected=true;throw error();};
+    }
+    return handle;
+   }) as typeof originalOpen;
+   fs.promises.rename=(async(...args:Parameters<typeof originalRename>)=>{
+    if(fault==='read-only-rename'&&path.basename(String(args[0])).startsWith('existing.pdf.tmp-')){injected=true;throw error();}
+    return originalRename(...args);
+   }) as typeof originalRename;
+   await assert.rejects(saveSyntheticInvoicePdf(file,{...fixture,amount:'99.00'},{allowReplace:true}),new RegExp('Synthetic '+fault));
+   assert.equal(injected,true,'fault must actually fire');assert.deepEqual(fs.readFileSync(file),before);assert.deepEqual(fs.readdirSync(root),['existing.pdf']);
+  }
+ }finally{fs.promises.open=originalOpen;fs.promises.rename=originalRename;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+
+test('new exclusive PDF creation refuses same-length tampering before success',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-pdf-new-tamper-')),file=path.join(root,'new.pdf');
+ const originalOpen=fs.promises.open;let injected=false;
+ try{
+  fs.promises.open=(async(...args:Parameters<typeof originalOpen>)=>{
+   const handle=await originalOpen(...args);
+   if(path.basename(String(args[0]))==='new.pdf'&&(args[1]==='wx'||args[1]==='wx+')){
+    const sync=handle.sync.bind(handle);
+    handle.sync=async()=>{await handle.write(Buffer.from([0]),0,1,10);injected=true;await sync();};
+   }return handle;
+  }) as typeof originalOpen;
+  await assert.rejects(saveSyntheticInvoicePdf(file,fixture),/New PDF content changed/);
+  assert.equal(injected,true);assert.deepEqual(fs.readdirSync(root),[]);
+  fs.promises.open=originalOpen;
+  await saveSyntheticInvoicePdf(file,fixture);assert.deepEqual(fs.readFileSync(file),makeSyntheticInvoicePdf(fixture));
+ }finally{fs.promises.open=originalOpen;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

@@ -79,8 +79,18 @@ export const PACKAGED_SECURITY_METHODS=Object.freeze([
 ]);
 const SECURITY_CSP="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'";
 interface SecurityWindow{
- webContents:{executeJavaScript(code:string,userGesture?:boolean):Promise<unknown>;getURL():string;
-  getLastWebPreferences():{contextIsolation?:boolean;nodeIntegration?:boolean;sandbox?:boolean;webSecurity?:boolean;webviewTag?:boolean}|null};
+ webContents:{executeJavaScript(code:string,userGesture?:boolean):Promise<unknown>;getURL():string};
+}
+/** Electron 45.4.1 exposes this runtime accessor internally, not in the public
+ * TypeScript declaration. It is used only by this isolated native proof.
+ * Never substitute requested window configuration for observed runtime values. */
+export function readPackagedRuntimePrefs(webContents:object){
+ const getter:unknown=Reflect.get(webContents,'getLastWebPreferences');
+ if(typeof getter!=='function')throw new Error('Native proof runtime preferences accessor unavailable');
+ const prefs:unknown=Reflect.apply(getter,webContents,[]);
+ if(typeof prefs!=='object'||prefs===null||Array.isArray(prefs))throw new Error('Native proof runtime preferences invalid');
+ const read=(key:string):boolean=>{const value:unknown=Reflect.get(prefs,key);if(typeof value!=='boolean')throw new Error('Native proof missing runtime preference '+key);return value;};
+ return {contextIsolation:read('contextIsolation'),nodeIntegration:read('nodeIntegration'),sandbox:read('sandbox'),webSecurity:read('webSecurity'),webviewTag:read('webviewTag')};
 }
 export async function runPackagedSecurityFlow(primary:SecurityWindow,foreign:SecurityWindow,projectId:string,snapshot:()=>string,navigationAttempts:()=>number){
  const baseline=snapshot();
@@ -115,7 +125,7 @@ export async function runPackagedSecurityFlow(primary:SecurityWindow,foreign:Sec
   }return results;
  })()`);
  const effectsAfterInvokes=snapshot()===baseline;
- const prefs=primary.webContents.getLastWebPreferences();
+ const actualPrefs=readPackagedRuntimePrefs(primary.webContents);
  const isolation=await primary.webContents.executeJavaScript(`({
   requireAbsent:typeof require==='undefined',processAbsent:typeof process==='undefined',
   bridgeKeys:Object.keys(window.tmBridge),csp:document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content
@@ -147,6 +157,5 @@ export async function runPackagedSecurityFlow(primary:SecurityWindow,foreign:Sec
  const navigationAttempted=navigationAttempts()===beforeAttempts+1;
  const navigationDenied=navigationAttempted&&primary.webContents.getURL()===beforeUrl&&beforeUrl==='tmapp://app/index.html';
  const stateUnchanged=effectsAfterInvokes&&snapshot()===baseline;
- const actualPrefs={contextIsolation:prefs?.contextIsolation,nodeIntegration:prefs?.nodeIntegration,sandbox:prefs?.sandbox,webSecurity:prefs?.webSecurity,webviewTag:prefs?.webviewTag};
  return {schema:'tm-renderer-security-v1',synthetic:true,foreignResults,malformedResults,stateUnchanged,actualPrefs,isolation,expectedCsp:SECURITY_CSP,security,navigationAttempted,navigationDenied};
 }
