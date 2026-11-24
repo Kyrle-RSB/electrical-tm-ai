@@ -50,7 +50,7 @@ export function validateLifecycleReceipts(receipts,nonce){
 }
 /** Actual second-process contention, not a second window in the primary process. */
 async function runDuplicateLifecycle(binary,env,profile,nonce){
- const probeEnv={...env,TM_LIFECYCLE_DUPLICATE_PROBE:'1'};
+ const probeEnv={...env,TM_LIFECYCLE_DUPLICATE_PROBE:'1'};delete probeEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;
  const primary=spawn(binary,['--tm-smoke'],{stdio:'ignore',windowsHide:true,env:probeEnv});
  let primaryExit=null;
  const settled=new Promise(resolve=>{primary.once('error',()=>resolve({exitCode:null,signal:null,failed:true}));primary.once('close',(exitCode,signal)=>resolve({exitCode,signal,failed:false}));});
@@ -83,18 +83,68 @@ function runStartupDenial(binary,env,profile){
  const namedFailure=events.some(e=>e.event==='sqlite.open'&&e.state==='fail')&&events.some(e=>e.event==='startup'&&e.state==='fail');
  return {verdict:attempt.status===1&&!attempt.error&&preserved&&safe&&namedFailure?'PASS':'FAIL',exitCode:attempt.status,logicalStatePreserved:preserved,safeEventFields:safe,namedFailure,events:events.map(({event,state})=>({event,state}))};
 }
+/** A real native failure must terminate, preserve seeded synthetic data, and emit only safe diagnostic fields. */
+function runDiagnosticDenials(binary,env,profile){
+ const pii='SYNTHETIC-DIAGNOSTIC-CUSTOMER@example.invalid';
+ const credential='TEST-FAKE-DIAGNOSTIC-CREDENTIAL-SENTINEL';
+ const dbPath=path.join(profile,'local-data','db','app.sqlite');
+ const db=new DatabaseSync(dbPath);try{
+  const result=db.prepare('UPDATE projects SET customer_name=? WHERE project_code=?').run(pii,'LIFECYCLE-001');
+  if(result.changes!==1)throw new Error('Synthetic diagnostic project absent');
+ }finally{db.close();}
+ const sentinelPath=path.join(profile,'settings','diagnostic-fake-token.txt');fs.mkdirSync(path.dirname(sentinelPath),{recursive:true,mode:0o700});
+ fs.writeFileSync(sentinelPath,credential,{flag:'wx',mode:0o600});
+ const state=()=>{const d=new DatabaseSync(dbPath,{readOnly:true});try{return JSON.stringify({projects:d.prepare('SELECT * FROM projects ORDER BY id').all(),history:d.prepare('SELECT * FROM schema_migrations ORDER BY version').all(),sentinel:fs.readFileSync(sentinelPath,'utf8')});}finally{d.close();}};
+ const logPath=path.join(profile,'diagnostics','startup.jsonl');const before=state();
+ const attempt=(executable,probeEnv,event)=>{
+  const previous=fs.readFileSync(logPath,'utf8').trim().split('\n').length;
+  const result=spawnSync(executable,['--tm-smoke'],{encoding:'utf8',timeout:30000,maxBuffer:2*1024*1024,windowsHide:true,env:probeEnv});
+  const log=fs.readFileSync(logPath,'utf8');const events=log.trim().split('\n').slice(previous).map(line=>JSON.parse(line));
+  const safeEventFields=events.every(e=>Object.keys(e).sort().join(',')==='atUtc,event,state'&&/^[a-z][a-z0-9.-]{1,80}$/.test(e.event)&&['begin','pass','fail','info'].includes(e.state));
+  const sentinelFree=![pii,credential,profile,sentinelPath].some(value=>log.includes(value));
+  const namedFailure=events.some(e=>e.event===event&&e.state==='fail');
+  const shutdown=events.some(e=>e.event==='shutdown'&&e.state==='pass');
+  const logicalStatePreserved=state()===before;
+  const verdict=result.status===1&&!result.error&&safeEventFields&&sentinelFree&&namedFailure&&shutdown&&logicalStatePreserved?'PASS':'FAIL';
+  return {verdict,exitCode:result.status,spawnFailed:!!result.error,safeEventFields,sentinelFree,namedFailure,shutdown,logicalStatePreserved,events:events.map(({event,state})=>({event,state}))};
+ };
+ const fixture=fs.mkdtempSync(path.join(os.tmpdir(),'tm-native-resource-denial-'));
+ let missingResource=null,rendererCrash=null,originalUnchanged=false;
+ try{
+  const appDir=process.platform==='darwin'?path.resolve(binary,'../../..'):path.dirname(binary);
+  const originalResources=process.platform==='darwin'?path.join(appDir,'Contents','Resources'):path.join(appDir,'resources');
+  const copiedApp=path.join(fixture,path.basename(appDir));
+  const resourceIdentity=()=>JSON.stringify({binary:crypto.createHash('sha256').update(fs.readFileSync(binary)).digest('hex'),asar:crypto.createHash('sha256').update(fs.readFileSync(path.join(originalResources,'app.asar'))).digest('hex'),migrations:fs.readdirSync(path.join(originalResources,'migrations')).sort().map(n=>[n,crypto.createHash('sha256').update(fs.readFileSync(path.join(originalResources,'migrations',n))).digest('hex')])});
+  const originalIdentity=resourceIdentity();
+  fs.cpSync(appDir,copiedApp,{recursive:true,dereference:false,verbatimSymlinks:true,errorOnExist:true,force:false});
+  const copiedBinary=path.join(copiedApp,path.relative(appDir,binary));
+  const copiedResources=path.join(copiedApp,path.relative(appDir,originalResources));
+  fs.renameSync(path.join(copiedResources,'migrations'),path.join(copiedResources,'migrations-synthetic-missing'));
+  if(fs.existsSync(path.join(copiedResources,'migrations')))throw new Error('Missing resource fault not injected');
+  missingResource=attempt(copiedBinary,env,'sqlite.open');
+  originalUnchanged=originalIdentity===resourceIdentity();
+  rendererCrash=attempt(binary,{...env,TM_LIFECYCLE_RENDERER_CRASH_PROBE:'1'},'renderer.process');
+  originalUnchanged=originalUnchanged&&originalIdentity===resourceIdentity();
+ }finally{fs.rmSync(fixture,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+ return {schema:'tm-native-diagnostic-denials-v1',synthetic:true,missingResource,rendererCrash,originalUnchanged};
+}
+export function validateDiagnosticDenials(report){
+ return report?.schema==='tm-native-diagnostic-denials-v1'&&report.synthetic===true&&report.originalUnchanged===true&&['missingResource','rendererCrash'].every(k=>{
+  const v=report[k];return v?.verdict==='PASS'&&v.exitCode===1&&v.spawnFailed===false&&['safeEventFields','sentinelFree','namedFailure','shutdown','logicalStatePreserved'].every(flag=>v[flag]===true)&&Array.isArray(v.events)&&v.events.some(e=>e.event===(k==='missingResource'?'sqlite.open':'renderer.process')&&e.state==='fail')&&v.events.some(e=>e.event==='shutdown'&&e.state==='pass');
+ });
+}
 export function validateAdversarialLifecycle(lifecycle){
  return lifecycle?.duplicate?.verdict==='PASS'&&lifecycle.duplicate.primary?.exitCode===0&&lifecycle.duplicate.secondary?.exitCode===0&&Number.isInteger(lifecycle.duplicate.primaryPid)&&lifecycle.duplicate.primaryPid>0&&Number.isInteger(lifecycle.duplicate.secondary?.pid)&&lifecycle.duplicate.secondary.pid>0&&lifecycle.duplicate.secondary.pid!==lifecycle.duplicate.primaryPid&&lifecycle.receipts?.[2]?.secondaryLaunches===1&&lifecycle.duplicateEvents===1&&lifecycle.startupDenial?.verdict==='PASS'&&lifecycle.startupDenial.exitCode===1&&lifecycle.startupDenial.logicalStatePreserved===true&&lifecycle.startupDenial.safeEventFields===true&&lifecycle.startupDenial.namedFailure===true;
 }
 async function runLifecycle(binary){
  const profile=fs.mkdtempSync(path.join(os.tmpdir(),'tm-native-lifecycle-'));
  const nonce=crypto.randomBytes(16).toString('hex');
- let receipts=[],runs=[],duplicate=null,startupDenial=null;
+ let receipts=[],runs=[],duplicate=null,startupDenial=null,diagnosticDenials=null;
  try{
   fs.writeFileSync(path.join(profile,'.tm-lifecycle.json'),JSON.stringify({schema:'tm-lifecycle-v1',nonce}),{flag:'wx',mode:0o600});
   for(const stage of LIFECYCLE_STAGES){
    const env={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:stage,TM_LIFECYCLE_NONCE:nonce,ELECTRON_ENABLE_LOGGING:'1'};
-   delete env.TM_LIFECYCLE_DUPLICATE_PROBE;
+   delete env.TM_LIFECYCLE_DUPLICATE_PROBE;delete env.TM_LIFECYCLE_RENDERER_CRASH_PROBE;
    if(stage==='revoked'){
     duplicate=await runDuplicateLifecycle(binary,env,profile,nonce);
     runs.push({stage,exitCode:duplicate.primary?.exitCode??null,signal:duplicate.primary?.signal??null,failed:duplicate.verdict!=='PASS'});
@@ -110,12 +160,13 @@ async function runLifecycle(binary){
   const shutdowns=log.filter(x=>x.event==='shutdown'&&x.state==='pass').length;
   const duplicateEvents=log.filter(x=>x.event==='packaged.lifecycle.duplicate'&&x.state==='pass').length;
   if(runs.length===3&&runs.every(r=>r.exitCode===0&&!r.failed)&&validateLifecycleReceipts(receipts,nonce)&&shutdowns===3&&duplicateEvents===1){
-   const denialEnv={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:'revoked',TM_LIFECYCLE_NONCE:nonce,ELECTRON_ENABLE_LOGGING:'1'};delete denialEnv.TM_LIFECYCLE_DUPLICATE_PROBE;
+   const denialEnv={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:'revoked',TM_LIFECYCLE_NONCE:nonce,ELECTRON_ENABLE_LOGGING:'1'};delete denialEnv.TM_LIFECYCLE_DUPLICATE_PROBE;delete denialEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;
+   diagnosticDenials=runDiagnosticDenials(binary,denialEnv,profile);
    startupDenial=runStartupDenial(binary,denialEnv,profile);
   }
-  const report={runs,receipts,shutdowns,duplicateEvents,duplicate,startupDenial};
-  return {...report,verdict:runs.length===3&&runs.every(r=>r.exitCode===0&&!r.failed)&&validateLifecycleReceipts(receipts,nonce)&&shutdowns===3&&validateAdversarialLifecycle(report)?'PASS':'FAIL'};
- }catch{return {verdict:'FAIL',runs,receipts,duplicate,startupDenial,shutdowns:null};}
+  const report={runs,receipts,shutdowns,duplicateEvents,duplicate,startupDenial,diagnosticDenials};
+  return {...report,verdict:runs.length===3&&runs.every(r=>r.exitCode===0&&!r.failed)&&validateLifecycleReceipts(receipts,nonce)&&shutdowns===3&&validateAdversarialLifecycle(report)&&validateDiagnosticDenials(diagnosticDenials)?'PASS':'FAIL'};
+ }catch{return {verdict:'FAIL',runs,receipts,duplicate,startupDenial,diagnosticDenials,shutdowns:null};}
  finally{fs.rmSync(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 }
 // Unit-check the evidence contract even in a non-native build environment.
@@ -134,6 +185,9 @@ if(process.argv.includes('--self-test')){
   if(!validateLifecycleReceipts(lifecycle,nonce)||validateLifecycleReceipts(lifecycle.slice(0,-1),nonce)||validateLifecycleReceipts(lifecycle.map(x=>({...x,pid:100})),nonce)||validateLifecycleReceipts(lifecycle.map((x,i)=>i===1?{...x,projectId:'different'}:x),nonce)||validateLifecycleReceipts(lifecycle.map((x,i)=>i===2?{...x,credential:'stored'}:x),nonce))throw new Error('Lifecycle evidence contract self-test failed');
   const adversarial={duplicate:{verdict:'PASS',primary:{exitCode:0},secondary:{exitCode:0,pid:999},primaryPid:102},receipts:lifecycle.map((x,i)=>({...x,secondaryLaunches:i===2?1:0})),duplicateEvents:1,startupDenial:{verdict:'PASS',exitCode:1,logicalStatePreserved:true,safeEventFields:true,namedFailure:true}};
   if(!validateAdversarialLifecycle(adversarial)||validateAdversarialLifecycle({...adversarial,duplicateEvents:0})||validateAdversarialLifecycle({...adversarial,startupDenial:{...adversarial.startupDenial,logicalStatePreserved:false}}))throw new Error('Adversarial native receipt contract self-test failed');
+  const diag=(event)=>({verdict:'PASS',exitCode:1,spawnFailed:false,safeEventFields:true,sentinelFree:true,namedFailure:true,shutdown:true,logicalStatePreserved:true,events:[{event,state:'fail'},{event:'shutdown',state:'pass'}]});
+  const denials={schema:'tm-native-diagnostic-denials-v1',synthetic:true,originalUnchanged:true,missingResource:diag('sqlite.open'),rendererCrash:diag('renderer.process')};
+  if(!validateDiagnosticDenials(denials)||validateDiagnosticDenials({...denials,originalUnchanged:false})||validateDiagnosticDenials({...denials,rendererCrash:{...denials.rendererCrash,sentinelFree:false}})||validateDiagnosticDenials({...denials,missingResource:{...denials.missingResource,events:[]}}))throw new Error('Diagnostic denial contract self-test failed');
   console.log('PASS: native smoke, lifecycle and adversarial receipt-contract cases (NO NATIVE EXECUTION CLAIMED)');
 }else if(import.meta.url===pathToFileURL(path.resolve(process.argv[1]||'')).href){
   if(process.platform!=='darwin'&&process.platform!=='win32')
@@ -152,7 +206,7 @@ if(process.argv.includes('--self-test')){
   const evidencePath=path.join(evidenceDir,'result.json');
   try {
     const smokeEnv={...process.env,ELECTRON_ENABLE_LOGGING:'1',TM_SMOKE_REPORT_PATH:evidencePath};
-    delete smokeEnv.TM_LIFECYCLE_PROFILE;delete smokeEnv.TM_LIFECYCLE_STAGE;delete smokeEnv.TM_LIFECYCLE_NONCE;delete smokeEnv.TM_LIFECYCLE_DUPLICATE_PROBE;
+    delete smokeEnv.TM_LIFECYCLE_PROFILE;delete smokeEnv.TM_LIFECYCLE_STAGE;delete smokeEnv.TM_LIFECYCLE_NONCE;delete smokeEnv.TM_LIFECYCLE_DUPLICATE_PROBE;delete smokeEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;
     const result=spawnSync(binary,['--tm-smoke'],{
       encoding:'utf8',timeout:120000,maxBuffer:2*1024*1024,windowsHide:true,
       env:smokeEnv

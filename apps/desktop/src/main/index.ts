@@ -27,7 +27,7 @@ import {storeImmutablePdf} from '../../../../packages/pdf/src/common/stored-pdf'
 import {LocalOperationQueue} from '../../../../packages/application/src/use-cases/backup-restore';
 import {createCockpitWindow} from './window';
 import {establishSingleInstance} from './os/single-instance';
-import {createStartupRecorder,resolveLifecycleProof,createShutdownCoordinator} from './bootstrap';
+import {createStartupRecorder,resolveLifecycleProof,createShutdownCoordinator,createRendererFailureGate} from './bootstrap';
 
 protocol.registerSchemesAsPrivileged([{scheme:'tmapp',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 // Internal construction profile is intentionally separate from the owner's previously
@@ -79,8 +79,10 @@ async function run(){
   });
   mainWindow=createCockpitWindow(__dirname,isPackagedSmoke);
   const win=mainWindow;
-  win.webContents.on('did-fail-load',(_event,_code,_description)=>recorder.record('renderer.load','fail'));
-  win.webContents.on('render-process-gone',()=>recorder.record('renderer.process','fail'));
+  const rendererFailure=createRendererFailureGate({record:(event,state)=>recorder.record(event,state),fail:()=>shutdown.fail()});
+  win.webContents.on('did-fail-load',(_event,code,_description,_url,isMainFrame)=>{if(isMainFrame&&code!==-3)rendererFailure.fail('renderer.load');});
+  win.webContents.on('preload-error',()=>rendererFailure.fail('renderer.preload'));
+  win.webContents.on('render-process-gone',()=>rendererFailure.fail('renderer.process'));
   recorder.record('renderer.load','begin');
   currentUrl=DEV_URL?new URL(DEV_URL).toString():'tmapp://app/index.html';
   // All privileged channels use one versioned, replay-checked and sanitized boundary.
@@ -145,12 +147,18 @@ async function run(){
     assertNoPayload(guard(e,r));await secret.remove();return {removed:true};
   }));
   if(DEV_URL)await mainWindow.loadURL(DEV_URL);else await mainWindow.loadURL(currentUrl);
+  rendererFailure.assertHealthy();
   recorder.record('renderer.load','pass');
   if(lifecycleProof){
     // The runner launches the same packaged executable three separate times.
     // Every mutation/read here uses the real isolated renderer bridge.
     if(!app.isPackaged||DEV_URL)throw new Error('Lifecycle proof requires a packaged executable');
     const stage=lifecycleProof.stage;
+    // Only the already validated disposable packaged lifecycle profile may request a real crash.
+    if(stage==='revoked'&&process.env.TM_LIFECYCLE_RENDERER_CRASH_PROBE==='1'){
+      win.webContents.forcefullyCrashRenderer();
+      return;
+    }
     const result=await win.webContents.executeJavaScript(`(async()=>{
       const stage=${JSON.stringify(stage)};
       if(stage==='seed'){

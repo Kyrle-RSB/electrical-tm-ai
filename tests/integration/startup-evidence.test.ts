@@ -107,3 +107,18 @@ test('lifecycle proof requires a private runner-owned temporary profile on POSIX
   }
  }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('primary renderer failure initiates a single fatal shutdown and blocks subsequent startup work',async()=>{
+ const {createRendererFailureGate}=await import('../../apps/desktop/src/main/bootstrap');
+ for(const event of ['renderer.load','renderer.preload','renderer.process'] as const){
+  const calls:string[]=[];const gate=createRendererFailureGate({record:(e,s)=>calls.push(e+':'+s),fail:()=>calls.push('shutdown')});
+  gate.assertHealthy();gate.fail(event);gate.fail('renderer.process');
+  assert.deepEqual(calls,[event+':fail','shutdown']);assert.throws(()=>gate.assertHealthy(),/Renderer unavailable/);
+ }
+});
+
+test('primary renderer failure still initiates fatal shutdown when safe diagnostics cannot be written',async()=>{
+ const {createRendererFailureGate}=await import('../../apps/desktop/src/main/bootstrap');
+ let calls=0;const gate=createRendererFailureGate({record:()=>{throw new Error('Synthetic diagnostic write failure');},fail:()=>{calls++;}});
+ gate.fail('renderer.process');assert.equal(calls,1);assert.throws(()=>gate.assertHealthy(),/Renderer unavailable/);
+});

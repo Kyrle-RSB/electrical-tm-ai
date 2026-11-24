@@ -93,3 +93,14 @@ export function createShutdownCoordinator(deps:{drain:()=>Promise<void>;close:()
   wait(){return active??Promise.resolve();}
  };
 }
+
+export type RendererFailureEvent='renderer.load'|'renderer.preload'|'renderer.process';
+/** Primary renderer failures are fatal, even when diagnostic storage is unavailable. */
+export function createRendererFailureGate(deps:{record:(event:RendererFailureEvent,state:'fail')=>void;fail:()=>void}){
+ let failed=false;
+ return {fail(event:RendererFailureEvent){
+  if(failed)return;failed=true;
+  try{deps.record(event,'fail');}catch{/* Fail closed even if diagnostic storage is unsafe. */}
+  deps.fail();
+ },assertHealthy(){if(failed)throw new Error('Renderer unavailable');}};
+}
