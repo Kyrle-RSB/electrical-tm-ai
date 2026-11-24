@@ -1,6 +1,6 @@
 /** Check receipt integrity. A PASS here means the evidence package is intact, NOT that the app passes Phase 2. */
 import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';
-import {validateLifecycleReceipts,NATIVE_REQUIRED_CHECKS,validateCockpitFlowReceipt,validateAdversarialLifecycle,validateRendererSecurityReceipt,validateDiagnosticDenials} from './run-packaged-smoke.mjs';
+import {validateLifecycleReceipts,NATIVE_REQUIRED_CHECKS,validateCockpitFlowReceipt,validateAdversarialLifecycle,validateRendererSecurityReceipt,validateDiagnosticDenials,validateDevelopmentHmrReceipt} from './run-packaged-smoke.mjs';
 const dir=path.resolve(process.argv[2]||'');
 if(!process.argv[2]||!fs.existsSync(dir)){console.error('Usage: node scripts/audit-native-proof.mjs <extracted-evidence-directory>');process.exit(2)}
 const fail=(reason)=>{console.error(JSON.stringify({integrity:'FAIL',reason}));process.exit(1)};
@@ -18,10 +18,11 @@ try{
  if(!Array.isArray(r.steps)||!r.steps.length)fail('No executed steps');
  if(!['NATIVE_AUTOMATED_SUBSET_PASS','NATIVE_AUTOMATED_SUBSET_FAIL'].includes(r.verdict))fail('Invalid native subset result');
  const expectedSteps=['install','local-tests','desktop-typecheck','source-quality','smoke-contract','module-audit','packaged-build','native-packaged-smoke'];
+ if(r.contractVersion==='8')expectedSteps.push('native-dev-hmr');
  if(r.verdict==='NATIVE_AUTOMATED_SUBSET_PASS'&&
   (r.steps.length!==expectedSteps.length||r.steps.some((x,i)=>x.status!=='PASS'||x.id!==expectedSteps[i])))
   fail('Unsupported PASS conclusion');
- if(['3','4','5','6','7'].includes(r.contractVersion)){
+ if(['3','4','5','6','7','8'].includes(r.contractVersion)){
   const provenance=JSON.parse(file('source-provenance.json').toString());
   if(r.sourceProvenance?.status!==provenance.status)fail('Source provenance status mismatch');
   if(r.verdict==='NATIVE_AUTOMATED_SUBSET_PASS'&&r.sourceAfterVerified!==true)fail('Source drift was not excluded');
@@ -33,10 +34,11 @@ try{
   }else if(provenance.status!=='ARCHIVE_ONLY_NO_GIT_PROOF')fail('Unknown source provenance');
   if(r.verdict==='NATIVE_AUTOMATED_SUBSET_PASS'){
    const smoke=JSON.parse(file('logs/native-packaged-smoke.log').toString());
-   if(['4','5','6','7'].includes(r.contractVersion)&&!validateCockpitFlowReceipt(smoke.cockpitFlow))fail('Packaged cockpit flow evidence missing');
-   if(['5','6','7'].includes(r.contractVersion)&&!validateAdversarialLifecycle(smoke.lifecycle))fail('Adversarial native lifecycle evidence missing');
-   if(['6','7'].includes(r.contractVersion)&&!validateRendererSecurityReceipt(smoke.rendererSecurity))fail('Native renderer security evidence missing');
-   if(r.contractVersion==='7'&&!validateDiagnosticDenials(smoke.lifecycle?.diagnosticDenials))fail('Native diagnostic denial evidence missing');
+   if(['4','5','6','7','8'].includes(r.contractVersion)&&!validateCockpitFlowReceipt(smoke.cockpitFlow))fail('Packaged cockpit flow evidence missing');
+   if(['5','6','7','8'].includes(r.contractVersion)&&!validateAdversarialLifecycle(smoke.lifecycle))fail('Adversarial native lifecycle evidence missing');
+   if(['6','7','8'].includes(r.contractVersion)&&!validateRendererSecurityReceipt(smoke.rendererSecurity))fail('Native renderer security evidence missing');
+   if(['7','8'].includes(r.contractVersion)&&!validateDiagnosticDenials(smoke.lifecycle?.diagnosticDenials))fail('Native diagnostic denial evidence missing');
+   if(r.contractVersion==='8'){const hmr=JSON.parse(file('logs/native-dev-hmr.log').toString());if(hmr.verdict!=='PASS'||hmr.synthetic!==true||hmr.viteVersion!=='8.3.8'||hmr.fixtureOnly!==true||hmr.exit?.exitCode!==0||hmr.exit?.spawnFailed||!validateDevelopmentHmrReceipt(hmr.receipt))fail('Actual development HMR proof missing');}
    if(smoke.verdict!=='PASS'||JSON.stringify(smoke.checks)!==JSON.stringify(NATIVE_REQUIRED_CHECKS)||smoke.lifecycle?.verdict!=='PASS'||smoke.lifecycle?.shutdowns!==3||!validateLifecycleReceipts(smoke.lifecycle?.receipts,smoke.lifecycle?.receipts?.[0]?.nonce??'')||smoke.lifecycle?.runs?.length!==3||smoke.lifecycle.runs.some(x=>x.exitCode!==0||x.failed))fail('Full process lifecycle proof missing');
   }
  }

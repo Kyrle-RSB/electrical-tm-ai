@@ -22,7 +22,7 @@ import {registerBackupHandlers} from './ipc/handlers/backups';
 import {registerBrandingHandlers} from './ipc/handlers/settings';
 import {createNativeFileDialogs} from './os/file-dialogs';
 import {prepareApplicationPaths} from './os/paths';
-import {hashSyntheticCensusFile,runPackagedCockpitFlow,runPackagedSecurityFlow} from '../../../../tests/e2e/cockpit-flow.spec';
+import {hashSyntheticCensusFile,runPackagedCockpitFlow,runPackagedSecurityFlow,runDevelopmentHmrFlow} from '../../../../tests/e2e/cockpit-flow.spec';
 import {storeImmutablePdf} from '../../../../packages/pdf/src/common/stored-pdf';
 import {LocalOperationQueue} from '../../../../packages/application/src/use-cases/backup-restore';
 import {createCockpitWindow} from './window';
@@ -149,6 +149,12 @@ async function run(){
   if(DEV_URL)await mainWindow.loadURL(DEV_URL);else await mainWindow.loadURL(currentUrl);
   rendererFailure.assertHealthy();
   recorder.record('renderer.load','pass');
+  if(isPackagedSmoke&&process.argv.includes('--tm-dev-hmr-proof')){
+    if(app.isPackaged||!DEV_URL||!isPackagedSmoke||lifecycleProof?.stage!=='seed')throw new Error('Development HMR proof requires its isolated marked profile and development server');
+    const report=await runDevelopmentHmrFlow(win,lifecycleProof.nonce,before=>fs.writeFileSync(path.join(P2_TEST_PROFILE,'dev-hmr-ready.json'),JSON.stringify({nonce:lifecycleProof.nonce,before}),{flag:'wx',mode:0o600}));
+    fs.writeFileSync(path.join(P2_TEST_PROFILE,'dev-hmr-result.json'),JSON.stringify(report)+'\n',{flag:'wx',mode:0o600});
+    recorder.record('development.hmr','pass');app.quit();return;
+  }
   if(lifecycleProof){
     // The runner launches the same packaged executable three separate times.
     // Every mutation/read here uses the real isolated renderer bridge.

@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import {spawn,spawnSync} from 'node:child_process';
 import {DatabaseSync} from 'node:sqlite';
 import {fileURLToPath,pathToFileURL} from 'node:url';
+import {createRequire} from 'node:module';
 
 export const NATIVE_REQUIRED_CHECKS=Object.freeze([
   'packaging','renderer-ipc','sqlite-persistence','pdf-create-and-replace',
@@ -169,6 +170,69 @@ async function runLifecycle(binary){
  }catch{return {verdict:'FAIL',runs,receipts,duplicate,startupDenial,diagnosticDenials,shutdowns:null};}
  finally{fs.rmSync(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 }
+const DEV_CSP=REQUIRED_CSP.replace("style-src 'self'","style-src 'self' 'unsafe-inline'").replace("connect-src 'none'","connect-src 'self' ws://localhost:* ws://127.0.0.1:*");
+export function validateDevelopmentHmrReceipt(receipt){
+ if(receipt?.schema!=='tm-dev-hmr-v1'||receipt.synthetic!==true||receipt.documentPreserved!==true||receipt.loopbackOrigin!==true||!/^[a-f0-9]{32}$/.test(receipt.nonce))return false;
+ return ['before','after'].every((key,i)=>{
+  const row=receipt[key];return row?.value===(i?'updated-':'initial-')+receipt.nonce&&row.marker===receipt.nonce&&row.title==='Local foundation cockpit'&&row.csp===DEV_CSP&&row.health===true&&row.requireAbsent===true&&row.processAbsent===true;
+ });
+}
+/** Use actual pinned Vite and Electron, actual main/preload/renderer source, and a synthetic
+ * CSS dependency that is created and changed only in an ignored disposable fixture. */
+async function runDevelopmentHmr(root){
+ const desktop=path.join(root,'apps','desktop'),require=createRequire(path.join(desktop,'package.json'));
+ const vite=await import(pathToFileURL(require.resolve('vite')).href),electron=require('electron');
+ if(vite.version!=='8.3.8'||typeof electron!=='string')throw new Error('Unexpected development toolchain');
+ const nonce=crypto.randomBytes(16).toString('hex');
+ const evidenceRoot=path.join(root,'.local-evidence');fs.mkdirSync(evidenceRoot,{recursive:true,mode:0o700});
+ const work=fs.mkdtempSync(path.join(evidenceRoot,'hmr-fixture-')),profile=fs.mkdtempSync(path.join(os.tmpdir(),'tm-native-lifecycle-'));
+ let server,child,settled,exit=null,stage='fixture',receipt=null;
+ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+ try{
+  const appDir=path.join(work,'apps','desktop'),buildDir=path.join(appDir,'.vite','build');fs.mkdirSync(buildDir,{recursive:true});
+  fs.copyFileSync(path.join(desktop,'package.json'),path.join(appDir,'package.json'));
+  const migrations='packages/persistence-sqlite/src/migrations';fs.cpSync(path.join(root,migrations),path.join(work,migrations),{recursive:true});
+  fs.writeFileSync(path.join(profile,'.tm-lifecycle.json'),JSON.stringify({schema:'tm-lifecycle-v1',nonce}),{flag:'wx',mode:0o600});
+  const css=path.join(work,'hmr.css'),cssBytes=value=>`:root{--tm-hmr-proof: ${value};}\n`;
+  fs.writeFileSync(css,cssBytes('initial-'+nonce),{flag:'wx',mode:0o600});
+  const entry=path.join(desktop,'src','renderer','main.tsx'),relative=vite.normalizePath(path.relative(path.dirname(entry),css));
+  stage='vite-serve';
+  server=await vite.createServer({root:desktop,configFile:path.join(desktop,'vite.renderer.config.ts'),logLevel:'silent',plugins:[{
+   name:'fork-b-synthetic-css-hmr',apply:'serve',transform(code,id){if(vite.normalizePath(id.split('?')[0])===vite.normalizePath(entry))return code+'\nimport '+JSON.stringify(relative)+';\n';}
+  }],server:{host:'127.0.0.1',port:0,strictPort:true,open:false,watch:{usePolling:true,interval:100}}});
+  await server.listen();server.watcher.add(css);
+  const address=server.httpServer?.address();if(!address||typeof address==='string'||!Number.isInteger(address.port)||address.port<1)throw new Error('Vite loopback server unavailable');
+  const url=`http://127.0.0.1:${address.port}/`;
+  for(const target of ['main','preload']){
+   stage='build-'+target;
+   await vite.build({root:desktop,configFile:path.join(desktop,'vite.'+target+'.config.ts'),logLevel:'silent',define:{MAIN_WINDOW_VITE_DEV_SERVER_URL:JSON.stringify(url)},build:{outDir:buildDir,emptyOutDir:false,target:'node22',minify:false,lib:{entry:path.join(desktop,'src',target,'index.ts'),formats:['cjs'],fileName:()=>target+'.cjs'}}});
+  }
+  stage='launch';
+  const env={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:'seed',TM_LIFECYCLE_NONCE:nonce};delete env.TM_LIFECYCLE_DUPLICATE_PROBE;delete env.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete env.TM_SMOKE_REPORT_PATH;delete env.ELECTRON_RUN_AS_NODE;
+  child=spawn(electron,[appDir,'--tm-smoke','--tm-dev-hmr-proof'],{env,stdio:'ignore',windowsHide:true});
+  settled=new Promise(resolve=>{child.once('error',()=>resolve({exitCode:null,spawnFailed:true}));child.once('close',(exitCode)=>resolve({exitCode,spawnFailed:false}));});settled.then(value=>{exit=value;});
+  stage='initial-renderer';const readyPath=path.join(profile,'dev-hmr-ready.json'),resultPath=path.join(profile,'dev-hmr-result.json'),readyDeadline=Date.now()+45000;
+  let ready=null;
+  while(exit===null&&Date.now()<readyDeadline){
+   try{ready=JSON.parse(fs.readFileSync(readyPath,'utf8'));break;}catch(error){if(error.code!=='ENOENT'&&!(error instanceof SyntaxError))throw error;}
+   await pause(50);
+  }
+  if(!ready||exit!==null)throw new Error('Development renderer did not reach initial state');
+  if(ready.nonce!==nonce||ready.before?.value!=='initial-'+nonce)throw new Error('Development readiness identity mismatch');
+  stage='hot-update';fs.writeFileSync(css,cssBytes('updated-'+nonce));
+  const deadline=Date.now()+45000;while(exit===null&&Date.now()<deadline)await pause(50);
+  if(exit===null||!fs.existsSync(resultPath))throw new Error('Development HMR did not complete');
+  receipt=JSON.parse(fs.readFileSync(resultPath,'utf8'));
+  const pass=exit.exitCode===0&&!exit.spawnFailed&&receipt.nonce===nonce&&validateDevelopmentHmrReceipt(receipt);
+  return {schema:'tm-dev-hmr-runner-v1',verdict:pass?'PASS':'FAIL',synthetic:true,viteVersion:vite.version,receipt,exit,fixtureOnly:true};
+ }catch{
+  const log=path.join(profile,'diagnostics','startup.jsonl');let events=[];try{events=fs.readFileSync(log,'utf8').trim().split('\n').map(line=>{const {event,state}=JSON.parse(line);return {event,state};});}catch{/* No safe diagnostic available. */}
+  return {schema:'tm-dev-hmr-runner-v1',verdict:'FAIL',synthetic:true,stage,events,receipt,exit,fixtureOnly:true};
+ }finally{
+  if(child&&exit===null){child.kill();if(settled)await Promise.race([settled,pause(5000)]);if(exit===null){child.kill('SIGKILL');if(settled)await Promise.race([settled,pause(5000)]);}if(exit===null)throw new Error('Development proof child did not terminate');}
+  if(server)await server.close();fs.rmSync(work,{recursive:true,force:true,maxRetries:10,retryDelay:100});fs.rmSync(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+ }
+}
 // Unit-check the evidence contract even in a non-native build environment.
 if(process.argv.includes('--self-test')){
   const cockpitFlow={schema:'tm-cockpit-flow-v1',synthetic:true,interaction:{profileSaved:true,projectCreated:true,projectEdited:true,archiveReopen:true,stableIdentity:true,helpFocusReturn:true},layouts:[[1440,900,'light'],[1440,900,'dark'],[1280,800,'light'],[1280,800,'dark']].map(([width,height,appearance])=>({requestedWidth:width,requestedHeight:height,contentSize:[width,height],zoomFactor:2,appearance,viewportWidth:width/2,viewportHeight:height/2,overflow:false,labels:true}))};
@@ -188,11 +252,17 @@ if(process.argv.includes('--self-test')){
   const diag=(event)=>({verdict:'PASS',exitCode:1,spawnFailed:false,safeEventFields:true,sentinelFree:true,namedFailure:true,shutdown:true,logicalStatePreserved:true,events:[{event,state:'fail'},{event:'shutdown',state:'pass'}]});
   const denials={schema:'tm-native-diagnostic-denials-v1',synthetic:true,originalUnchanged:true,missingResource:diag('sqlite.open'),rendererCrash:diag('renderer.process')};
   if(!validateDiagnosticDenials(denials)||validateDiagnosticDenials({...denials,originalUnchanged:false})||validateDiagnosticDenials({...denials,rendererCrash:{...denials.rendererCrash,sentinelFree:false}})||validateDiagnosticDenials({...denials,missingResource:{...denials.missingResource,events:[]}}))throw new Error('Diagnostic denial contract self-test failed');
+  const devRow=value=>({value,marker:nonce,title:'Local foundation cockpit',csp:DEV_CSP,health:true,requireAbsent:true,processAbsent:true});
+  const hmr={schema:'tm-dev-hmr-v1',synthetic:true,nonce,documentPreserved:true,loopbackOrigin:true,before:devRow('initial-'+nonce),after:devRow('updated-'+nonce)};
+  if(!validateDevelopmentHmrReceipt(hmr)||validateDevelopmentHmrReceipt({...hmr,documentPreserved:false})||validateDevelopmentHmrReceipt({...hmr,after:hmr.before})||validateDevelopmentHmrReceipt({...hmr,after:{...hmr.after,csp:REQUIRED_CSP}}))throw new Error('Development HMR receipt contract self-test failed');
   console.log('PASS: native smoke, lifecycle and adversarial receipt-contract cases (NO NATIVE EXECUTION CLAIMED)');
 }else if(import.meta.url===pathToFileURL(path.resolve(process.argv[1]||'')).href){
   if(process.platform!=='darwin'&&process.platform!=='win32')
     throw new Error('Native packaged smoke requires macOS/Windows, never Linux mock');
   const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+  if(process.argv.includes('--dev-hmr')){
+   const result=await runDevelopmentHmr(root);console.log(JSON.stringify(result,null,2));if(result.verdict!=='PASS')process.exitCode=1;
+  }else{
   const appRoot=path.join(root,'apps/desktop/out');
   let binary=process.env.TM_PACKAGED_EXECUTABLE;
   if(!binary){
@@ -231,4 +301,5 @@ if(process.argv.includes('--self-test')){
   } finally {
     fs.rmSync(evidenceDir,{recursive:true,force:true});
   }
+}
 }

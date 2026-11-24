@@ -25,7 +25,8 @@ const commands=[
   ['smoke-contract',['scripts/run-packaged-smoke.mjs','--self-test']],
   ['module-audit',['scripts/audit-repo-structure.mjs']],
   ['packaged-build',['--yes',expectedPkg,'--filter','@electrical-tm/desktop','make',`--platform=${process.platform==='darwin'?'darwin':process.platform==='win32'?'win32':'<NATIVE_HOST_REQUIRED>'}`,`--arch=${process.platform==='darwin'?'arm64':process.platform==='win32'?'x64':'<NATIVE_HOST_REQUIRED>'}`]],
-  ['native-packaged-smoke',['scripts/run-packaged-smoke.mjs']]
+  ['native-packaged-smoke',['scripts/run-packaged-smoke.mjs']],
+  ['native-dev-hmr',['scripts/run-packaged-smoke.mjs','--dev-hmr']]
 ];
 const sha=(buffer)=>crypto.createHash('sha256').update(buffer).digest('hex');
 const scrub=(input)=>String(input??'')
@@ -109,7 +110,7 @@ function checkPrereqs(){
 if(args.includes('--fingerprint')){const files=walk(root);console.log(sha(files.map(x=>`${x.path}\t${x.sha256}`).join('\n')));process.exit(0)}
 if(plan){
   const files=walk(root); const currentFingerprint=sha(files.map(x=>`${x.path}\t${x.sha256}`).join('\n'));
-  console.log(JSON.stringify({mode:'PLAN_ONLY_NOT_EXECUTED',sourceFingerprint:currentFingerprint,sourceRoot:root,productVersion:projectPkg.version,host:{platform:process.platform,arch:process.arch,node:process.version},required:'Node 24+; native macOS arm64 or Windows x64; npm registry; clean synthetic environment',steps:commands.map(([id,argv])=>({id,command:['module-audit','smoke-contract','native-packaged-smoke'].includes(id)?`node ${argv.join(' ')}`:`npx ${argv.join(' ')}`})),acceptance:'Every Phase 2 case remains OPEN until required native/manual/reviewer proof is verified.'},null,2));
+  console.log(JSON.stringify({mode:'PLAN_ONLY_NOT_EXECUTED',sourceFingerprint:currentFingerprint,sourceRoot:root,productVersion:projectPkg.version,host:{platform:process.platform,arch:process.arch,node:process.version},required:'Node 24+; native macOS arm64 or Windows x64; npm registry; clean synthetic environment',steps:commands.map(([id,argv])=>({id,command:['module-audit','smoke-contract','native-packaged-smoke','native-dev-hmr'].includes(id)?`node ${argv.join(' ')}`:`npx ${argv.join(' ')}`})),acceptance:'Every Phase 2 case remains OPEN until required native/manual/reviewer proof is verified.'},null,2));
   process.exit(0);
 }
 const problems=checkPrereqs();
@@ -124,7 +125,7 @@ const host={platform:process.platform,architecture:process.arch,release:os.relea
 fs.writeFileSync(path.join(out,'host.json'),JSON.stringify(host,null,2)+'\n');
 let tests=[];
 for(const [id,argv] of commands){
-  const isNode=['module-audit','smoke-contract','native-packaged-smoke'].includes(id);
+  const isNode=['module-audit','smoke-contract','native-packaged-smoke','native-dev-hmr'].includes(id);
   const bin=isNode?process.execPath:(process.platform==='win32'?'npx.cmd':'npx');
   const started=new Date();
   const res=spawnSync(bin,argv,{cwd:root,encoding:'utf8',timeout:id==='packaged-build'?1200000:600000,maxBuffer:16*1024*1024,windowsHide:true,shell:process.platform==='win32'&&!isNode,env:{...process.env,CI:'1'}});
@@ -150,7 +151,7 @@ if(fs.existsSync(make)){
 let sourceAfterVerified=false;
 try{const after=gitProvenance(root,process.env.GITHUB_ACTIONS==='true');sourceAfterVerified=JSON.stringify(after)===JSON.stringify(provenance)&&sha(walk(root).map(x=>`${x.path}\t${x.sha256}`).join('\n'))===sourceFingerprint;}catch{/* Source drift invalidates otherwise green native steps. */}
 const overall=sourceAfterVerified&&tests.length===commands.length&&tests.every(x=>x.status==='PASS')?'NATIVE_AUTOMATED_SUBSET_PASS':'NATIVE_AUTOMATED_SUBSET_FAIL';
-const report={kind:'fork-b-native-proof',contractVersion:'7',sourceAfterVerified,sourceProvenance:{status:provenance.status,commit:provenance.commit??null,tree:provenance.tree??null,manifestSha256:provenance.manifestSha256??null},verdict:overall,formalAcceptanceVerdict:'UNASSESSED',testedSourceFingerprint:sourceFingerprint,host,steps:tests,artifactHashes:candidates,manualTests:'NOT_EXECUTED_BY_AUTOMATION',independentReview:'NOT_EXECUTED_BY_AUTOMATION',notice:'This report does not certify 30/30 acceptance cases, novice installation, OS secrets storage or release.'};
+const report={kind:'fork-b-native-proof',contractVersion:'8',sourceAfterVerified,sourceProvenance:{status:provenance.status,commit:provenance.commit??null,tree:provenance.tree??null,manifestSha256:provenance.manifestSha256??null},verdict:overall,formalAcceptanceVerdict:'UNASSESSED',testedSourceFingerprint:sourceFingerprint,host,steps:tests,artifactHashes:candidates,manualTests:'NOT_EXECUTED_BY_AUTOMATION',independentReview:'NOT_EXECUTED_BY_AUTOMATION',notice:'This report does not certify 30/30 acceptance cases, novice installation, OS secrets storage or release.'};
 fs.writeFileSync(path.join(out,'result.json'),JSON.stringify(report,null,2)+'\n');
 fs.writeFileSync(path.join(out,'manual-evidence-template.json'),JSON.stringify({hostFingerprint:sourceFingerprint,scenarios:[],reviewer:null,notes:'Use only synthetic data; link screenshot file hashes; unrun cases stay NOT_RUN'},null,2)+'\n');
 fs.writeFileSync(path.join(out,'SHARE_SAFELY.md'),`# Fork B native evidence\n\nResult: ${overall}\n\nGenerated from source fingerprint ${sourceFingerprint}.\n\nThis folder contains best-effort redacted logs, hashes and no intentional project data. **Inspect every log before uploading; never upload real keys, customer files or Application Support data.**\n\nAll 30 formal acceptance cases remain unassessed until per-case proof and review.\n`);

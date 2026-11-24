@@ -176,3 +176,32 @@ export async function runPackagedSecurityFlow(primary:SecurityWindow,foreign:Sec
  const stateUnchanged=effectsAfterInvokes&&snapshot()===baseline;
  return {schema:'tm-renderer-security-v1',synthetic:true,foreignResults,malformedResults,stateUnchanged,actualPrefs,isolation,expectedCsp:SECURITY_CSP,security,navigationAttempted,navigationDenied};
 }
+
+/** Real development renderer CSS hot-update proof; runner changes only an ignored synthetic fixture. */
+export async function runDevelopmentHmrFlow(win:SecurityWindow,nonce:string,ready:(before:unknown)=>void){
+ if(!/^[a-f0-9]{32}$/.test(nonce))throw new Error('Invalid development proof nonce');
+ const expectedCsp=SECURITY_CSP.replace("style-src 'self'","style-src 'self' 'unsafe-inline'").replace("connect-src 'none'","connect-src 'self' ws://localhost:* ws://127.0.0.1:*");
+ const url=new URL(win.webContents.getURL());
+ if(url.protocol!=='http:'||!['127.0.0.1','localhost'].includes(url.hostname))throw new Error('Development proof requires loopback HTTP');
+ const before=await win.webContents.executeJavaScript(`(async()=>{
+  const expected=${JSON.stringify('initial-'+nonce)},marker=${JSON.stringify(nonce)},deadline=Date.now()+20000;
+  const css=()=>getComputedStyle(document.documentElement).getPropertyValue('--tm-hmr-proof').trim();
+  while(Date.now()<deadline&&(!document.querySelector('.intro-row h1')||css()!==expected))await new Promise(r=>setTimeout(r,50));
+  const health=await window.tmBridge.ping();
+  document.documentElement.dataset.tmHmrDocumentMarker=marker;
+  return {value:css(),title:document.querySelector('.intro-row h1')?.textContent,csp:document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content,health:health.status==='ok'&&health.foundation===true,requireAbsent:typeof require==='undefined',processAbsent:typeof process==='undefined',marker:document.documentElement.dataset.tmHmrDocumentMarker};
+ })()`);
+ const b=before as {value?:string;title?:string;csp?:string;health?:boolean;requireAbsent?:boolean;processAbsent?:boolean;marker?:string};
+ if(b.value!=='initial-'+nonce||b.title!=='Local foundation cockpit'||b.csp!==expectedCsp||b.health!==true||b.requireAbsent!==true||b.processAbsent!==true||b.marker!==nonce)throw new Error('Development proof initial observations invalid');
+ ready(before);
+ const after=await win.webContents.executeJavaScript(`(async()=>{
+  const expected=${JSON.stringify('updated-'+nonce)},marker=${JSON.stringify(nonce)},deadline=Date.now()+30000;
+  const css=()=>getComputedStyle(document.documentElement).getPropertyValue('--tm-hmr-proof').trim();
+  while(Date.now()<deadline&&css()!==expected)await new Promise(r=>setTimeout(r,50));
+  const health=await window.tmBridge.ping();
+  return {value:css(),title:document.querySelector('.intro-row h1')?.textContent,csp:document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content,health:health.status==='ok'&&health.foundation===true,requireAbsent:typeof require==='undefined',processAbsent:typeof process==='undefined',marker:document.documentElement.dataset.tmHmrDocumentMarker===marker?marker:null};
+ })()`);
+ const a=after as typeof b;
+ if(a.value!=='updated-'+nonce||a.title!==b.title||a.csp!==expectedCsp||a.health!==true||a.requireAbsent!==true||a.processAbsent!==true||a.marker!==nonce||win.webContents.getURL()!==url.href)throw new Error('Development proof hot-update observations invalid');
+ return {schema:'tm-dev-hmr-v1',synthetic:true,nonce,before,after,documentPreserved:true,loopbackOrigin:true};
+}
