@@ -177,6 +177,12 @@ export function validateDevelopmentHmrReceipt(receipt){
   const row=receipt[key];return row?.value===(i?'updated-':'initial-')+receipt.nonce&&row.marker===receipt.nonce&&row.title==='Local foundation cockpit'&&row.csp===DEV_CSP&&row.health===true&&row.requireAbsent===true&&row.processAbsent===true;
  });
 }
+/** Preserve the raw native log; permit only Electron's exact one-time download notice. */
+export function parseDevelopmentHmrRunnerLog(log){
+ const report=JSON.parse(log.replace(/^Downloading Electron binary\.\.\.\r?\n/,''));
+ if(report?.schema!=='tm-dev-hmr-runner-v1'||report.verdict!=='PASS'||report.synthetic!==true||report.viteVersion!=='8.3.8'||report.fixtureOnly!==true||report.exit?.exitCode!==0||report.exit?.spawnFailed!==false||!validateDevelopmentHmrReceipt(report.receipt))throw new Error('Actual development HMR proof missing');
+ return report;
+}
 /** Use actual pinned Vite and Electron, actual main/preload/renderer source, and a synthetic
  * CSS dependency that is created and changed only in an ignored disposable fixture. */
 async function runDevelopmentHmr(root){
@@ -258,6 +264,11 @@ if(process.argv.includes('--self-test')){
   const devRow=value=>({value,marker:nonce,title:'Local foundation cockpit',csp:DEV_CSP,health:true,requireAbsent:true,processAbsent:true});
   const hmr={schema:'tm-dev-hmr-v1',synthetic:true,nonce,documentPreserved:true,loopbackOrigin:true,before:devRow('initial-'+nonce),after:devRow('updated-'+nonce)};
   if(!validateDevelopmentHmrReceipt(hmr)||validateDevelopmentHmrReceipt({...hmr,documentPreserved:false})||validateDevelopmentHmrReceipt({...hmr,after:hmr.before})||validateDevelopmentHmrReceipt({...hmr,after:{...hmr.after,csp:REQUIRED_CSP}}))throw new Error('Development HMR receipt contract self-test failed');
+  const hmrLog=JSON.stringify({schema:'tm-dev-hmr-runner-v1',verdict:'PASS',synthetic:true,viteVersion:'8.3.8',fixtureOnly:true,exit:{exitCode:0,spawnFailed:false},receipt:hmr});
+  for(const log of [hmrLog,'Downloading Electron binary...\n'+hmrLog,'Downloading Electron binary...\r\n'+hmrLog])parseDevelopmentHmrRunnerLog(log);
+  for(const log of ['unknown notice\n'+hmrLog,'Downloading Electron binary...\nDownloading Electron binary...\n'+hmrLog,hmrLog+'\n{}',hmrLog.replace('"spawnFailed":false','"spawnFailed":true'),hmrLog.replace('"fixtureOnly":true','"fixtureOnly":false')]){
+   let rejected=false;try{parseDevelopmentHmrRunnerLog(log);}catch{rejected=true;}if(!rejected)throw new Error('Invalid HMR runner log accepted');
+  }
   console.log('PASS: native smoke, lifecycle and adversarial receipt-contract cases (NO NATIVE EXECUTION CLAIMED)');
 }else if(import.meta.url===pathToFileURL(path.resolve(process.argv[1]||'')).href){
   if(process.platform!=='darwin'&&process.platform!=='win32')
