@@ -8,7 +8,7 @@ test('selected backup location is persisted and cannot point into app data',asyn
   fs.mkdirSync(data);fs.mkdirSync(backups);
   const pref=new BackupDestinationPreference(path.join(base,'settings','backup.json'),data);
   assert.equal(await pref.get(),null);
-  const canonicalBackups=fs.realpathSync(backups);
+  const canonicalBackups=await fs.promises.realpath(backups);
   assert.equal(await pref.set(backups),canonicalBackups);assert.equal(await pref.get(),canonicalBackups);
   await assert.rejects(pref.set(data),/separate/);
   const inside=path.join(data,'child');fs.mkdirSync(inside);await assert.rejects(pref.set(inside),/separate/);
