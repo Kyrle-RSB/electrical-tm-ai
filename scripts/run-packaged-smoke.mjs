@@ -229,8 +229,11 @@ async function runDevelopmentHmr(root){
   const log=path.join(profile,'diagnostics','startup.jsonl');let events=[];try{events=fs.readFileSync(log,'utf8').trim().split('\n').map(line=>{const {event,state}=JSON.parse(line);return {event,state};});}catch{/* No safe diagnostic available. */}
   return {schema:'tm-dev-hmr-runner-v1',verdict:'FAIL',synthetic:true,stage,events,receipt,exit,fixtureOnly:true};
  }finally{
-  if(child&&exit===null){child.kill();if(settled)await Promise.race([settled,pause(5000)]);if(exit===null){child.kill('SIGKILL');if(settled)await Promise.race([settled,pause(5000)]);}if(exit===null)throw new Error('Development proof child did not terminate');}
-  if(server)await server.close();fs.rmSync(work,{recursive:true,force:true,maxRetries:10,retryDelay:100});fs.rmSync(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+  if(child&&exit===null){child.kill();if(settled)await Promise.race([settled,pause(5000)]);if(exit===null){child.kill('SIGKILL');if(settled)await Promise.race([settled,pause(5000)]);}}
+  if(server)await server.close();
+  // Never remove a fixture while its process could still be using it. A failed cleanup is not a passing proof.
+  if(child&&exit===null){process.exitCode=1;console.error('Development proof child did not terminate');child.unref();}
+  else{fs.rmSync(work,{recursive:true,force:true,maxRetries:10,retryDelay:100});fs.rmSync(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
  }
 }
 // Unit-check the evidence contract even in a non-native build environment.
