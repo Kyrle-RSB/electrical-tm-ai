@@ -409,3 +409,48 @@ test('failed restore preserves a substituted staging directory and the original 
   assert.equal(fs.readFileSync(path.join(substituted,'unrelated.txt'),'utf8'),'SYNTHETIC UNRELATED');assert.ok(fs.existsSync(parked));store=new LocalStore(path.join(live,'db','app.sqlite'),migrations);assert.deepEqual(store.listProjects().map(p=>p.project_code),['CURRENT','SAVED']);store.close();
  }finally{fs.promises.mkdir=mkdir;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('backup file copy refuses same-length corruption after writing the owned destination',async()=>{
+ const {copyRegularBackupFile}=await import('../../packages/backup/src/create-backup');
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-copy-readback-'))),source=path.join(root,'source.bin'),dest=path.join(root,'dest.bin');
+ const original=Buffer.from('SYNTHETIC SOURCE CONTENT');fs.writeFileSync(source,original);
+ const open=fs.promises.open;let corrupted=false;
+ try{
+  fs.promises.open=(async(...args:Parameters<typeof open>)=>{const h=await open(...args);if(path.basename(String(args[0]))==='dest.bin'&&String(args[1]).startsWith('wx')){const sync=h.sync.bind(h);h.sync=async()=>{await h.write(Buffer.from('X'),0,1,0);corrupted=true;await sync();};}return h;}) as typeof open;
+  const result=await copyRegularBackupFile(source,dest).then(()=>null,e=>e);
+  assert.equal(corrupted,true,'write corruption fixture did not execute');assert.ok(result instanceof Error,'corrupted output was accepted');assert.deepEqual(fs.readFileSync(source),original);
+ }finally{fs.promises.open=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('backup refuses an unreferenced attachment changed in the stage before manifest creation',async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-stage-manifest-'))),live=path.join(root,'live'),external=path.join(root,'external'),original=Buffer.from('SYNTHETIC DOCUMENT');
+ const store=new LocalStore(path.join(live,'db','app.sqlite'),migrations);store.initializeFictionalCompany();fs.mkdirSync(path.join(live,'artifacts'));const source=path.join(live,'artifacts','orphan.pdf');fs.writeFileSync(source,original);
+ const readdir=fs.promises.readdir;let corrupted=false;
+ try{
+  fs.promises.readdir=(async(...args:Parameters<typeof readdir>)=>{const p=String(args[0]);if(!corrupted&&path.basename(p).endsWith('.incomplete')){const f=path.join(p,'artifacts','orphan.pdf');if(fs.existsSync(f)){const b=fs.readFileSync(f);b[0]^=1;fs.writeFileSync(f,b);corrupted=true;}}return readdir(...args);}) as typeof readdir;
+  const result=await createBackup(store,live,external).then(()=>null,e=>e);
+  assert.equal(corrupted,true,'stage corruption fixture did not execute');assert.ok(result instanceof Error,'corrupted stage was published');assert.deepEqual(fs.readFileSync(source),original);assert.deepEqual(fs.readdirSync(external),[]);
+ }finally{fs.promises.readdir=readdir;store.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('backup refuses a snapshot with invalid foreign keys before publishing an archive',async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-backup-invalid-fk-'))),live=path.join(root,'live'),external=path.join(root,'external');
+ const store=new LocalStore(path.join(live,'db','app.sqlite'),migrations);store.initializeFictionalCompany();
+ try{
+  store.db.exec('PRAGMA foreign_keys=OFF');
+  store.db.prepare('INSERT INTO purchase_lines(id,source_id,description,supplier_quantity_mills,net_unit_cost_cents) VALUES(?,?,?,?,?)').run('orphan','missing-source','Synthetic invalid fixture',1000,10);
+  store.db.exec('PRAGMA foreign_keys=ON');assert.equal(store.db.prepare('PRAGMA foreign_key_check').all().length,1);
+  await assert.rejects(createBackup(store,live,external),/foreign key/i);
+  assert.equal(store.db.prepare('PRAGMA foreign_key_check').all().length,1);assert.deepEqual(fs.readdirSync(external),[]);
+ }finally{store.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('backup database subdirectory redirection cannot write SQLite bytes outside its selected stage',async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-db-stage-race-'))),live=path.join(root,'live'),external=path.join(root,'external'),outside=path.join(root,'outside');
+ const store=new LocalStore(path.join(live,'db','app.sqlite'),migrations);store.initializeFictionalCompany();fs.mkdirSync(outside);
+ const mkdir=fs.promises.mkdir;let redirected=false;
+ try{
+  fs.promises.mkdir=(async(...args:Parameters<typeof mkdir>)=>{const p=String(args[0]);if(!redirected&&path.basename(p)==='db'&&path.basename(path.dirname(p)).endsWith('.incomplete')){redirected=true;fs.symlinkSync(outside,p,process.platform==='win32'?'junction':'dir');return undefined;}return mkdir(...args);}) as typeof mkdir;
+  await assert.rejects(createBackup(store,live,external));assert.equal(redirected,true,'database directory redirection did not execute');assert.deepEqual(fs.readdirSync(outside),[]);assert.deepEqual(store.listProjects(),[]);
+ }finally{fs.promises.mkdir=mkdir;store.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
