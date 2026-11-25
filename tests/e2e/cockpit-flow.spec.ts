@@ -26,7 +26,7 @@ export function contrastForPaint(foreground:string,layers:string[]):number{
  const luminance=(c:number[])=>c.map(x=>{const v=x/255;return v<=0.04045?v/12.92:((v+0.055)/1.055)**2.4;}).reduce((sum,x,i)=>sum+x*[0.2126,0.7152,0.0722][i],0);
  const a=luminance(bg),b=luminance(fg);return (Math.max(a,b)+0.05)/(Math.min(a,b)+0.05);
 }
-export async function runPackagedCockpitFlow(win:CockpitWindow,theme:{themeSource:Theme},capture:(name:string,bytes:Buffer)=>void,progress:(stage:string,diagnostics?:{textChecks:number;minTextRatio:number;minLargeRatio:number;focusRatio:number;focusVisible:boolean;worstTag:string;worstClass:string})=>void=()=>{}){
+export async function runPackagedCockpitFlow(win:CockpitWindow,theme:{themeSource:Theme},capture:(name:string,bytes:Buffer)=>void,progress:(stage:string,diagnostics?:{textChecks:number;minTextRatio:number;minLargeRatio:number;focusRatio:number;focusVisible:boolean;worstTag:string;worstClass:string}|{requested:number[];actual:number[];visible:boolean;focused:boolean}|{imageSize:number[];bytes:number;empty:boolean})=>void=()=>{}){
  const evaluate=(code:string)=>win.webContents.executeJavaScript(code);
  progress('interaction');
  const interaction=await evaluate(`(async()=>{
@@ -130,6 +130,7 @@ export async function runPackagedCockpitFlow(win:CockpitWindow,theme:{themeSourc
    win.setContentSize(width,height);win.webContents.setZoomFactor(2);
    // Exercise real Chromium keyboard modality in the runner-owned synthetic window.
    win.show();win.focus();
+   win.setContentSize(width,height);
    await evaluate(`(async()=>{if(document.activeElement instanceof HTMLElement)document.activeElement.blur();window.scrollTo(0,0);await new Promise(r=>setTimeout(r,100));})()`);
    let keyboardInput=false;
    for(let i=0;i<80;i++){
@@ -166,10 +167,12 @@ export async function runPackagedCockpitFlow(win:CockpitWindow,theme:{themeSourc
    })()`);
    if((result as {syntheticFailureStage?:string})?.syntheticFailureStage==='contrast'){const d=result as {textChecks:number;minTextRatio:number;minLargeRatio:number;focusRatio:number;focusVisible:boolean;worstTag:string;worstClass:string};progress('contrast',{textChecks:d.textChecks,minTextRatio:d.minTextRatio,minLargeRatio:d.minLargeRatio,focusRatio:d.focusRatio,focusVisible:d.focusVisible,worstTag:/^[A-Z]+$/.test(d.worstTag)?d.worstTag:'UNKNOWN',worstClass:/^[a-zA-Z0-9 _-]{0,100}$/.test(d.worstClass)?d.worstClass:'UNKNOWN'});throw new Error('Synthetic contrast oracle failed');}
    progress('capture-'+width+'x'+height+'-'+appearance);
-   const contentSize=win.getContentSize();if(contentSize[0]!==width||contentSize[1]!==height)throw new Error('Requested native viewport not attained');
-   const image=await win.capturePage();if(image.isEmpty())throw new Error('Native screenshot empty');
-   const bytes=image.toPNG(),size=image.getSize();if(bytes.length<1024||bytes.length>10*1024*1024||size.width<1||size.height<1)throw new Error('Native screenshot invalid');
-   const name='cockpit-'+width+'x'+height+'-'+appearance+'.png';capture(name,bytes);
+   const contentSize=win.getContentSize();progress('capture-viewport',{requested:[width,height],actual:contentSize,visible:win.isVisible(),focused:win.isFocused()});
+   if(contentSize[0]!==width||contentSize[1]!==height)throw new Error('Requested native viewport not attained');
+   progress('capture-page');const image=await win.capturePage();const empty=image.isEmpty();
+   const bytes=image.toPNG(),size=image.getSize();progress('capture-png',{imageSize:[size.width,size.height],bytes:bytes.length,empty});
+   if(empty||bytes.length<1024||bytes.length>10*1024*1024||size.width<1||size.height<1)throw new Error('Native screenshot invalid');
+   const name='cockpit-'+width+'x'+height+'-'+appearance+'.png';progress('capture-write');capture(name,bytes);
    layouts.push({requestedWidth:width,requestedHeight:height,contentSize,zoomFactor:win.webContents.getZoomFactor(),...(result as object),screenshot:{name,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),width:size.width,height:size.height}});
   }
  }finally{theme.themeSource=originalTheme;win.webContents.setZoomFactor(originalZoom);win.setContentSize(originalSize[0],originalSize[1]);if(!originalVisible)win.hide();}
