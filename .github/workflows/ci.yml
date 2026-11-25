@@ -28,6 +28,7 @@ jobs:
       - run: node scripts/audit-repo-structure.mjs --self-test
       - run: node scripts/capture-native-proof.mjs --git-provenance-self-test
       - run: node scripts/run-packaged-smoke.mjs --self-test
+      - run: node scripts/audit-native-proof.mjs --self-test
       - run: node scripts/audit-source-secrets.mjs
       - run: node scripts/verify-licenses.mjs --self-test
       - run: node scripts/audit-requirements.mjs
