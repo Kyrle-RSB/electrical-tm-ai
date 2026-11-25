@@ -29,3 +29,5 @@ If a synthetic managed image import is interrupted or disk space is exhausted, t
 If startup reports unsafe application data after an interrupted restore, inspect the redacted `paths.prepare` or `restore.recovery` event. Preserve the profile, rollback and staging directories, and obtain qualified recovery assistance. Never initialize a replacement empty business or delete a rescue to make startup succeed.
 
 Project status changes require a reason in the cockpit, maximum 500 characters. Confirm only the intended synthetic action. Canceling discards the uncommitted reason and leaves the prior status and audit history intact.
+
+If the main entry is missing, Electron may fail before this application can open its local startup journal. If preload fails after startup begins, expect a safe `renderer.preload` failure and shutdown record. Do not repair an installed package by renaming or replacing its resources; use an intact verified package and preserve existing data.

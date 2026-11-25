@@ -19,3 +19,5 @@
 - [ ] Owner expressly authorizes publication of public MIT repo and binaries.
 
 A green CI test on an internal runner is **not** a public release authorization.
+
+For AC04, preserve exact-source contract-13 receipts for the two damaged-copy entrypoint launches on both target hosts. Record any OS refusal or unobserved modal error as an open witness requirement, not a successful application rejection. Do not change trust enforcement to make an altered package execute.

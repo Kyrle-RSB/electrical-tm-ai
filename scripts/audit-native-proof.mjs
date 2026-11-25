@@ -1,6 +1,6 @@
 /** Check receipt integrity. A PASS here means the evidence package is intact, NOT that the app passes Phase 2. */
 import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';
-import {validateLifecycleReceipts,NATIVE_REQUIRED_CHECKS,validateCockpitFlowReceipt,validateAdversarialLifecycle,validateRendererSecurityReceipt,validateDiagnosticDenials,parseDevelopmentHmrRunnerLog,validateRawIpcProof,validatePortIsolation,validateInvalidRendererDenial,validateStartupReadiness,validateInterruptedRestoreDenial,validateExtendedCockpitReceipt,validateCockpitPng,validateAbnormalLifecycle,validateBackupCoverage} from './run-packaged-smoke.mjs';
+import {validateLifecycleReceipts,NATIVE_REQUIRED_CHECKS,validateCockpitFlowReceipt,validateAdversarialLifecycle,validateRendererSecurityReceipt,validateDiagnosticDenials,parseDevelopmentHmrRunnerLog,validateRawIpcProof,validatePortIsolation,validateInvalidRendererDenial,validateStartupReadiness,validateInterruptedRestoreDenial,validateExtendedCockpitReceipt,validateCockpitPng,validateAbnormalLifecycle,validateBackupCoverage,validateDamagedEntrypoints} from './run-packaged-smoke.mjs';
 const sha=(x)=>crypto.createHash('sha256').update(x).digest('hex');
 const hex=(x,n)=>typeof x==='string'&&x.length===n&&/^[a-f0-9]+$/.test(x);
 const safePath=(x)=>typeof x==='string'&&x.length>0&&x.length<=1024&&x.split('/').every(p=>p!==''&&p!=='.'&&p!=='..'&&!/[\\:\x00-\x1f]/.test(p));
@@ -36,7 +36,7 @@ function validateManifest(man,actual,file){
  for(const x of man.files)requireCheck(sha(file(x.path))===x.sha256,'Mismatched '+x.path);
  return names;
 }
-const expectedFor=v=>['install','local-tests','desktop-typecheck','source-quality','smoke-contract','module-audit','packaged-build','native-packaged-smoke',...(['8','9','10','11','12'].includes(v)?['native-dev-hmr']:[])];
+const expectedFor=v=>['install','local-tests','desktop-typecheck','source-quality','smoke-contract','module-audit','packaged-build','native-packaged-smoke',...(['8','9','10','11','12','13'].includes(v)?['native-dev-hmr']:[]),...(v==='13'?['native-entrypoint-denials']:[])];
 function validateRegression(log){
  const counts={};for(const line of log.split(/\r?\n/)){
   const m=/^(?:ℹ|#) (tests|pass|fail|cancelled|skipped|todo) (\d+)$/.exec(line.trim());if(!m)continue;
@@ -45,14 +45,14 @@ function validateRegression(log){
  requireCheck(Number.isSafeInteger(counts.tests)&&counts.tests>0&&counts.pass===counts.tests&&['fail','cancelled','skipped','todo'].every(k=>counts[k]===0),'Incomplete or nonpassing regression summary');
 }
 function validateReport(r,names,file){
- requireCheck(['2','3','4','5','6','7','8','9','10','11','12'].includes(r.contractVersion),'Unknown native contract');
+ requireCheck(['2','3','4','5','6','7','8','9','10','11','12','13'].includes(r.contractVersion),'Unknown native contract');
  requireCheck(r.kind==='fork-b-native-proof'&&r.formalAcceptanceVerdict==='UNASSESSED'&&hex(r.testedSourceFingerprint,64),'Invalid evidence identity or formal acceptance claim');
  requireCheck(['NATIVE_AUTOMATED_SUBSET_PASS','NATIVE_AUTOMATED_SUBSET_FAIL'].includes(r.verdict),'Invalid native subset result');
  const expected=expectedFor(r.contractVersion),pass=r.verdict==='NATIVE_AUTOMATED_SUBSET_PASS';
  requireCheck(Array.isArray(r.steps)&&r.steps.length>0&&r.steps.length<=expected.length,'Invalid executed steps');
  for(const [i,x] of r.steps.entries())requireCheck(x.id===expected[i]&&['PASS','FAIL'].includes(x.status)&&x.log==='logs/'+x.id+'.log'&&names.has(x.log)&&(x.status!=='PASS'||x.exitCode===0&&x.signal===null&&x.note===null)&&(i===r.steps.length-1||x.status==='PASS'),'Missing or contradictory step '+i);
  requireCheck(!pass||r.steps.length===expected.length&&r.steps.every(x=>x.status==='PASS'),'Unsupported PASS conclusion');
- if(r.contractVersion!=='12')return;
+ if(!['12','13'].includes(r.contractVersion))return;
  for(const name of ['host.json','result.json','source-provenance.json','manual-evidence-template.json','SHARE_SAFELY.md'])requireCheck(names.has(name),'Missing required receipt '+name);
  const host=JSON.parse(file('host.json').toString());
  requireCheck(Object.keys(host).length===Object.keys(r.host??{}).length&&Object.entries(host).every(([k,v])=>r.host[k]===v)&&host.sourceFingerprint===r.testedSourceFingerprint&&(host.platform==='darwin'&&host.architecture==='arm64'||host.platform==='win32'&&host.architecture==='x64')&&/^v24\.\d+\.\d+$/.test(host.node)&&host.pnpmPinned==='pnpm@12.21.0','Host receipt mismatch');
@@ -86,7 +86,7 @@ try{
  const names=validateManifest(man,inventory(dir),file);
  const r=JSON.parse(file('result.json').toString());
  validateReport(r,names,file);
- if(['3','4','5','6','7','8','9','10','11','12'].includes(r.contractVersion)){
+ if(['3','4','5','6','7','8','9','10','11','12','13'].includes(r.contractVersion)){
   const provenance=JSON.parse(file('source-provenance.json').toString());
   if(r.sourceProvenance?.status!==provenance.status)fail('Source provenance status mismatch');
   if(r.verdict==='NATIVE_AUTOMATED_SUBSET_PASS'&&r.sourceAfterVerified!==true)fail('Source drift was not excluded');
@@ -98,18 +98,22 @@ try{
   }else if(provenance.status!=='ARCHIVE_ONLY_NO_GIT_PROOF')fail('Unknown source provenance');
   if(r.verdict==='NATIVE_AUTOMATED_SUBSET_PASS'){
    const smoke=JSON.parse(file('logs/native-packaged-smoke.log').toString());
-   if(['4','5','6','7','8','9','10','11','12'].includes(r.contractVersion)&&!validateCockpitFlowReceipt(smoke.cockpitFlow))fail('Packaged cockpit flow evidence missing');
-   if(['5','6','7','8','9','10','11','12'].includes(r.contractVersion)&&!validateAdversarialLifecycle(smoke.lifecycle))fail('Adversarial native lifecycle evidence missing');
-   if(['6','7','8','9','10','11','12'].includes(r.contractVersion)&&!validateRendererSecurityReceipt(smoke.rendererSecurity))fail('Native renderer security evidence missing');
-   if(['7','8','9','10','11','12'].includes(r.contractVersion)&&!validateDiagnosticDenials(smoke.lifecycle?.diagnosticDenials))fail('Native diagnostic denial evidence missing');
-   if(['8','9','10','11','12'].includes(r.contractVersion))parseDevelopmentHmrRunnerLog(file('logs/native-dev-hmr.log').toString());
-   if(['9','10','11','12'].includes(r.contractVersion)&&(!validatePortIsolation(smoke.portIsolation)||smoke.rawIpc?.exitCode!==0||smoke.rawIpc?.spawnFailed!==false||!validateRawIpcProof(smoke.rawIpc?.receipt)||!validateInvalidRendererDenial(smoke.lifecycle?.diagnosticDenials)))fail('Actual raw IPC, port isolation or invalid renderer evidence missing');
-   if(['10','11','12'].includes(r.contractVersion)&&(!validateStartupReadiness(smoke.startupReadiness)||!validateInterruptedRestoreDenial(smoke.lifecycle?.interruptedRestore)))fail('Actual readiness or interrupted restore denial missing');
-   if(['11','12'].includes(r.contractVersion)){
+   if(['4','5','6','7','8','9','10','11','12','13'].includes(r.contractVersion)&&!validateCockpitFlowReceipt(smoke.cockpitFlow))fail('Packaged cockpit flow evidence missing');
+   if(['5','6','7','8','9','10','11','12','13'].includes(r.contractVersion)&&!validateAdversarialLifecycle(smoke.lifecycle))fail('Adversarial native lifecycle evidence missing');
+   if(['6','7','8','9','10','11','12','13'].includes(r.contractVersion)&&!validateRendererSecurityReceipt(smoke.rendererSecurity))fail('Native renderer security evidence missing');
+   if(['7','8','9','10','11','12','13'].includes(r.contractVersion)&&!validateDiagnosticDenials(smoke.lifecycle?.diagnosticDenials))fail('Native diagnostic denial evidence missing');
+   if(['8','9','10','11','12','13'].includes(r.contractVersion))parseDevelopmentHmrRunnerLog(file('logs/native-dev-hmr.log').toString());
+   if(['9','10','11','12','13'].includes(r.contractVersion)&&(!validatePortIsolation(smoke.portIsolation)||smoke.rawIpc?.exitCode!==0||smoke.rawIpc?.spawnFailed!==false||!validateRawIpcProof(smoke.rawIpc?.receipt)||!validateInvalidRendererDenial(smoke.lifecycle?.diagnosticDenials)))fail('Actual raw IPC, port isolation or invalid renderer evidence missing');
+   if(['10','11','12','13'].includes(r.contractVersion)&&(!validateStartupReadiness(smoke.startupReadiness)||!validateInterruptedRestoreDenial(smoke.lifecycle?.interruptedRestore)))fail('Actual readiness or interrupted restore denial missing');
+   if(['11','12','13'].includes(r.contractVersion)){
     if(!validateExtendedCockpitReceipt(smoke.cockpitFlow))fail('Extended cockpit evidence missing');
     for(const layout of smoke.cockpitFlow.layouts){const shot=layout.screenshot,p='screenshots/'+shot.name;if(!man.files.some(x=>x.path===p&&x.sha256===shot.sha256)||!validateCockpitPng(file(p),shot))fail('Screenshot receipt mismatch '+p);}
    }
-   if(r.contractVersion==='12'&&(!validateAbnormalLifecycle(smoke.lifecycle)||!validateBackupCoverage(smoke.backupCoverage)||!file('logs/install.log').toString().includes('Cold-cache proof: newly created empty')))fail('Extended lifecycle, backup or cold cache receipt missing');
+   if(['12','13'].includes(r.contractVersion)&&(!validateAbnormalLifecycle(smoke.lifecycle)||!validateBackupCoverage(smoke.backupCoverage)||!file('logs/install.log').toString().includes('Cold-cache proof: newly created empty')))fail('Extended lifecycle, backup or cold cache receipt missing');
+   if(r.contractVersion==='13'){
+    const damaged=smoke.lifecycle?.diagnosticDenials?.damagedEntrypoints,admission=JSON.parse(file('logs/native-entrypoint-denials.log').toString());
+    if(!validateDamagedEntrypoints(damaged)||admission.schema!=='tm-native-entrypoint-admission-v1'||admission.verdict!=='PASS'||admission.receiptSha256!==sha(JSON.stringify(damaged)))fail('Actual damaged entrypoint denial missing');
+   }
    if(smoke.verdict!=='PASS'||JSON.stringify(smoke.checks)!==JSON.stringify(NATIVE_REQUIRED_CHECKS)||smoke.lifecycle?.verdict!=='PASS'||smoke.lifecycle?.shutdowns!==3||!validateLifecycleReceipts(smoke.lifecycle?.receipts,smoke.lifecycle?.receipts?.[0]?.nonce??'')||smoke.lifecycle?.runs?.length!==3||smoke.lifecycle.runs.some(x=>x.exitCode!==0||x.failed))fail('Full process lifecycle proof missing');
   }
  }

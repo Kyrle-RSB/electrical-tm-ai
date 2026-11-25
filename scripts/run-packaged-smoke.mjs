@@ -191,6 +191,96 @@ function runStartupDenial(binary,env,profile){
  const namedFailure=events.some(e=>e.event==='sqlite.open'&&e.state==='fail')&&events.some(e=>e.event==='startup'&&e.state==='fail');
  return {verdict:attempt.status===1&&!attempt.error&&preserved&&safe&&namedFailure?'PASS':'FAIL',exitCode:attempt.status,logicalStatePreserved:preserved,safeEventFields:safe,namedFailure,events:events.map(({event,state})=>({event,state}))};
 }
+/** Misname only the selected packed entry in a disposable ASAR copy. Its original
+ * JSON header, data bytes and embedded file hashes must otherwise be identical. */
+export function misnamePackedEntrypoint(bytes,entry){
+ const names={'main.cjs':'xain.cjs','preload.cjs':'xreload.cjs'};
+ if(!Object.hasOwn(names,entry)||!Buffer.isBuffer(bytes)||bytes.length<16||bytes.length>64*1024*1024)throw new Error('Invalid entrypoint damage fixture');
+ const [four,headerSize,payloadSize,jsonSize]=[0,4,8,12].map(offset=>bytes.readUInt32LE(offset));
+ const dataOffset=8+headerSize;
+ if(four!==4||headerSize!==payloadSize+4||jsonSize===0||jsonSize>16*1024*1024||16+jsonSize>dataOffset||dataOffset>bytes.length)throw new Error('Invalid ASAR header');
+ const raw=bytes.subarray(16,16+jsonSize),header=JSON.parse(raw.toString('utf8'));
+ if(!Buffer.from(JSON.stringify(header)).equals(raw))throw new Error('ASAR header cannot be changed without collateral formatting');
+ const build=header.files?.['.vite']?.files?.build?.files;
+ if(!build||!Object.hasOwn(build,entry)||Object.hasOwn(build,names[entry]))throw new Error('ASAR entrypoint not uniquely present');
+ const original=build[entry];
+ if(!original||original.files||original.link||original.unpacked||!Number.isSafeInteger(original.size)||original.size<=0||typeof original.offset!=='string'||!/^\d+$/.test(original.offset))throw new Error('ASAR entrypoint is not a packed regular file');
+ const offset=Number(original.offset);
+ if(!Number.isSafeInteger(offset)||offset<0||dataOffset+offset+original.size>bytes.length)throw new Error('ASAR entrypoint extent invalid');
+ // Preserve property order as well as all unrelated fields and the data payload.
+ header.files['.vite'].files.build.files=Object.fromEntries(Object.entries(build).map(([key,value])=>[key===entry?names[entry]:key,value]));
+ const changed=Buffer.from(JSON.stringify(header));
+ if(changed.length!==raw.length)throw new Error('ASAR misname changed the header length');
+ const out=Buffer.from(bytes);changed.copy(out,16);
+ if(out.equals(bytes)||!out.subarray(dataOffset).equals(bytes.subarray(dataOffset)))throw new Error('ASAR fault not isolated');
+ return out;
+}
+const entryHash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
+function writeOwnedFixture(file,bytes){
+ const stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new Error('Unsafe copied ASAR fixture');
+ const fd=fs.openSync(file,fs.constants.O_RDWR|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
+ try{
+  const opened=fs.fstatSync(fd);if(!opened.isFile()||opened.nlink!==1||opened.dev!==stat.dev||opened.ino!==stat.ino||opened.size!==bytes.length)throw new Error('Copied ASAR identity changed');
+  let offset=0;while(offset<bytes.length){const n=fs.writeSync(fd,bytes,offset,bytes.length-offset,offset);if(!n)throw new Error('Short fixture write');offset+=n;}
+  fs.fsyncSync(fd);const named=fs.lstatSync(file);if(!named.isFile()||named.isSymbolicLink()||named.nlink!==1||named.dev!==opened.dev||named.ino!==opened.ino)throw new Error('Copied ASAR identity changed');
+  const check=Buffer.alloc(bytes.length);let read=0;while(read<check.length){const n=fs.readSync(fd,check,read,check.length-read,read);if(!n)throw new Error('Short fixture readback');read+=n;}if(!check.equals(bytes))throw new Error('Copied ASAR readback failed');
+ }finally{fs.closeSync(fd);}
+}
+/** A pre-main loader failure cannot produce our own application diagnostics. Only
+ * observed, named loader output and a natural exit count as loader evidence.
+ * An OS refusal, signal, timeout or ambiguous exit is never substituted for it. */
+function classifyEntrypointDenial(entry,result,events,statePreserved,sentinelFree){
+ const output=(result.stdout||'')+'\n'+(result.stderr||'');
+ const loaderLine=entry==='main.cjs'?output.split(/\r?\n/).find(line=>/Cannot find module|Unable to find Electron app|Cannot find Electron app|Error launching app/i.test(line)&&/main\.cjs/i.test(line)):undefined;
+ const loaderNamed=typeof loaderLine==='string';
+ const loaderDiagnostic=loaderNamed?{message:'Named Electron loader error referring to main.cjs',lineSha256:entryHash(Buffer.from(loaderLine))}:null;
+ const streams=Object.fromEntries(['stdout','stderr'].map(key=>{const b=Buffer.from(result[key]||'');return [key,{bytes:b.length,sha256:entryHash(b)}];}));
+ const timeout=result.error?.code==='ETIMEDOUT';
+ const exitCode=result.status??null,signal=result.signal??null,spawnFailed=!!result.error;
+ const safeEvents=events.every(e=>Object.keys(e).sort().join(',')==='atUtc,event,state'&&/^[a-z][a-z0-9.-]{1,80}$/.test(e.event)&&['begin','pass','fail','info'].includes(e.state));
+ const namedFailure=events.some(e=>e.event==='renderer.preload'&&e.state==='fail');
+ const shutdown=events.some(e=>e.event==='shutdown'&&e.state==='pass');
+ const noApplicationStartup=events.length===0;
+ const loaderProof=entry==='main.cjs'&&loaderNamed&&noApplicationStartup;
+ const preloadProof=entry==='preload.cjs'&&namedFailure&&shutdown&&!events.some(e=>e.event==='renderer.load'&&e.state==='pass');
+ const pass=!spawnFailed&&signal===null&&exitCode===1&&safeEvents&&statePreserved&&sentinelFree&&(loaderProof||preloadProof);
+ return {entry,verdict:pass?'PASS':'FAIL',classification:pass?(loaderProof?'NAMED_ELECTRON_LOADER_DENIAL':'NAMED_APPLICATION_PRELOAD_DENIAL'):timeout?'TIMEOUT_UNPROVEN':spawnFailed?'SPAWN_ERROR_UNPROVEN':signal?'SIGNAL_UNPROVEN':'UNCLASSIFIED_OR_UNSAFE_DENIAL',exitCode,signal,spawnFailed,timeout,loaderNamed,loaderDiagnostic,streams,noApplicationStartup,safeEvents,namedFailure,shutdown,statePreserved,sentinelFree,events:events.map(({event,state})=>({event,state}))};
+}
+function runDamagedEntrypoints(copiedBinary,copiedAsar,originalBytes,env,profile,logPath,state,before,sentinels){
+ const results=[];
+ for(const entry of ['preload.cjs','main.cjs']){
+  const changed=misnamePackedEntrypoint(originalBytes,entry);
+  const prior=fs.readFileSync(logPath,'utf8');
+  let row={entry,verdict:'FAIL',classification:'FIXTURE_OR_LAUNCH_UNPROVEN',mutatedSha256:entryHash(changed),faultInjected:false};
+  try{
+   writeOwnedFixture(copiedAsar,changed);
+   const injected=fs.readFileSync(copiedAsar).equals(changed);if(!injected)throw new Error('Entrypoint fault not injected');
+   row.faultInjected=true;
+   const attempt=spawnSync(copiedBinary,['--tm-smoke','--user-data-dir='+profile],{encoding:'utf8',timeout:30000,killSignal:'SIGKILL',maxBuffer:2*1024*1024,windowsHide:true,env});
+   const log=fs.readFileSync(logPath,'utf8');
+   const prefixPreserved=log.startsWith(prior);
+   const events=prefixPreserved?log.slice(prior.length).trim().split('\n').filter(Boolean).map(line=>JSON.parse(line)):[];
+   // Diagnostic content must not contain synthetic customer or credential values.
+   // Loader messages may include the copied application's path; never publish them raw.
+   const output=(attempt.stdout||'')+'\n'+(attempt.stderr||'');
+   const safe=sentinels.every(value=>!log.includes(value))&&sentinels.slice(0,2).every(value=>!output.includes(value));
+   row=classifyEntrypointDenial(entry,attempt,events,prefixPreserved&&state()===before,safe);
+   row.faultInjected=injected&&fs.readFileSync(copiedAsar).equals(changed);row.mutatedSha256=entryHash(changed);
+  }catch{/* Record only the fixed unproven classification; never echo arbitrary exception data. */}
+  finally{writeOwnedFixture(copiedAsar,originalBytes);}
+  results.push({...row,copyRestored:fs.readFileSync(copiedAsar).equals(originalBytes)});
+ }
+ return {schema:'tm-native-damaged-entrypoints-v1',synthetic:true,originalAsarSha256:entryHash(originalBytes),results};
+}
+export function validateDamagedEntrypoints(proof){
+ const digest=x=>typeof x==='string'&&/^[a-f0-9]{64}$/.test(x);
+ if(proof?.schema!=='tm-native-damaged-entrypoints-v1'||proof.synthetic!==true||!digest(proof.originalAsarSha256)||!Array.isArray(proof.results)||proof.results.length!==2)return false;
+ return new Set(proof.results.map(x=>x.mutatedSha256)).size===2&&proof.results.every((x,i)=>{
+  const preload=i===0;
+  if(x?.entry!==(preload?'preload.cjs':'main.cjs')||x.verdict!=='PASS'||x.exitCode!==1||x.signal!==null||x.spawnFailed!==false||x.timeout!==false||!['faultInjected','copyRestored','statePreserved','sentinelFree','safeEvents'].every(k=>x[k]===true)||!digest(x.mutatedSha256)||x.mutatedSha256===proof.originalAsarSha256||!Array.isArray(x.events)||!['stdout','stderr'].every(k=>Number.isSafeInteger(x.streams?.[k]?.bytes)&&x.streams[k].bytes>=0&&digest(x.streams[k].sha256)))return false;
+  return preload?x.classification==='NAMED_APPLICATION_PRELOAD_DENIAL'&&x.namedFailure===true&&x.shutdown===true&&x.events.some(e=>e.event==='renderer.preload'&&e.state==='fail')&&x.events.some(e=>e.event==='shutdown'&&e.state==='pass')&&!x.events.some(e=>e.event==='renderer.load'&&e.state==='pass'):x.classification==='NAMED_ELECTRON_LOADER_DENIAL'&&x.loaderNamed===true&&x.loaderDiagnostic?.message==='Named Electron loader error referring to main.cjs'&&digest(x.loaderDiagnostic.lineSha256)&&x.noApplicationStartup===true&&x.events.length===0;
+ });
+}
 /** A real native failure must terminate, preserve seeded synthetic data, and emit only safe diagnostic fields. */
 function runDiagnosticDenials(binary,env,profile){
  const pii='SYNTHETIC-DIAGNOSTIC-CUSTOMER@example.invalid';
@@ -217,7 +307,7 @@ function runDiagnosticDenials(binary,env,profile){
   return {verdict,exitCode:result.status,spawnFailed:!!result.error,safeEventFields,sentinelFree,namedFailure,shutdown,logicalStatePreserved,events:events.map(({event,state})=>({event,state}))};
  };
  const fixture=fs.mkdtempSync(path.join(os.tmpdir(),'tm-native-resource-denial-'));
- let missingResource=null,rendererCrash=null,invalidRenderer=null,originalUnchanged=false;
+ let missingResource=null,rendererCrash=null,invalidRenderer=null,damagedEntrypoints=null,originalUnchanged=false;
  try{
   const appDir=process.platform==='darwin'?path.resolve(binary,'../../..'):path.dirname(binary);
   const originalResources=process.platform==='darwin'?path.join(appDir,'Contents','Resources'):path.join(appDir,'resources');
@@ -230,12 +320,16 @@ function runDiagnosticDenials(binary,env,profile){
   fs.renameSync(path.join(copiedResources,'migrations'),path.join(copiedResources,'migrations-synthetic-missing'));
   if(fs.existsSync(path.join(copiedResources,'migrations')))throw new Error('Missing resource fault not injected');
   missingResource=attempt(copiedBinary,env,'sqlite.open');
+  fs.renameSync(path.join(copiedResources,'migrations-synthetic-missing'),path.join(copiedResources,'migrations'));
+  const originalAsar=fs.readFileSync(path.join(originalResources,'app.asar')),copiedAsar=path.join(copiedResources,'app.asar');
+  if(!fs.readFileSync(copiedAsar).equals(originalAsar))throw new Error('Copied ASAR differs from original before fault');
+  try{damagedEntrypoints=runDamagedEntrypoints(copiedBinary,copiedAsar,originalAsar,env,profile,logPath,state,before,[pii,credential,profile,sentinelPath]);}catch{damagedEntrypoints={schema:'tm-native-damaged-entrypoints-v1',synthetic:true,originalAsarSha256:entryHash(originalAsar),results:[],failure:'FIXTURE_OR_RESTORE_UNPROVEN'};}
   originalUnchanged=originalIdentity===resourceIdentity();
   invalidRenderer=attempt(binary,{...env,TM_LIFECYCLE_INVALID_RENDERER_PROBE:'1'},'renderer.load');
   rendererCrash=attempt(binary,{...env,TM_LIFECYCLE_RENDERER_CRASH_PROBE:'1'},'renderer.process');
   originalUnchanged=originalUnchanged&&originalIdentity===resourceIdentity();
  }finally{fs.rmSync(fixture,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
- return {schema:'tm-native-diagnostic-denials-v1',synthetic:true,missingResource,rendererCrash,invalidRenderer,originalUnchanged};
+ return {schema:'tm-native-diagnostic-denials-v1',synthetic:true,missingResource,rendererCrash,invalidRenderer,damagedEntrypoints,originalUnchanged};
 }
 export function validateDiagnosticDenials(report){
  return report?.schema==='tm-native-diagnostic-denials-v1'&&report.synthetic===true&&report.originalUnchanged===true&&['missingResource','rendererCrash'].every(k=>{
@@ -394,6 +488,20 @@ if(process.argv.includes('--self-test')){
   if(!validatePortIsolation(port)||validatePortIsolation({...port,connections:1})||validatePortIsolation({...port,packagedOrigin:'http://localhost:5173/'})||validatePortIsolation({...port,ipv6:null})||!validatePortIsolation({...port,ipv6:null,ipv6Unavailable:'EAFNOSUPPORT'}))throw new Error('Port isolation receipt contract self-test failed');
   const invalid={...denials,invalidRenderer:diag('renderer.load')};
   if(!validateInvalidRendererDenial(invalid)||validateInvalidRendererDenial({...invalid,invalidRenderer:{...invalid.invalidRenderer,events:[...invalid.invalidRenderer.events,{event:'packaged.invalid-renderer-probe',state:'fail'}]}}))throw new Error('Invalid renderer receipt contract self-test failed');
+  const makeFixture=()=>{
+   const data=Buffer.from('mainpreload'),header=Buffer.from(JSON.stringify({files:{'.vite':{files:{build:{files:{'main.cjs':{size:4,offset:'0'},'preload.cjs':{size:7,offset:'4'}}}}}}}));
+   const padded=(header.length+3)&~3,prefix=Buffer.alloc(16+padded);prefix.writeUInt32LE(4,0);prefix.writeUInt32LE(8+padded,4);prefix.writeUInt32LE(4+padded,8);prefix.writeUInt32LE(header.length,12);header.copy(prefix,16);return Buffer.concat([prefix,data]);
+  };
+  const originalFixture=makeFixture(),renamedMain=misnamePackedEntrypoint(originalFixture,'main.cjs'),renamedPreload=misnamePackedEntrypoint(originalFixture,'preload.cjs');
+  const leaves=b=>Object.keys(JSON.parse(b.subarray(16,16+b.readUInt32LE(12)).toString('utf8')).files['.vite'].files.build.files);
+  if(leaves(renamedMain).join(',')!=='xain.cjs,preload.cjs'||leaves(renamedPreload).join(',')!=='main.cjs,xreload.cjs'||leaves(originalFixture).join(',')!=='main.cjs,preload.cjs'||!renamedMain.subarray(-11).equals(originalFixture.subarray(-11)))throw new Error('ASAR fault isolation self-test failed');
+  for(const [data,entry] of [[Buffer.alloc(4),'main.cjs'],[originalFixture,'bad.cjs'],[renamedMain,'main.cjs']]){let rejected=false;try{misnamePackedEntrypoint(data,entry);}catch{rejected=true;}if(!rejected)throw new Error('Malformed ASAR fault fixture accepted');}
+  const nativeEvents=[{atUtc:'2026-11-24T00:00:00.000Z',event:'renderer.preload',state:'fail'},{atUtc:'2026-11-24T00:00:00.000Z',event:'shutdown',state:'pass'}];
+  const loader=classifyEntrypointDenial('main.cjs',{status:1,stderr:'Cannot find module <synthetic>/main.cjs'},[],true,true);
+  const preload=classifyEntrypointDenial('preload.cjs',{status:1},nativeEvents,true,true);
+  const damaged={schema:'tm-native-damaged-entrypoints-v1',synthetic:true,originalAsarSha256:entryHash(originalFixture),results:[{...preload,faultInjected:true,copyRestored:true,mutatedSha256:entryHash(renamedPreload)},{...loader,faultInjected:true,copyRestored:true,mutatedSha256:entryHash(renamedMain)}]};
+  if(!validateDamagedEntrypoints(damaged)||validateDamagedEntrypoints({...damaged,results:[damaged.results[0]]})||validateDamagedEntrypoints({...damaged,results:damaged.results.map(x=>({...x,copyRestored:false}))})||validateDamagedEntrypoints({...damaged,results:[damaged.results[0],{...damaged.results[1],loaderNamed:false}]}))throw new Error('Damaged entrypoint proof contract self-test failed');
+  for(const result of [{status:null,signal:'SIGKILL'},{status:1,stderr:'unknown failure'},{status:1,stderr:'Cannot find module main.cjs',error:{code:'ETIMEDOUT'}}])if(classifyEntrypointDenial('main.cjs',result,[],true,true).verdict!=='FAIL')throw new Error('Unproven loader denial accepted');
   const backupProof=Object.fromEntries(['png','jpeg','distinctLogo','issuedPdf','exactInventory','verifiedSecretExclusion','freshRestore','activeRestore','assetHashes','logicalRows','tamperRejected'].map(key=>[key,true]));
   if(!validateBackupCoverage(backupProof)||validateBackupCoverage({...backupProof,assetHashes:false}))throw new Error('Backup coverage receipt contract self-test failed');
   const ready={elapsedMs:15000,title:'Electrical T&M',heading:'Local foundation cockpit',rootWidth:100,rootHeight:100,health:true};
@@ -402,6 +510,15 @@ if(process.argv.includes('--self-test')){
   if(!validateInterruptedRestoreDenial(interruption)||validateInterruptedRestoreDenial({...interruption,missingActive:false})||validateInterruptedRestoreDenial({...interruption,rescueUnchanged:false})||validateInterruptedRestoreDenial({...interruption,events:[...interruption.events,{event:'sqlite.open',state:'begin'}]}))throw new Error('Interrupted restore receipt contract self-test failed');
   console.log('PASS: native smoke, lifecycle and adversarial receipt-contract cases (NO NATIVE EXECUTION CLAIMED)');
 }else if(import.meta.url===pathToFileURL(path.resolve(process.argv[1]||'')).href){
+  if(process.argv.includes('--check-damaged-entrypoints')){
+   const file=process.argv[process.argv.indexOf('--check-damaged-entrypoints')+1];
+   if(!file||!path.isAbsolute(file)||fs.statSync(file).size>1024*1024)throw new Error('Invalid native smoke receipt location');
+   const smoke=JSON.parse(fs.readFileSync(file,'utf8'));
+   const report=smoke.lifecycle?.diagnosticDenials?.damagedEntrypoints;
+   const verdict=validateDamagedEntrypoints(report)?'PASS':'FAIL';
+   console.log(JSON.stringify({schema:'tm-native-entrypoint-admission-v1',verdict,receiptSha256:entryHash(Buffer.from(JSON.stringify(report??null))),note:'Admission of actual recorded launch results, not a separate launch or formal acceptance.'},null,2));
+   process.exit(verdict==='PASS'?0:1);
+  }
   if(process.platform!=='darwin'&&process.platform!=='win32')
     throw new Error('Native packaged smoke requires macOS/Windows, never Linux mock');
   const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
