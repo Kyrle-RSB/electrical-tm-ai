@@ -6,7 +6,8 @@ import {createHash} from 'node:crypto';
 /** Executed inside the isolated --tm-smoke packaged runtime on native hosts only.
  * No renderer-provided code, external services or actual customer data. */
 interface CockpitWindow {
- webContents:{executeJavaScript(code:string):Promise<unknown>;setZoomFactor(factor:number):void;getZoomFactor():number};
+ webContents:{executeJavaScript(code:string):Promise<unknown>;setZoomFactor(factor:number):void;getZoomFactor():number;sendInputEvent(event:{type:'keyDown'|'keyUp';keyCode:string}):void};
+ show():void;focus():void;isVisible():boolean;isFocused():boolean;hide():void;
  getContentSize():number[];setContentSize(width:number,height:number):void;capturePage():Promise<{isEmpty():boolean;getSize():{width:number;height:number};toPNG():Buffer}>;
 }
 type Theme='system'|'light'|'dark';
@@ -120,13 +121,23 @@ export async function runPackagedCockpitFlow(win:CockpitWindow,theme:{themeSourc
  })()`);
  const failedStage=(interaction as {syntheticFailureStage?:string})?.syntheticFailureStage;
  if(failedStage){if(['initial','tax-length','profile-save','required-customer','project-create','duplicate','cancel-edit','edit','cancel-status','archive','reopen','identity','help','disabled-backup'].includes(failedStage))progress(failedStage);throw new Error('Synthetic cockpit interaction failed');}
- const originalSize=win.getContentSize(),originalZoom=win.webContents.getZoomFactor(),originalTheme=theme.themeSource;
+ const originalSize=win.getContentSize(),originalZoom=win.webContents.getZoomFactor(),originalTheme=theme.themeSource,originalVisible=win.isVisible();
  const layouts:unknown[]=[];
  try{
   for(const [width,height] of [[1440,900],[1280,800]])for(const appearance of ['light','dark'] as const){
    progress('layout-'+width+'x'+height+'-'+appearance);
    theme.themeSource=appearance; // Synthetic automation override only; production follows system.
    win.setContentSize(width,height);win.webContents.setZoomFactor(2);
+   // Exercise real Chromium keyboard modality in the runner-owned synthetic window.
+   win.show();win.focus();
+   await evaluate(`(async()=>{if(document.activeElement instanceof HTMLElement)document.activeElement.blur();window.scrollTo(0,0);await new Promise(r=>setTimeout(r,100));})()`);
+   let keyboardInput=false;
+   for(let i=0;i<80;i++){
+    win.webContents.sendInputEvent({type:'keyDown',keyCode:'Tab'});win.webContents.sendInputEvent({type:'keyUp',keyCode:'Tab'});
+    await new Promise(r=>setTimeout(r,40));
+    if(await evaluate(`document.activeElement?.matches('input:not(:disabled),textarea:not(:disabled)')===true && document.activeElement.matches(':focus-visible')`)){keyboardInput=true;break;}
+   }
+   if(!keyboardInput||!win.isFocused())throw new Error('Native keyboard focus not attained');
    const result=await evaluate(`(async()=>{
     const appearance=${JSON.stringify(appearance)},deadline=Date.now()+15000;
     while(Date.now()<deadline&&(!document.querySelector('.theme-indicator')?.textContent?.includes(appearance)||window.matchMedia('(prefers-color-scheme: dark)').matches!==(appearance==='dark')))await new Promise(r=>setTimeout(r,50));
@@ -145,8 +156,8 @@ export async function runPackagedCockpitFlow(win:CockpitWindow,theme:{themeSourc
      const r=ratio(style.color,layers(el));const large=parseFloat(style.fontSize)>=24||(parseFloat(style.fontSize)>=18.66&&Number(style.fontWeight)>=700);
      if(large)minLargeRatio=Math.min(minLargeRatio,r);else if(r<minTextRatio){minTextRatio=r;worstTag=el.tagName;worstClass=typeof el.className==='string'?el.className.slice(0,100):'';}textChecks++;
     }
-    const focus=document.querySelector('input:not(:disabled)');if(!focus)throw new Error('No focusable input');
-    focus.focus();const f=getComputedStyle(focus);const focusRatio=ratio(f.outlineColor,layers(focus.parentElement));
+    const focus=document.activeElement;if(!focus?.matches('input:not(:disabled),textarea:not(:disabled)'))throw new Error('Native keyboard input focus not attained');
+    const f=getComputedStyle(focus);const focusRatio=ratio(f.outlineColor,layers(focus.parentElement));
     const focusVisible=focus.matches(':focus-visible')&&f.outlineStyle!=='none'&&parseFloat(f.outlineWidth)>=2&&focusRatio>=3;
     focus.blur();window.scrollTo(0,0);await new Promise(r=>setTimeout(r,100));
     if(textChecks<20||minTextRatio<4.5||minLargeRatio<3||!focusVisible)return {syntheticFailureStage:'contrast',textChecks,minTextRatio,minLargeRatio,focusRatio,focusVisible,worstTag,worstClass};
@@ -161,10 +172,10 @@ export async function runPackagedCockpitFlow(win:CockpitWindow,theme:{themeSourc
    const name='cockpit-'+width+'x'+height+'-'+appearance+'.png';capture(name,bytes);
    layouts.push({requestedWidth:width,requestedHeight:height,contentSize,zoomFactor:win.webContents.getZoomFactor(),...(result as object),screenshot:{name,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),width:size.width,height:size.height}});
   }
- }finally{theme.themeSource=originalTheme;win.webContents.setZoomFactor(originalZoom);win.setContentSize(originalSize[0],originalSize[1]);}
+ }finally{theme.themeSource=originalTheme;win.webContents.setZoomFactor(originalZoom);win.setContentSize(originalSize[0],originalSize[1]);if(!originalVisible)win.hide();}
  progress('theme-persistence');
- const persisted=await evaluate(`(async()=>{const id=${JSON.stringify((interaction as {projectId:string}).projectId)};const p=(await window.tmBridge.listProjectsDetailed()).find(x=>x.id===id);return p?.status==='active'&&p?.billing_address==='3 UI Billing Road'&&p?.notes==='LONGSYNTHETIC'.repeat(45);})()`);
- if(persisted!==true)throw new Error('Theme changes affected project state');
+ const persisted=await evaluate(`(async()=>{const p=(await window.tmBridge.listProjectsDetailed()).find(x=>x.project_code==='COCKPIT-UI-001');return p?.status==='active'&&p?.billing_address==='3 UI Billing Road'&&p?.notes==='LONGSYNTHETIC'.repeat(45)?p.id:null;})()`);
+ if(persisted!==(interaction as {projectId:string}).projectId)throw new Error('Theme changes affected project state');
  return {schema:'tm-cockpit-flow-v1',synthetic:true,interaction,layouts,themeStatePreserved:true,note:'Packaged DOM interaction, computed flat-paint WCAG-oriented ratios and native capture under synthetic appearance override. Physical keyboard, screen reader, perceptual contrast and actual OS-theme witness remain open.'};
 }
 
