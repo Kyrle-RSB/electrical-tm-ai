@@ -2,7 +2,7 @@
 
 This is an incremental implementation, **not a claim that Phase 2 or later phases are complete**.
 
-## Current increment
+## Historical early increment (not current verification)
 - Preserved the Mac-tested Phase 1 Electron source as the baseline.
 - Implemented numeric, checksum-verified SQLite migrations 0002–0004 without changing 0001.
 - Added exact money, material quantity splitting, fully burdened labor contribution and half-day overhead helpers with deterministic local tests.
@@ -16,8 +16,12 @@ This is an incremental implementation, **not a claim that Phase 2 or later phase
 - **Not executed on this source revision:** actual Mac or Windows packaged Electron, real OS keychain protection, clean novice install, full customer invoice, live Claude/Gmail, independent review.
 
 ## Decision continuity
-D01–D18, D14 burdened labor and unused half-day overhead remain approved. Exact Vite HTML path difference is an existing working exception that still needs owner disposition. The original 195-item Phase 1 gate and the Phase 2 sign-offs are NOT certified.
+D01–D18, D14 burdened labor and unused half-day overhead remain approved. The Vite HTML exception is ratified in `docs/architecture/overview.md`. Verify the actual approved ADR and original owner receipt. The original 195-item Phase 1 gate and the Phase 2 sign-offs are NOT certified.
 
 ## Phase 2 source construction increment
 
-Owner requested building all phases in ChatGPT, not recursive planning exercises. In this increment, existing Electron/React/SQLite code was preserved while adding bounded implementation and negative tests: secure source scanning and CI definitions; process startup receipts and packaged smoke; serial app operations; schema rescue; financial amount/quantity/rate/overhead calculations; immutable stored PDFs, payment and credit guards; project edit/archive and responsive shell; backup-folder preferences; preflight restoration and in-app help. The source remains internal, with native Mac/Windows and independent verification pending. See `iteration-template.md` for the public-safe record format used for later iterations.
+Owner requested building all phases in ChatGPT, not recursive planning exercises. In this increment, existing Electron/React/SQLite code was preserved while adding bounded implementation and negative tests: secure source scanning and CI definitions; process startup receipts and packaged smoke; serial app operations; schema rescue; financial amount/quantity/rate/overhead calculations; immutable stored PDFs, payment and credit guards; project edit/archive and responsive shell; backup-folder preferences; preflight restoration and in-app help. The source is public, with internal unsigned build outputs and independent verification pending. Actual native receipts for earlier commits must not be carried forward to changed source. See `iteration-template.md` for the public-safe record format used for later iterations.
+
+## Current Gate 1 discipline
+
+Track exact candidate, tree, pinned workflow and receipt identities, including failures. Retain red/green regression evidence for filesystem identity and export consent, use additive migrations through 0009, and require the actual native contract (including the damaged main, preload and renderer root) independently of the intact-package smoke. No formal closure follows from automated tests or a private ledger integrity pass. The original V3 acceptance controls and distinct reviews remain binding.
