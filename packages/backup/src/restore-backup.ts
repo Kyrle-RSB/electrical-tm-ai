@@ -64,7 +64,7 @@ export async function restoreBackup(backupPath:string,activeRoot:string,migratio
   await fs.promises.mkdir(parent,{recursive:true});
   const nonce=crypto.randomBytes(5).toString('hex'),stage=path.join(parent,`.tm-restore-${nonce}`),rollback=path.join(parent,`.tm-rollback-${nonce}`);
   await fs.promises.mkdir(stage,{mode:0o700});
-  let rolledBack=false;
+  let rolledBack=false,preserveStage=false;
   try{
     for(const entry of manifest.files){
       const dest=path.join(stage,entry.path);
@@ -73,7 +73,13 @@ export async function restoreBackup(backupPath:string,activeRoot:string,migratio
     }
     for(const entry of manifest.files) if(await hashFile(path.join(stage,entry.path),entry.bytes)!==entry.sha256) throw new Error('Restore staging mismatch');
     if(fs.existsSync(target)){await fs.promises.rename(target,rollback);rolledBack=true;}
-    try{await fs.promises.rename(stage,target);}catch(e){if(rolledBack)await fs.promises.rename(rollback,target);throw e;}
+    try{await fs.promises.rename(stage,target);}catch(activationError){
+      if(rolledBack){
+        try{await fs.promises.rename(rollback,target);}
+        catch(rollbackError){preserveStage=true;throw new AggregateError([activationError,rollbackError],'Restore recovery requires operator intervention');}
+      }
+      throw activationError;
+    }
     return {rollbackPath:rolledBack?rollback:null};
-  }catch(e){await fs.promises.rm(stage,{recursive:true,force:true});throw e;}
+  }catch(e){if(!preserveStage)await fs.promises.rm(stage,{recursive:true,force:true});throw e;}
 }

@@ -264,3 +264,96 @@ test('restore confirmation is bound to the originally verified archive even if a
   assert.deepEqual(fs.readdirSync(path.dirname(live)),['data']);
  }finally{try{db?.close();}catch{}fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('double rename failure preserves verified stage and original rescue, disables rebind and blocks fresh startup',async()=>{
+ const {registerBackupHandlers}=await import('../../apps/desktop/src/main/ipc/handlers/backups');
+ const {BackupDestinationPreference}=await import('../../packages/backup/src/backup-destination');
+ const {prepareApplicationPaths}=await import('../../apps/desktop/src/main/os/paths');
+ const {CHANNELS}=await import('../../packages/contracts/src');
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-restore-double-fail-'))),profile=path.join(root,'profile'),live=path.join(profile,'local-data'),dbPath=path.join(live,'db','app.sqlite');
+ const rename=fs.promises.rename;let db:LocalStore|undefined;
+ try{
+  db=new LocalStore(dbPath,migrations);db.initializeFictionalCompany();db.createProject({code:'EARLIER',customer:'Synthetic',siteAddress:'Site'});
+  const saved=await createBackup(db,live,path.join(root,'external'));db.createProject({code:'LATEST',customer:'Synthetic',siteAddress:'Site'});
+  let fatal=false,reopens=0,failures=0,rescue='',stage='';
+  const pref=new BackupDestinationPreference(path.join(profile,'settings','backup.json'),profile);
+  const handlers=new Map<string,()=>Promise<unknown>>();
+  registerBackupHandlers((channel,validate,operation)=>{handlers.set(channel,async()=>operation('synthetic',validate(undefined)));},{
+   dialogs:{chooseFolder:async()=>saved.backupPath,confirmRestore:async()=>true},preference:pref,dataRoot:live,migrationsDir:migrations,getStore:()=>db!,setStore:v=>{db=v;},reopen:()=>{reopens++;return new LocalStore(dbPath,migrations);},onFatalRecovery:()=>{fatal=true;}
+  });
+  fs.promises.rename=(async(from,to)=>{
+   if(String(from)===live&&path.basename(String(to)).startsWith('.tm-rollback-'))rescue=String(to);
+   if(String(to)===live&&path.basename(String(from)).startsWith('.tm-restore-')){stage=String(from);failures++;throw Object.assign(new Error('Synthetic activation failure'),{code:'EIO'});}
+   if(String(to)===live&&path.basename(String(from)).startsWith('.tm-rollback-')){failures++;throw Object.assign(new Error('Synthetic rollback failure'),{code:'EIO'});}
+   return rename(from,to);
+  }) as typeof rename;
+  await assert.rejects(handlers.get(CHANNELS.backupRestore)!());
+  assert.equal(failures,2);assert.equal(fatal,true,'missing active database must never reopen as a new business');assert.equal(reopens,0);assert.equal(fs.existsSync(live),false);
+  assert.ok(rescue&&stage);assert.ok(fs.existsSync(path.join(stage,'db','app.sqlite')));assert.ok(fs.existsSync(path.join(rescue,'db','app.sqlite')));
+  const original=new LocalStore(path.join(rescue,'db','app.sqlite'),migrations);try{assert.deepEqual(original.listProjects().map(p=>p.project_code),['EARLIER','LATEST']);}finally{original.close();}
+  assert.throws(()=>prepareApplicationPaths(profile,root,root,true),/Restore recovery requires operator intervention/);assert.equal(fs.existsSync(live),false);
+  // Recovery of a disposable fixture only: an operator deliberately selects the original rescue.
+  fs.promises.rename=rename;await rename(rescue,live);
+  assert.equal(prepareApplicationPaths(profile,root,root,true).database,dbPath);
+  db=new LocalStore(dbPath,migrations);assert.deepEqual(db.listProjects().map(p=>p.project_code),['EARLIER','LATEST']);
+ }finally{fs.promises.rename=rename;try{db?.close();}catch{}fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('activation failure with successful rollback reopens only the original business and retains its bytes',async()=>{
+ const {registerBackupHandlers}=await import('../../apps/desktop/src/main/ipc/handlers/backups');
+ const {BackupDestinationPreference}=await import('../../packages/backup/src/backup-destination');
+ const {CHANNELS}=await import('../../packages/contracts/src');
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-restore-activation-fail-'))),profile=path.join(root,'profile'),live=path.join(profile,'local-data'),dbPath=path.join(live,'db','app.sqlite');
+ const rename=fs.promises.rename;let db:LocalStore|undefined;
+ try{
+  db=new LocalStore(dbPath,migrations);db.initializeFictionalCompany();db.createProject({code:'FIRST',customer:'Synthetic',siteAddress:'Site'});
+  const saved=await createBackup(db,live,path.join(root,'external'));db.createProject({code:'LATEST',customer:'Synthetic',siteAddress:'Site'});
+  fs.mkdirSync(path.join(live,'artifacts'));fs.writeFileSync(path.join(live,'artifacts','retained.txt'),'ORIGINAL CURRENT BYTES');
+  let fatal=false,reopens=0,failures=0;
+  const pref=new BackupDestinationPreference(path.join(profile,'settings','backup.json'),profile),handlers=new Map<string,()=>Promise<unknown>>();
+  registerBackupHandlers((channel,validate,operation)=>{handlers.set(channel,async()=>operation('synthetic',validate(undefined)));},{dialogs:{chooseFolder:async()=>saved.backupPath,confirmRestore:async()=>true},preference:pref,dataRoot:live,migrationsDir:migrations,getStore:()=>db!,setStore:v=>{db=v;},reopen:()=>{reopens++;return new LocalStore(dbPath,migrations);},onFatalRecovery:()=>{fatal=true;}});
+  fs.promises.rename=(async(from,to)=>{if(String(to)===live&&path.basename(String(from)).startsWith('.tm-restore-')){failures++;throw Object.assign(new Error('Synthetic activation failure'),{code:'EIO'});}return rename(from,to);}) as typeof rename;
+  await assert.rejects(handlers.get(CHANNELS.backupRestore)!(),/Synthetic activation failure/);
+  assert.equal(failures,1);assert.equal(fatal,false);assert.equal(reopens,1);assert.deepEqual(db.listProjects().map(p=>p.project_code),['FIRST','LATEST']);assert.equal(fs.readFileSync(path.join(live,'artifacts','retained.txt'),'utf8'),'ORIGINAL CURRENT BYTES');
+  assert.deepEqual(fs.readdirSync(profile),['local-data']);
+ }finally{fs.promises.rename=rename;try{db?.close();}catch{}fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('actual restore handler rejects tampered image, issued PDF, database, missing references and unsupported schema before consent or live mutation',async()=>{
+ const {registerBackupHandlers}=await import('../../apps/desktop/src/main/ipc/handlers/backups');
+ const {BackupDestinationPreference}=await import('../../packages/backup/src/backup-destination');
+ const {importImageFromPickedFile}=await import('../../packages/asset-vault/src/import-file');
+ const {storeImmutablePdf}=await import('../../packages/pdf/src/common/stored-pdf');
+ const {saveSyntheticInvoicePdf}=await import('../../packages/pdf/src/invoices/render-invoice');
+ const {CHANNELS}=await import('../../packages/contracts/src');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-restore-matrix-')),profile=path.join(root,'profile'),live=path.join(profile,'local-data'),dbPath=path.join(live,'db','app.sqlite');let db:LocalStore|undefined;
+ const hash=(file:string)=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+ try{
+  db=new LocalStore(dbPath,migrations);db.initializeFictionalCompany();const project=db.createProject({code:'BASE',customer:'Synthetic',siteAddress:'Site'});
+  const img=path.join(root,'receipt.png');fs.copyFileSync('tests/fixtures/synthetic-receipt.png',img);
+  const asset=await importImageFromPickedFile(img,path.join(live,'vault')),logo=await importImageFromPickedFile(img,path.join(live,'vault'));
+  db.db.prepare('INSERT INTO purchase_sources(id,business_id,source_hash,kind,vault_locator,added_utc) VALUES(?,?,?,?,?,?)').run('synthetic-source','local',asset.sha256,'receipt',asset.relativePath,'2026-11-24T00:00:00Z');db.setBusinessLogo(logo);
+  const exported=path.join(root,'synthetic.pdf');await saveSyntheticInvoicePdf(exported,{company:'Synthetic',customer:'Synthetic',project:'BASE',invoiceNumber:'SYN-1',taxId:'TEST-TAX',contractorLicense:'TEST-LICENSE',amount:'100.00'});
+  const pdf=await storeImmutablePdf(path.join(live,'artifacts'),fs.readFileSync(exported));
+  db.db.prepare('INSERT INTO issued_invoices VALUES(?,?,?,?,?,?,?,?)').run('synthetic-invoice',project,'SYN-1','{}','2026-11-24T00:00:00Z',10000,pdf.sha256,pdf.relativePath);
+  const saved=await createBackup(db,live,path.join(root,'backups'));db.createProject({code:'LATEST',customer:'Synthetic',siteAddress:'Site'});
+  // Checkpoint before taking physical file hashes so the comparison is not a WAL side effect.
+  db.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  const snapshot=()=>({projects:db!.listProjects(),logo:db!.getBusinessLogo(),issued:db!.db.prepare('SELECT * FROM issued_invoices').all(),db:hash(dbPath),asset:hash(path.join(live,'vault',asset.relativePath)),logoBytes:hash(path.join(live,'vault',logo.relativePath)),pdf:hash(path.join(live,'artifacts',pdf.relativePath))});
+  const before=snapshot();let selected='',confirmations=0,reopens=0,fatal=false;
+  const pref=new BackupDestinationPreference(path.join(profile,'settings','backup.json'),profile),handlers=new Map<string,()=>Promise<unknown>>();
+  registerBackupHandlers((channel,validate,operation)=>{handlers.set(channel,async()=>operation('synthetic',validate(undefined)));},{dialogs:{chooseFolder:async()=>selected,confirmRestore:async()=>{confirmations++;return true;}},preference:pref,dataRoot:live,migrationsDir:migrations,getStore:()=>db!,setStore:v=>{db=v;},reopen:()=>{reopens++;return new LocalStore(dbPath,migrations);},onFatalRecovery:()=>{fatal=true;}});
+  for(const mode of ['image','pdf','database','missing-reference','unsupported-schema'] as const){
+   selected=path.join(root,'tamper-'+mode);fs.cpSync(saved.backupPath,selected,{recursive:true});
+   const mf=path.join(selected,'manifest.json');const manifest=JSON.parse(fs.readFileSync(mf,'utf8')) as {files:Array<{path:string;sha256:string;bytes:number}>};
+   const relative=mode==='image'?'vault/'+asset.relativePath:mode==='pdf'?'artifacts/'+pdf.relativePath:mode==='missing-reference'?'vault/'+logo.relativePath:'db/app.sqlite';const file=path.join(selected,relative);
+   if(mode==='missing-reference'){fs.rmSync(file);manifest.files=manifest.files.filter(entry=>entry.path!==relative);fs.writeFileSync(mf,JSON.stringify(manifest));}
+   else if(mode==='unsupported-schema'){const archive=new DatabaseSync(file);try{archive.prepare('INSERT INTO schema_migrations VALUES (?,?,?)').run(999,'0'.repeat(64),'2026-11-24T00:00:00Z');}finally{archive.close();}const entry=manifest.files.find(e=>e.path===relative)!;entry.bytes=fs.statSync(file).size;entry.sha256=hash(file);fs.writeFileSync(mf,JSON.stringify(manifest));}
+   else{const bytes=fs.readFileSync(file);bytes[Math.floor(bytes.length/2)]^=1;fs.writeFileSync(file,bytes);}
+   await assert.rejects(handlers.get(CHANNELS.backupRestore)!(),/integrity failure|Referenced backup evidence missing|Migration history mismatch/i,mode);
+   assert.equal(confirmations,0,mode);assert.equal(reopens,0,mode);assert.equal(fatal,false,mode);assert.deepEqual(snapshot(),before,mode);
+  }
+  // Untouched control archive still restores and excludes the later business row.
+  selected=saved.backupPath;const restored=await handlers.get(CHANNELS.backupRestore)!();assert.ok(restored);assert.equal(confirmations,1);assert.equal(reopens,1);assert.deepEqual(db.listProjects().map(p=>p.id),[project]);assert.equal(hash(path.join(live,'artifacts',pdf.relativePath)),before.pdf);
+ }finally{try{db?.close();}catch{}fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

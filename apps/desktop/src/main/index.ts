@@ -48,8 +48,8 @@ if(!hasSingleInstanceLock){
 }
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL:string|undefined;
 function startPrimary(){
-const paths=prepareApplicationPaths(P2_TEST_PROFILE,app.getAppPath(),process.resourcesPath,app.isPackaged);
 const recorder=createStartupRecorder(P2_TEST_PROFILE);
+const paths=(()=>{try{return prepareApplicationPaths(P2_TEST_PROFILE,app.getAppPath(),process.resourcesPath,app.isPackaged);}catch(error){try{recorder.record('paths.prepare','fail');}catch{/* No unsafe diagnostic fallback. */}throw error;}})();
 recorder.record('launch','begin');
 const DATA_ROOT=paths.dataRoot;
 let store:LocalStore;

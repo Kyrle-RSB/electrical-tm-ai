@@ -132,3 +132,14 @@ test('renderer target rejects contaminated packaged and non-loopback development
  assert.throws(()=>selectRendererUrl(true,'http://127.0.0.1:5173/'),/Packaged renderer/);
  for(const url of ['file:///tmp/fake.html','https://localhost:5173/','http://example.invalid:5173/','http://localhost:5173/other','http://user@localhost:5173/','http://localhost:5173/?x=1','http://localhost:5173/#x','http://localhost/'])assert.throws(()=>selectRendererUrl(false,url),/Invalid development renderer/);
 });
+
+test('interrupted restore with a rescue sibling cannot create a fresh missing active database on restart',async()=>{
+ const {prepareApplicationPaths}=await import('../../apps/desktop/src/main/os/paths');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-restore-startup-'));
+ try{
+  const profile=path.join(root,'profile'),live=path.join(profile,'local-data'),rescue=path.join(profile,'.tm-rollback-1234567890');
+  fs.mkdirSync(rescue,{recursive:true});fs.writeFileSync(path.join(rescue,'synthetic-marker'),'ORIGINAL');
+  assert.throws(()=>prepareApplicationPaths(profile,root,root,true),/Restore recovery requires operator intervention/);assert.equal(fs.existsSync(live),false);assert.equal(fs.readFileSync(path.join(rescue,'synthetic-marker'),'utf8'),'ORIGINAL');
+  const fresh=path.join(root,'fresh');assert.equal(prepareApplicationPaths(fresh,root,root,true).database,path.join(fresh,'local-data','db','app.sqlite'));
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

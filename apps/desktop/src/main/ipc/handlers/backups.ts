@@ -9,6 +9,7 @@ import {restoreBackup,verifyBackup} from '../../../../../../packages/backup/src/
 import type {BackupDestinationPreference} from '../../../../../../packages/backup/src/backup-destination';
 import type {NativeFileDialogs} from '../../os/file-dialogs';
 import type {ValidatedRegistrar} from '../register';
+import {requireExistingDatabase} from '../../os/paths';
 export interface BackupHandlerOptions{
  dialogs:Pick<NativeFileDialogs,'chooseFolder'|'confirmRestore'>;
  preference:Pick<BackupDestinationPreference,'get'|'set'|'validate'>;
@@ -36,10 +37,12 @@ export function registerBackupHandlers(register:ValidatedRegistrar,opts:BackupHa
   const selected=await dialogs.chooseFolder(false);if(selected===null)return null;
   const expectedIdentity=backupManifestIdentity(await verifyBackup(selected,migrationsDir));
   if(!await dialogs.confirmRestore())return null;
+  requireExistingDatabase(dataRoot);
   opts.getStore().close();
   let restored:{rollbackPath:string|null}|null=null;
   try{
    restored=await restoreBackup(selected,dataRoot,migrationsDir,expectedIdentity);
+   requireExistingDatabase(dataRoot);
    opts.setStore(opts.reopen());return {restored:true,rollbackPath:restored.rollbackPath};
   }catch(error){
    try{
@@ -48,6 +51,7 @@ export function registerBackupHandlers(register:ValidatedRegistrar,opts:BackupHa
      if(fs.existsSync(dataRoot))await fs.promises.rename(dataRoot,failed);
      await fs.promises.rename(restored.rollbackPath,dataRoot);
     }
+    requireExistingDatabase(dataRoot);
     opts.setStore(opts.reopen());
    }catch(recoveryError){opts.onFatalRecovery();throw new AggregateError([error,recoveryError],'Restore recovery requires operator intervention');}
    throw error;

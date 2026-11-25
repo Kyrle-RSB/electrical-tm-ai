@@ -13,3 +13,5 @@ The manifest is checked against durable receipt and issued-document references i
 Migration 0007 adds a distinct local business logo reference using the existing managed image vault. Verify backup completeness against this reference as well as receipts and issued documents. No historical migration bytes were edited.
 
 The main-process confirmation captures a canonical SHA-256 identity of the validated manifest, including file paths, sizes and content hashes. Restore re-verifies the selected archive against that identity before staging or moving active data; a different valid archive is not a valid substitute after consent. Staged bytes are rechecked against both recorded length and hash. This is content binding, not a cross-process filesystem lock.
+
+If activation and rollback both fail, retain the verified stage and original rollback directory. Before reopening SQLite, require an existing regular active database. A missing active database with restore or rollback siblings blocks startup before any first-run creation. No automatic rescue selection or deletion; recover under operator control.

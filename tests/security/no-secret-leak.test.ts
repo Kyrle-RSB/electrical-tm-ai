@@ -132,3 +132,13 @@ test('credential staging collision never deletes a file this operation did not c
   await assert.rejects(vault.storeFakeToken('TEST-FAKE-replacement'),{code:'EEXIST'});assert.ok(staged);assert.equal(fs.readFileSync(staged,'utf8'),'SYNTHETIC UNRELATED CONTENT');assert.deepEqual(fs.readFileSync(file),prior);
  }finally{fs.promises.open=nativeOpen;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('failed credential removal is not acknowledged; retry leaves no staged file or plaintext fallback after reopen',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-secret-revoke-fail-')),file=path.join(root,'probe.bin'),remove=fs.promises.rm;const token='TEST-FAKE-REMOVE-RETRY';
+ try{
+  const vault=new ProtectedSecretFile(demoProvider,file);await vault.storeFakeToken(token);const before=fs.readFileSync(file);let injections=0;
+  fs.promises.rm=(async(...args:Parameters<typeof remove>)=>{if(String(args[0])===file){injections++;throw Object.assign(new Error('Synthetic remove denied'),{code:'EACCES'});}return remove(...args);}) as typeof remove;
+  await assert.rejects(vault.remove(),/Synthetic remove denied/);assert.equal(injections,1);assert.equal(await vault.exists(),true);assert.deepEqual(fs.readFileSync(file),before);assert.equal(before.includes(Buffer.from(token)),false);
+  fs.promises.rm=remove;await vault.remove();const reopened=new ProtectedSecretFile(demoProvider,file);assert.equal(await reopened.exists(),false);await assert.rejects(reopened.readFakeToken(),/not configured/);assert.deepEqual(fs.readdirSync(root),[]);
+ }finally{fs.promises.rm=remove;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

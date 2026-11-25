@@ -16,3 +16,5 @@ Check the exact candidate native receipts. The automated synthetic backup verifi
 Optional logo: select a synthetic PNG/JPEG in Business profile. Its managed asset ID and checksum are stored locally and included in backup verification; cancel preserves the previous reference. Removing a logo reference retains historical managed bytes. A production logo-rendering invoice template is outside Phase 2.
 
 The restore confirmation is bound to the verified backup manifest and file hashes. If the selected archive changes while you are confirming, the restore is refused. Select and verify the intended backup again; your active database remains the original one.
+
+If both the directory switch and recovery fail, the app must stop instead of creating a new empty business. Preserve the original rollback and verified stage folders. Do not rename, replace or delete them without qualified recovery assistance; preserve copies and verify hashes, schema and the intended business records before reopening. An interrupted restore with missing active data blocks startup.
