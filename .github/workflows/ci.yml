@@ -32,6 +32,18 @@ jobs:
       - run: node scripts/audit-source-secrets.mjs --self-test
       - run: node scripts/verify-licenses.mjs --self-test
       - run: node scripts/audit-requirements.mjs
+      - name: Preserve verified tracked source tree (not a binary or acceptance receipt)
+        run: |
+          git diff --exit-code HEAD --
+          git rev-parse HEAD 'HEAD^{tree}'
+          git archive --format=zip --output="$RUNNER_TEMP/fork-b-source.zip" HEAD
+          sha256sum "$RUNNER_TEMP/fork-b-source.zip"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fork-b-source-tree
+          path: ${{ runner.temp }}/fork-b-source.zip
+          if-no-files-found: error
+          retention-days: 7
       - name: Admit source failure evidence only after known-signature screening
         id: failure-evidence-admission
         if: failure()
