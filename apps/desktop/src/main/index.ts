@@ -3,6 +3,7 @@
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, nativeTheme } from 'electron';
 import os from 'node:os';
 import fs from 'node:fs';
+import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {LocalStore} from '../../../../packages/persistence-sqlite/src/connection';
@@ -177,7 +178,18 @@ async function run(){
       const stage=${JSON.stringify(stage)};
       if(stage==='seed'){
         if((await window.tmBridge.listProjectsDetailed()).length!==0)throw new Error('Lifecycle seed profile not empty');
-        await window.tmBridge.createProject({code:'LIFECYCLE-001',customer:'Synthetic Lifecycle',siteAddress:'1 Site Rd',details:{name:'Lifecycle fixture',billingAddress:'2 Billing Rd',notes:'Synthetic only'}});
+        const deadline=Date.now()+10000;
+        let form;
+        while(Date.now()<deadline){form=[...document.querySelectorAll('form')].find(f=>[...f.querySelectorAll('button')].some(b=>b.textContent==='Create fictional project'));if(form)break;await new Promise(r=>setTimeout(r,50));}
+        if(!form)throw new Error('Lifecycle UI form unavailable');
+        for(const [label,value] of [['Project code','LIFECYCLE-001'],['Customer','Synthetic Lifecycle'],['Job-site address','1 Site Rd'],['Project name','Lifecycle fixture'],['Billing address','2 Billing Rd'],['Project notes','Synthetic only']]){
+          const field=[...form.querySelectorAll('label')].find(l=>l.firstChild?.textContent?.trim()===label)?.querySelector('input,textarea');if(!field)throw new Error('Lifecycle UI field absent');
+          const proto=field.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+          Object.getOwnPropertyDescriptor(proto,'value').set.call(field,value);field.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,50));
+        }
+        form.querySelector('button[type=submit]').click();
+        while(Date.now()<deadline&&!document.querySelector('.project-list')?.textContent?.includes('LIFECYCLE-001'))await new Promise(r=>setTimeout(r,50));
+        if(!document.querySelector('.project-list')?.textContent?.includes('2 Billing Rd'))throw new Error('Lifecycle project not created through UI');
         await window.tmBridge.storeFakeSecretProof();
       }
       const rows=await window.tmBridge.listProjectsDetailed();
@@ -202,6 +214,12 @@ async function run(){
       const ciphertext=fs.readFileSync(path.join(P2_TEST_PROFILE,'secrets','phase1-fake.bin'));
       if(ciphertext.includes(Buffer.from('TEST-FAKE-EXAMPLE')))throw new Error('Lifecycle credential plaintext');
     }
+    if(stage==='revoked'&&process.env.TM_LIFECYCLE_ABNORMAL_PROBE==='1'){
+      fs.writeFileSync(path.join(P2_TEST_PROFILE,'abnormal-ready.json'),JSON.stringify({nonce:lifecycleProof.nonce,pid:process.pid,...result}),{flag:'wx',mode:0o600});
+      recorder.record('packaged.lifecycle.abnormal-ready','pass');
+      await new Promise<void>(resolve=>setTimeout(resolve,60000));
+      throw new Error('Abnormal proof process was not terminated');
+    }
     if(stage==='revoked'&&process.env.TM_LIFECYCLE_DUPLICATE_PROBE==='1'){
       // Native runner controls only this previously validated disposable profile.
       fs.writeFileSync(path.join(P2_TEST_PROFILE,'duplicate-ready.json'),JSON.stringify({nonce:lifecycleProof.nonce,pid:process.pid}),{flag:'wx',mode:0o600});
@@ -210,7 +228,7 @@ async function run(){
       if(secondaryLaunches!==1)throw new Error('Duplicate instance was not rejected');
       recorder.record('packaged.lifecycle.duplicate','pass');
     }
-    fs.writeFileSync(path.join(P2_TEST_PROFILE,`lifecycle-${stage}.json`),JSON.stringify({schema:'tm-lifecycle-v1',stage,nonce:lifecycleProof.nonce,pid:process.pid,synthetic:true,...result,secondaryLaunches})+'\n',{flag:'wx',mode:0o600});
+    fs.writeFileSync(path.join(P2_TEST_PROFILE,`lifecycle-${stage}.json`),JSON.stringify({schema:'tm-lifecycle-v1',stage,nonce:lifecycleProof.nonce,pid:process.pid,synthetic:true,...result,secondaryLaunches,uiCreated:stage==='seed'})+'\n',{flag:'wx',mode:0o600});
     recorder.record('packaged.lifecycle.'+stage,'pass');
     app.quit();return;
   }
@@ -219,6 +237,7 @@ async function run(){
     // This test is not a substitute for a clean-machine or independent human review.
     const checks:string[]=[];
     let currentCheck='packaging',cockpitStage='not-started';
+    let backupCoverage:Record<string,unknown>|null=null,cockpitDiagnostics:unknown=null;
     let succeeded=false;
     let cockpitFlow:Awaited<ReturnType<typeof runPackagedCockpitFlow>>|null=null;
     let packagedHealth=false,packagedOrigin:string|null=null;
@@ -260,7 +279,7 @@ async function run(){
         if(!/^cockpit-(1440x900|1280x800)-(light|dark)\.png$/.test(name))throw new Error('Invalid synthetic capture name');
         const current=fs.lstatSync(dir);if(current.isSymbolicLink()||!current.isDirectory()||current.dev!==stat.dev||current.ino!==stat.ino)throw new Error('Changed synthetic capture destination');
         fs.writeFileSync(path.join(dir,name),bytes,{flag:'wx',mode:0o600});
-      },stage=>{cockpitStage=stage;});
+      },(stage,diagnostics)=>{cockpitStage=stage;cockpitDiagnostics=diagnostics??null;});
       cockpitStage='persisted-reasons';
       const uiProject=store.listProjectsDetailed().find(p=>p.project_code==='COCKPIT-UI-001');
       if(!uiProject)throw new Error('Missing synthetic UI project');
@@ -319,6 +338,11 @@ async function run(){
       const verified=await verifyManagedImage(path.join(DATA_ROOT,'vault'),imported.relativePath,imported.sha256);
       if(verified.mime!=='image/png')throw new Error('Synthetic receipt import failed verification');
       store.db.prepare('INSERT INTO purchase_sources(id,business_id,source_hash,kind,vault_locator,added_utc) VALUES(?,?,?,?,?,?)').run('synthetic-smoke-receipt','local',imported.sha256,'receipt',imported.relativePath,'2026-11-23T00:00:00Z');
+      const jpegPath=path.join(P2_TEST_PROFILE,'smoke-input.jpg');
+      fs.writeFileSync(jpegPath,Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wgARCAADAAQDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAVAQEBAAAAAAAAAAAAAAAAAAADBP/aAAwDAQACEAMQAAABmRQP/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABAH/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxB//9k=','base64'),{flag:'wx',mode:0o600});
+      const jpeg=await importImageFromPickedFile(jpegPath,path.join(DATA_ROOT,'vault'));
+      if((await verifyManagedImage(path.join(DATA_ROOT,'vault'),jpeg.relativePath,jpeg.sha256)).mime!=='image/jpeg')throw new Error('Synthetic JPEG import failed verification');
+      store.db.prepare('INSERT INTO purchase_sources(id,business_id,source_hash,kind,vault_locator,added_utc) VALUES(?,?,?,?,?,?)').run('synthetic-smoke-jpeg','local',jpeg.sha256,'receipt',jpeg.relativePath,'2026-11-23T00:00:00Z');
       // A separate managed logo reference is part of backup acceptance, not an invoice-rendering claim.
       const logo=await importImageFromPickedFile(fixturePath,path.join(DATA_ROOT,'vault'));
       if(logo.id===imported.id)throw new Error('Logo identity is not separate');
@@ -339,12 +363,15 @@ async function run(){
 
       currentCheck='backup-integrity-restore';
       const backupDestination=path.join(P2_TEST_PROFILE,'backup-test-exports');
+      // Keep a real OS-protected synthetic credential present during backup, not just before it.
+      await secret.storeFakeToken('TEST-FAKE-EXAMPLE');
+      await verifyManagedImage(path.join(DATA_ROOT,'vault'),imported.relativePath,imported.sha256);
+      const expected=new Map([['vault/'+imported.relativePath,imported.sha256],['vault/'+jpeg.relativePath,jpeg.sha256],['vault/'+logo.relativePath,logo.sha256],['artifacts/'+issued.relativePath,issued.sha256],['artifacts/smoke-invoice.pdf',issued.sha256]]);
+      const beforeProjects=JSON.stringify(store.listProjectsDetailed());
       const result=await createBackup(store,DATA_ROOT,backupDestination);
       const manifest=await verifyBackup(result.backupPath,migrationsDir);
-      if(!manifest.files.some(f=>f.path.startsWith('vault/images/'))||
-         !manifest.files.some(f=>f.path==='artifacts/smoke-invoice.pdf')||!manifest.files.some(f=>f.path==='vault/'+logo.relativePath&&f.sha256===logo.sha256))
-        throw new Error('Backup omitted synthetic assets');
-      // Tamper with the backup artifact, not the live original, and prove rejection.
+      if(manifest.files.length!==expected.size+1||!manifest.files.some(f=>f.path==='db/app.sqlite')||![...expected].every(([name,digest])=>manifest.files.some(f=>f.path===name&&f.sha256===digest)))throw new Error('Backup exact inventory mismatch');
+      if(!await secret.exists()||await secret.readFakeToken()!=='TEST-FAKE-EXAMPLE'||manifest.files.some(f=>f.path.startsWith('secrets/'))||!manifest.excluded.includes('OS-protected secrets'))throw new Error('Backup secret exclusion failed');
       const archivedPdf=path.join(result.backupPath,'artifacts','smoke-invoice.pdf');
       fs.appendFileSync(archivedPdf,'synthetic-tamper');
       let tamperRejected=false;
@@ -352,14 +379,23 @@ async function run(){
       if(!tamperRejected||!fs.readFileSync(artifactPath).equals(original))throw new Error('Tamper was not safely rejected');
       fs.writeFileSync(archivedPdf,original);
       await verifyBackup(result.backupPath,migrationsDir);
+      const fresh=path.join(P2_TEST_PROFILE,'fresh-restore-test');
+      await restoreBackup(result.backupPath,fresh,migrationsDir);
+      const freshStore=new LocalStore(path.join(fresh,'db','app.sqlite'),migrationsDir);
+      const verifyRestored=async(root:string,s:LocalStore)=>{
+        if(JSON.stringify(s.listProjectsDetailed())!==beforeProjects||s.getBusinessLogo()?.id!==logo.id||s.db.prepare('PRAGMA quick_check').get()?.quick_check!=='ok'||s.db.prepare('PRAGMA foreign_key_check').all().length!==0)throw new Error('Native restored logical state mismatch');
+        for(const [name,digest] of expected){const bytes=fs.readFileSync(path.join(root,name));if(createHash('sha256').update(bytes).digest('hex')!==digest)throw new Error('Native restored asset hash mismatch');}
+        if(fs.existsSync(path.join(root,'secrets')))throw new Error('Restored backup contains credentials');
+      };
+      try{await verifyRestored(fresh,freshStore);}finally{freshStore.close();}
       store.createProject({code:'SMOKE-LATER',customer:'Synthetic Check',siteAddress:'2 Test Road'});
       store.close();
       await restoreBackup(result.backupPath,DATA_ROOT,migrationsDir);
       store=new LocalStore(paths.database,migrationsDir);
-      if(!store.listProjects().some(p=>p.id===id)||store.listProjects().some(p=>p.project_code==='SMOKE-LATER')||
-         !fs.existsSync(path.join(DATA_ROOT,'artifacts','smoke-invoice.pdf'))||
-         !fs.existsSync(path.join(DATA_ROOT,'vault',imported.relativePath))||store.getBusinessLogo()?.id!==logo.id||!fs.existsSync(path.join(DATA_ROOT,'vault',logo.relativePath)))
-        throw new Error('Native backup restore lost project or attachments');
+      await verifyRestored(DATA_ROOT,store);
+      if(!store.listProjects().some(p=>p.id===id)||store.listProjects().some(p=>p.project_code==='SMOKE-LATER')||await secret.readFakeToken()!=='TEST-FAKE-EXAMPLE')throw new Error('Native backup restore lost project or credential isolation');
+      await secret.remove();if(await secret.exists())throw new Error('Synthetic credential cleanup failed');
+      backupCoverage={png:true,jpeg:true,distinctLogo:true,issuedPdf:true,exactInventory:true,verifiedSecretExclusion:true,freshRestore:true,activeRestore:true,assetHashes:true,logicalRows:true,tamperRejected};
       checks.push(currentCheck);
       succeeded=true;
     }catch(_error){
@@ -367,7 +403,7 @@ async function run(){
       recorder.record('packaged.smoke.'+currentCheck,'fail');
     }
     const report={schema:'tm-native-smoke-v3',passed:checks,failed:succeeded?null:currentCheck,
-      source:'packaged-binary',synthetic:true,cockpitFlow,cockpitStage,rendererSecurity,packagedOrigin,packagedHealth,startupReadiness};
+      source:'packaged-binary',synthetic:true,cockpitFlow,cockpitStage,cockpitDiagnostics,rendererSecurity,packagedOrigin,packagedHealth,startupReadiness,backupCoverage};
     // Windows GUI executables do not guarantee that stdout is attached to a terminal.
     // The native runner supplies a new, unpredictable, temp-only evidence path.
     const receiptPath=process.env.TM_SMOKE_REPORT_PATH;

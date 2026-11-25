@@ -101,7 +101,16 @@ function toolchainNegatives(){
   assert.notEqual(lint.status,0);assert.match(lint.stdout+lint.stderr,/no-debugger/);
   const bad=path.join(fixture,'bad.ts');fs.writeFileSync(bad,'const wrong: number = "synthetic";\n');
   const compiler=pn(['exec','tsc','--noEmit','--skipLibCheck',bad]);assert.notEqual(compiler.status,0);assert.match(compiler.stdout+compiler.stderr,/TS2322/);
-  console.log('PASS actual wrong-linker, missing/outdated frozen lock, lint and TypeScript negatives');
+  // Negative check the actual production tsconfig, not just a standalone TypeScript file.
+  const production=path.join(root,'apps/desktop/src/renderer/__synthetic_typecheck_denial.ts');
+  const negative='export const syntheticTypecheckDenial: number = "synthetic";\n';
+  fs.writeFileSync(production,negative,{flag:'wx',mode:0o600});
+  try{
+   const actual=pn(['desktop:typecheck']);assert.notEqual(actual.status,0);
+   assert.match(actual.stdout+actual.stderr,/__synthetic_typecheck_denial\.ts[^\r\n]*TS2322/);
+  }finally{if(fs.readFileSync(production,'utf8')===negative)fs.unlinkSync(production);}
+  assert.equal(pn(['desktop:typecheck']).status,0,'Production compile must recover after fixture removal');
+  console.log('PASS actual wrong-linker, missing/outdated frozen lock, lint and TypeScript negatives, including production config denial and clean rebuild');
  }finally{fs.rmSync(fixture,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 }
 const matrix=read(path.join(root,'docs/testing/acceptance-matrix.md'));

@@ -67,6 +67,7 @@ export function validateRawIpcProof(proof){
 export function validatePortIsolation(proof){
  return proof?.schema==='tm-port-isolation-v1'&&proof.port===5173&&proof.ipv4?.address==='127.0.0.1'&&proof.ipv4?.port===5173&&proof.ipv4?.family==='IPv4'&&((proof.ipv6?.address==='::1'&&proof.ipv6?.port===5173&&proof.ipv6?.family==='IPv6'&&proof.ipv6Unavailable===null)||(proof.ipv6===null&&['EAFNOSUPPORT','EADDRNOTAVAIL','EPROTONOSUPPORT'].includes(proof.ipv6Unavailable)))&&proof.connections===0&&proof.trapError===false&&proof.packagedOrigin==='tmapp://app/index.html'&&proof.packagedHealth===true;
 }
+export function validateBackupCoverage(proof){return ['png','jpeg','distinctLogo','issuedPdf','exactInventory','verifiedSecretExclusion','freshRestore','activeRestore','assetHashes','logicalRows','tamperRejected'].every(key=>proof?.[key]===true);}
 export function validateStartupReadiness(proof){
  return proof?.health===true&&typeof proof.title==='string'&&proof.title.includes('Electrical T&M')&&proof.heading==='Local foundation cockpit'&&Number.isFinite(proof.elapsedMs)&&proof.elapsedMs>0&&proof.elapsedMs<=15000&&Number.isFinite(proof.rootWidth)&&proof.rootWidth>0&&Number.isFinite(proof.rootHeight)&&proof.rootHeight>0;
 }
@@ -136,7 +137,7 @@ export function validateLifecycleReceipts(receipts,nonce){
 }
 /** Actual second-process contention, not a second window in the primary process. */
 async function runDuplicateLifecycle(binary,env,profile,nonce){
- const probeEnv={...env,TM_LIFECYCLE_DUPLICATE_PROBE:'1'};delete probeEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete probeEnv.TM_LIFECYCLE_INVALID_RENDERER_PROBE;
+ const probeEnv={...env,TM_LIFECYCLE_DUPLICATE_PROBE:'1'};delete probeEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete probeEnv.TM_LIFECYCLE_INVALID_RENDERER_PROBE;delete probeEnv.TM_LIFECYCLE_ABNORMAL_PROBE;
  const primary=spawn(binary,['--tm-smoke'],{stdio:'ignore',windowsHide:true,env:probeEnv});
  let primaryExit=null;
  const settled=new Promise(resolve=>{primary.once('error',()=>resolve({exitCode:null,signal:null,failed:true}));primary.once('close',(exitCode,signal)=>resolve({exitCode,signal,failed:false}));});
@@ -154,6 +155,27 @@ async function runDuplicateLifecycle(binary,env,profile,nonce){
   return {primary:exit,secondary,primaryPid:identity.pid,verdict:exit.exitCode===0&&!exit.failed&&secondary.exitCode===0&&!secondary.failed&&secondary.pid!==identity.pid?'PASS':'FAIL'};
  }catch{return {primary:primaryExit,secondary,verdict:'FAIL'};}
  finally{if(primaryExit===null){primary.kill();await settled;}}
+}
+/** Terminate only the runner-owned primary after its marked ready barrier. */
+async function runAbnormalLifecycle(binary,env,profile,nonce,previous){
+ const child=spawn(binary,['--tm-smoke'],{stdio:'ignore',windowsHide:true,env:{...env,TM_LIFECYCLE_ABNORMAL_PROBE:'1'}});
+ let exited=null;const settled=new Promise(resolve=>{child.once('error',()=>resolve({code:null,signal:null,error:true}));child.once('close',(code,signal)=>resolve({code,signal,error:false}));});settled.then(value=>{exited=value;});
+ try{
+  const file=path.join(profile,'abnormal-ready.json'),deadline=Date.now()+45000;
+  let ready;while(!exited&&Date.now()<deadline){try{ready=JSON.parse(fs.readFileSync(file,'utf8'));break;}catch(error){if(error.code!=='ENOENT'&&!(error instanceof SyntaxError))throw error;}await new Promise(r=>setTimeout(r,50));}
+  if(!ready||exited||ready.pid!==child.pid||ready.nonce!==nonce||ready.projectId!==previous.projectId||ready.openedUtc!==previous.openedUtc||ready.credential!=='absent')throw new Error('Abnormal proof ready mismatch');
+  if(!child.kill('SIGKILL'))throw new Error('Runner-owned abnormal termination failed');
+  const exit=await settled;
+  const db=new DatabaseSync(path.join(profile,'local-data','db','app.sqlite'),{readOnly:true});let integrity=false,stable=false;
+  try{integrity=db.prepare('PRAGMA quick_check').get()?.quick_check==='ok'&&db.prepare('PRAGMA foreign_key_check').all().length===0;const rows=db.prepare('SELECT id,opened_utc,project_code FROM projects').all();stable=rows.length===1&&rows[0].id===previous.projectId&&rows[0].opened_utc===previous.openedUtc&&rows[0].project_code==='LIFECYCLE-001';}finally{db.close();}
+  const terminated=!exit.error&&(exit.signal==='SIGKILL'||(Number.isInteger(exit.code)&&exit.code!==0));
+  return {verdict:terminated&&integrity&&stable?'PASS':'FAIL',pid:ready.pid,terminated,integrity,stable,exit};
+ }catch{return {verdict:'FAIL'};}
+ finally{if(!exited){child.kill('SIGKILL');await settled;}}
+}
+export function validateAbnormalLifecycle(lifecycle){
+ const a=lifecycle?.abnormal,r=lifecycle?.receipts;
+ return a?.verdict==='PASS'&&a.terminated===true&&a.integrity===true&&a.stable===true&&Number.isInteger(a.pid)&&a.pid>0&&Array.isArray(r)&&r.length===3&&r[0].uiCreated===true&&r.slice(1).every(x=>x.uiCreated===false)&&r.every(x=>x.pid!==a.pid)&&lifecycle.duplicate?.primaryPid===r[2].pid;
 }
 /** Corrupt only the disposable synthetic migration receipt and prove actual packaged startup fails closed. */
 function runStartupDenial(binary,env,profile){
@@ -230,13 +252,15 @@ export function validateAdversarialLifecycle(lifecycle){
 async function runLifecycle(binary){
  const profile=fs.mkdtempSync(path.join(os.tmpdir(),'tm-native-lifecycle-'));
  const nonce=crypto.randomBytes(16).toString('hex');
- let receipts=[],runs=[],duplicate=null,startupDenial=null,diagnosticDenials=null,interruptedRestore=null;
+ let receipts=[],runs=[],duplicate=null,startupDenial=null,diagnosticDenials=null,interruptedRestore=null,abnormal=null;
  try{
   fs.writeFileSync(path.join(profile,'.tm-lifecycle.json'),JSON.stringify({schema:'tm-lifecycle-v1',nonce}),{flag:'wx',mode:0o600});
   for(const stage of LIFECYCLE_STAGES){
    const env={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:stage,TM_LIFECYCLE_NONCE:nonce,ELECTRON_ENABLE_LOGGING:'1'};
-   delete env.TM_LIFECYCLE_DUPLICATE_PROBE;delete env.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete env.TM_LIFECYCLE_INVALID_RENDERER_PROBE;
+   delete env.TM_LIFECYCLE_DUPLICATE_PROBE;delete env.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete env.TM_LIFECYCLE_INVALID_RENDERER_PROBE;delete env.TM_LIFECYCLE_ABNORMAL_PROBE;
    if(stage==='revoked'){
+    abnormal=await runAbnormalLifecycle(binary,env,profile,nonce,receipts[0]);
+    if(abnormal.verdict!=='PASS')break;
     duplicate=await runDuplicateLifecycle(binary,env,profile,nonce);
     runs.push({stage,exitCode:duplicate.primary?.exitCode??null,signal:duplicate.primary?.signal??null,failed:duplicate.verdict!=='PASS'});
     if(duplicate.verdict!=='PASS')break;
@@ -251,14 +275,14 @@ async function runLifecycle(binary){
   const shutdowns=log.filter(x=>x.event==='shutdown'&&x.state==='pass').length;
   const duplicateEvents=log.filter(x=>x.event==='packaged.lifecycle.duplicate'&&x.state==='pass').length;
   if(runs.length===3&&runs.every(r=>r.exitCode===0&&!r.failed)&&validateLifecycleReceipts(receipts,nonce)&&shutdowns===3&&duplicateEvents===1){
-   const denialEnv={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:'revoked',TM_LIFECYCLE_NONCE:nonce,ELECTRON_ENABLE_LOGGING:'1'};delete denialEnv.TM_LIFECYCLE_DUPLICATE_PROBE;delete denialEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete denialEnv.TM_LIFECYCLE_INVALID_RENDERER_PROBE;
+   const denialEnv={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:'revoked',TM_LIFECYCLE_NONCE:nonce,ELECTRON_ENABLE_LOGGING:'1'};delete denialEnv.TM_LIFECYCLE_DUPLICATE_PROBE;delete denialEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete denialEnv.TM_LIFECYCLE_INVALID_RENDERER_PROBE;delete denialEnv.TM_LIFECYCLE_ABNORMAL_PROBE;
    diagnosticDenials=runDiagnosticDenials(binary,denialEnv,profile);
    interruptedRestore=runInterruptedRestoreDenial(binary,denialEnv,profile);
    startupDenial=runStartupDenial(binary,denialEnv,profile);
   }
-  const report={runs,receipts,shutdowns,duplicateEvents,duplicate,startupDenial,diagnosticDenials,interruptedRestore};
-  return {...report,verdict:runs.length===3&&runs.every(r=>r.exitCode===0&&!r.failed)&&validateLifecycleReceipts(receipts,nonce)&&shutdowns===3&&validateAdversarialLifecycle(report)&&validateDiagnosticDenials(diagnosticDenials)&&validateInvalidRendererDenial(diagnosticDenials)&&validateInterruptedRestoreDenial(interruptedRestore)?'PASS':'FAIL'};
- }catch{return {verdict:'FAIL',runs,receipts,duplicate,startupDenial,diagnosticDenials,interruptedRestore,shutdowns:null};}
+  const report={runs,receipts,shutdowns,duplicateEvents,duplicate,startupDenial,diagnosticDenials,interruptedRestore,abnormal};
+  return {...report,verdict:runs.length===3&&runs.every(r=>r.exitCode===0&&!r.failed)&&validateLifecycleReceipts(receipts,nonce)&&shutdowns===3&&validateAdversarialLifecycle(report)&&validateDiagnosticDenials(diagnosticDenials)&&validateInvalidRendererDenial(diagnosticDenials)&&validateInterruptedRestoreDenial(interruptedRestore)&&validateAbnormalLifecycle(report)?'PASS':'FAIL'};
+ }catch{return {verdict:'FAIL',runs,receipts,duplicate,startupDenial,diagnosticDenials,interruptedRestore,abnormal,shutdowns:null};}
  finally{fs.rmSync(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 }
 const DEV_CSP=REQUIRED_CSP.replace("style-src 'self'","style-src 'self' 'unsafe-inline'").replace("connect-src 'none'","connect-src 'self' ws://localhost:* ws://127.0.0.1:*");
@@ -305,7 +329,7 @@ async function runDevelopmentHmr(root){
    await vite.build({root:desktop,configFile:path.join(desktop,'vite.'+target+'.config.ts'),logLevel:'silent',define:{MAIN_WINDOW_VITE_DEV_SERVER_URL:JSON.stringify(url)},build:{outDir:buildDir,emptyOutDir:false,target:'node22',minify:false,lib:{entry:path.join(desktop,'src',target,'index.ts'),formats:['cjs'],fileName:()=>target+'.cjs'}}});
   }
   stage='launch';
-  const env={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:'seed',TM_LIFECYCLE_NONCE:nonce};delete env.TM_LIFECYCLE_DUPLICATE_PROBE;delete env.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete env.TM_LIFECYCLE_INVALID_RENDERER_PROBE;delete env.TM_SMOKE_REPORT_PATH;delete env.ELECTRON_RUN_AS_NODE;
+  const env={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:'seed',TM_LIFECYCLE_NONCE:nonce};delete env.TM_LIFECYCLE_DUPLICATE_PROBE;delete env.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete env.TM_LIFECYCLE_INVALID_RENDERER_PROBE;delete env.TM_LIFECYCLE_ABNORMAL_PROBE;delete env.TM_SMOKE_REPORT_PATH;delete env.ELECTRON_RUN_AS_NODE;
   child=spawn(electron,[appDir,'--tm-smoke','--tm-dev-hmr-proof'],{env,stdio:'ignore',windowsHide:true});
   settled=new Promise(resolve=>{child.once('error',()=>resolve({exitCode:null,spawnFailed:true}));child.once('close',(exitCode)=>resolve({exitCode,spawnFailed:false}));});settled.then(value=>{exit=value;});
   stage='initial-renderer';const readyPath=path.join(profile,'dev-hmr-ready.json'),resultPath=path.join(profile,'dev-hmr-result.json'),readyDeadline=Date.now()+45000;
@@ -370,6 +394,8 @@ if(process.argv.includes('--self-test')){
   if(!validatePortIsolation(port)||validatePortIsolation({...port,connections:1})||validatePortIsolation({...port,packagedOrigin:'http://localhost:5173/'})||validatePortIsolation({...port,ipv6:null})||!validatePortIsolation({...port,ipv6:null,ipv6Unavailable:'EAFNOSUPPORT'}))throw new Error('Port isolation receipt contract self-test failed');
   const invalid={...denials,invalidRenderer:diag('renderer.load')};
   if(!validateInvalidRendererDenial(invalid)||validateInvalidRendererDenial({...invalid,invalidRenderer:{...invalid.invalidRenderer,events:[...invalid.invalidRenderer.events,{event:'packaged.invalid-renderer-probe',state:'fail'}]}}))throw new Error('Invalid renderer receipt contract self-test failed');
+  const backupProof=Object.fromEntries(['png','jpeg','distinctLogo','issuedPdf','exactInventory','verifiedSecretExclusion','freshRestore','activeRestore','assetHashes','logicalRows','tamperRejected'].map(key=>[key,true]));
+  if(!validateBackupCoverage(backupProof)||validateBackupCoverage({...backupProof,assetHashes:false}))throw new Error('Backup coverage receipt contract self-test failed');
   const ready={elapsedMs:15000,title:'Electrical T&M',heading:'Local foundation cockpit',rootWidth:100,rootHeight:100,health:true};
   if(!validateStartupReadiness(ready)||validateStartupReadiness({...ready,elapsedMs:15001})||validateStartupReadiness({...ready,rootWidth:0})||validateStartupReadiness({...ready,health:false}))throw new Error('Readiness receipt contract self-test failed');
   const interruption={verdict:'PASS',exitCode:1,spawnFailed:false,missingActive:true,rescueUnchanged:true,safeEvents:true,namedFailure:true,noOpen:true,originalRecovered:true,events:[{event:'paths.prepare',state:'fail'}]};
@@ -395,7 +421,7 @@ if(process.argv.includes('--self-test')){
   const evidencePath=path.join(evidenceDir,'result.json');
   try {
     const smokeEnv={...process.env,ELECTRON_ENABLE_LOGGING:'1',TM_SMOKE_REPORT_PATH:evidencePath};
-    delete smokeEnv.TM_LIFECYCLE_PROFILE;delete smokeEnv.TM_LIFECYCLE_STAGE;delete smokeEnv.TM_LIFECYCLE_NONCE;delete smokeEnv.TM_LIFECYCLE_DUPLICATE_PROBE;delete smokeEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete smokeEnv.TM_LIFECYCLE_INVALID_RENDERER_PROBE;
+    delete smokeEnv.TM_LIFECYCLE_PROFILE;delete smokeEnv.TM_LIFECYCLE_STAGE;delete smokeEnv.TM_LIFECYCLE_NONCE;delete smokeEnv.TM_LIFECYCLE_DUPLICATE_PROBE;delete smokeEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete smokeEnv.TM_LIFECYCLE_INVALID_RENDERER_PROBE;delete smokeEnv.TM_LIFECYCLE_ABNORMAL_PROBE;
     const {result,proof}=await runWithPortTrap(binary,smokeEnv);
     let receipt=null;
     try {receipt=JSON.parse(fs.readFileSync(evidencePath,'utf8'));}catch{/* Absence is a failure. */}
@@ -412,7 +438,7 @@ if(process.argv.includes('--self-test')){
         for(const {shot,bytes} of images)fs.writeFileSync(path.join(real,shot.name),bytes,{flag:'wx',mode:0o600});
       }
     }
-    const verified=validateNativeSmokeReceipt(receipt)&&validatePortIsolation(portIsolation)&&validateStartupReadiness(receipt?.startupReadiness)&&extended&&screenshotsValid;
+    const verified=validateNativeSmokeReceipt(receipt)&&validatePortIsolation(portIsolation)&&validateStartupReadiness(receipt?.startupReadiness)&&extended&&screenshotsValid&&validateBackupCoverage(receipt?.backupCoverage);
     const smokeSuccess=result.status===0&&!result.error&&verified;
     let rawIpc=null;
     if(smokeSuccess){
@@ -429,7 +455,7 @@ if(process.argv.includes('--self-test')){
     console.log(JSON.stringify({schema:'tm-native-smoke-runner-v3',platform:process.platform,arch:process.arch,
       binarySha256,exitCode:result.status,signal:result.signal,verdict:success?'PASS':'FAIL',
       checks:receipt?.passed||[],failedCheck:receipt?.failed||(!verified?'missing-or-invalid-report':lifecycle?.verdict==='FAIL'?'full-process-lifecycle':!validateRawIpcProof(rawIpc?.receipt)?'raw-ipc':null),
-      lifecycle,cockpitFlow:receipt?.cockpitFlow??null,cockpitStage:receipt?.cockpitStage??null,rendererSecurity:receipt?.rendererSecurity??null,portIsolation,rawIpc,startupReadiness:receipt?.startupReadiness??null,
+      lifecycle,cockpitFlow:receipt?.cockpitFlow??null,cockpitStage:receipt?.cockpitStage??null,cockpitDiagnostics:receipt?.cockpitDiagnostics??null,rendererSecurity:receipt?.rendererSecurity??null,portIsolation,rawIpc,startupReadiness:receipt?.startupReadiness??null,backupCoverage:receipt?.backupCoverage??null,
       note:'PACKAGED, ISOLATED, SYNTHETIC test only. Other Phase 2 acceptance/reviews remain open.',
       diagnosticTail:success?null:sanitize(((result.stdout||'')+'\n'+(result.stderr||'')).slice(-1200)),
       error:result.error?sanitize(result.error.message):null},null,2));

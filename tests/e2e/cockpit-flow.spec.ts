@@ -25,7 +25,7 @@ export function contrastForPaint(foreground:string,layers:string[]):number{
  const luminance=(c:number[])=>c.map(x=>{const v=x/255;return v<=0.04045?v/12.92:((v+0.055)/1.055)**2.4;}).reduce((sum,x,i)=>sum+x*[0.2126,0.7152,0.0722][i],0);
  const a=luminance(bg),b=luminance(fg);return (Math.max(a,b)+0.05)/(Math.min(a,b)+0.05);
 }
-export async function runPackagedCockpitFlow(win:CockpitWindow,theme:{themeSource:Theme},capture:(name:string,bytes:Buffer)=>void,progress:(stage:string)=>void=()=>{}){
+export async function runPackagedCockpitFlow(win:CockpitWindow,theme:{themeSource:Theme},capture:(name:string,bytes:Buffer)=>void,progress:(stage:string,diagnostics?:{textChecks:number;minTextRatio:number;minLargeRatio:number;focusRatio:number;focusVisible:boolean;worstTag:string;worstClass:string})=>void=()=>{}){
  const evaluate=(code:string)=>win.webContents.executeJavaScript(code);
  progress('interaction');
  const interaction=await evaluate(`(async()=>{
@@ -137,23 +137,23 @@ export async function runPackagedCockpitFlow(win:CockpitWindow,theme:{themeSourc
     const labels=controls.filter(e=>e.matches('input,textarea')).every(e=>!!e.labels?.length);
     const ratio=(${contrastForPaint.toString()});
     const layers=(el)=>{const paints=[];for(let n=el;n;n=n.parentElement){const style=getComputedStyle(n);if(style.backgroundImage!=='none')throw new Error('Unexpected background image');paints.unshift(style.backgroundColor);}return paints;};
-    let textChecks=0,minTextRatio=21,minLargeRatio=21;
+    let textChecks=0,minTextRatio=21,minLargeRatio=21,worstTag='',worstClass='';
     for(const el of document.querySelectorAll('body *')){
      if(!el.getClientRects().length||el.matches(':disabled')||el.closest('[hidden]'))continue;
      if(![...el.childNodes].some(n=>n.nodeType===3&&n.textContent.trim())&&!el.matches('input,textarea'))continue;
      const style=getComputedStyle(el);if(style.visibility!=='visible')continue;
      const r=ratio(style.color,layers(el));const large=parseFloat(style.fontSize)>=24||(parseFloat(style.fontSize)>=18.66&&Number(style.fontWeight)>=700);
-     if(large)minLargeRatio=Math.min(minLargeRatio,r);else minTextRatio=Math.min(minTextRatio,r);textChecks++;
+     if(large)minLargeRatio=Math.min(minLargeRatio,r);else if(r<minTextRatio){minTextRatio=r;worstTag=el.tagName;worstClass=typeof el.className==='string'?el.className.slice(0,100):'';}textChecks++;
     }
     const focus=document.querySelector('input:not(:disabled)');if(!focus)throw new Error('No focusable input');
     focus.focus();const f=getComputedStyle(focus);const focusRatio=ratio(f.outlineColor,layers(focus.parentElement));
     const focusVisible=focus.matches(':focus-visible')&&f.outlineStyle!=='none'&&parseFloat(f.outlineWidth)>=2&&focusRatio>=3;
     focus.blur();window.scrollTo(0,0);await new Promise(r=>setTimeout(r,100));
-    if(textChecks<20||minTextRatio<4.5||minLargeRatio<3||!focusVisible)return {syntheticFailureStage:'contrast'};
+    if(textChecks<20||minTextRatio<4.5||minLargeRatio<3||!focusVisible)return {syntheticFailureStage:'contrast',textChecks,minTextRatio,minLargeRatio,focusRatio,focusVisible,worstTag,worstClass};
     if(overflow||!labels||!document.querySelector('.theme-indicator')?.textContent?.includes(appearance)||window.matchMedia('(prefers-color-scheme: dark)').matches!==(appearance==='dark'))throw new Error('Cockpit layout or theme check failed');
     return {appearance,viewportWidth:viewport,viewportHeight:root.clientHeight,overflow:false,labels:true,textChecks,minTextRatio,minLargeRatio,focusRatio,focusVisible};
    })()`);
-   if((result as {syntheticFailureStage?:string})?.syntheticFailureStage==='contrast'){progress('contrast');throw new Error('Synthetic contrast oracle failed');}
+   if((result as {syntheticFailureStage?:string})?.syntheticFailureStage==='contrast'){const d=result as {textChecks:number;minTextRatio:number;minLargeRatio:number;focusRatio:number;focusVisible:boolean;worstTag:string;worstClass:string};progress('contrast',{textChecks:d.textChecks,minTextRatio:d.minTextRatio,minLargeRatio:d.minLargeRatio,focusRatio:d.focusRatio,focusVisible:d.focusVisible,worstTag:/^[A-Z]+$/.test(d.worstTag)?d.worstTag:'UNKNOWN',worstClass:/^[a-zA-Z0-9 _-]{0,100}$/.test(d.worstClass)?d.worstClass:'UNKNOWN'});throw new Error('Synthetic contrast oracle failed');}
    progress('capture-'+width+'x'+height+'-'+appearance);
    const contentSize=win.getContentSize();if(contentSize[0]!==width||contentSize[1]!==height)throw new Error('Requested native viewport not attained');
    const image=await win.capturePage();if(image.isEmpty())throw new Error('Native screenshot empty');
