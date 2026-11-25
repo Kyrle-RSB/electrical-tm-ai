@@ -244,9 +244,9 @@ for(const mode of ['immutable','new-export','replace-export'] as const)test('PDF
  try{
   fs.mkdirSync(folder,{recursive:true});fs.mkdirSync(outside);
   const original=makeSyntheticInvoicePdf(fixture);if(mode==='replace-export')fs.writeFileSync(file,original);
-  fs.promises.open=(async(...args:Parameters<typeof open>)=>{if(!swapped&&path.dirname(String(args[0]))===folder&&(args[1]==='wx'||args[1]==='wx+')){swapped=true;fs.renameSync(folder,parked);fs.symlinkSync(outside,folder,process.platform==='win32'?'junction':'dir');}return open(...args);}) as typeof open;
-  await assert.rejects(mode==='immutable'?storeImmutablePdf(managed,original):saveSyntheticInvoicePdf(file,{...fixture,amount:'99.00'},{allowReplace:mode==='replace-export'}));
-  assert.equal(swapped,true);
+  fs.promises.open=(async(...args:Parameters<typeof open>)=>{if(!swapped&&(args[1]==='wx'||args[1]==='wx+')&&sameDirectory(path.dirname(String(args[0])),folder)){swapped=true;fs.renameSync(folder,parked);fs.symlinkSync(outside,folder,process.platform==='win32'?'junction':'dir');}return open(...args);}) as typeof open;
+  const outcome=await (mode==='immutable'?storeImmutablePdf(managed,original):saveSyntheticInvoicePdf(file,{...fixture,amount:'99.00'},{allowReplace:mode==='replace-export'})).then(()=>({error:null}),error=>({error}));
+  assert.equal(swapped,true,'directory swap fixture did not execute');assert.ok(outcome.error instanceof Error,'redirected document write was not refused');
   if(mode==='replace-export')assert.deepEqual(fs.readFileSync(path.join(parked,'existing.pdf')),original);else assert.deepEqual(fs.readdirSync(parked),[]);
   for(const name of fs.readdirSync(outside))assert.equal(fs.statSync(path.join(outside,name)).size,0,'PDF bytes escaped the selected directory');
  }finally{fs.promises.open=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
@@ -258,11 +258,11 @@ test('replacement stage corrupted during final destination verification is refus
   await saveSyntheticInvoicePdf(file,fixture);const original=fs.readFileSync(file);
   fs.promises.open=(async(...args:Parameters<typeof open>)=>{
    const target=String(args[0]);
-   if(typeof args[1]==='number'&&path.basename(target).startsWith('existing.pdf.tmp-'))checkedStage=true;
-   if(checkedStage&&!changed&&target===file){const stage=fs.readdirSync(root).find(n=>n.startsWith('existing.pdf.tmp-'));if(stage){const p=path.join(root,stage),b=fs.readFileSync(p);b[10]^=1;fs.writeFileSync(p,b);changed=true;}}
+   if(typeof args[1]==='number'&&path.basename(target).startsWith('existing.pdf.tmp-')&&sameDirectory(path.dirname(target),root))checkedStage=true;
+   if(checkedStage&&!changed&&path.basename(target)==='existing.pdf'&&sameDirectory(path.dirname(target),root)){const stage=fs.readdirSync(root).find(n=>n.startsWith('existing.pdf.tmp-'));if(stage){const p=path.join(root,stage),b=fs.readFileSync(p);b[10]^=1;fs.writeFileSync(p,b);changed=true;}}
    return open(...args);
   }) as typeof open;
-  await assert.rejects(saveSyntheticInvoicePdf(file,{...fixture,amount:'99.00'},{allowReplace:true}),/staged file changed/);
-  assert.equal(changed,true);assert.deepEqual(fs.readFileSync(file),original);assert.deepEqual(fs.readdirSync(root),['existing.pdf']);
+  const outcome=await saveSyntheticInvoicePdf(file,{...fixture,amount:'99.00'},{allowReplace:true}).then(()=>({error:null}),error=>({error}));
+  assert.equal(changed,true,'late stage corruption fixture did not execute');assert.ok(outcome.error instanceof Error);assert.match(outcome.error.message,/staged file changed/);assert.deepEqual(fs.readFileSync(file),original);assert.deepEqual(fs.readdirSync(root),['existing.pdf']);
  }finally{fs.promises.open=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
