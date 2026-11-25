@@ -143,3 +143,26 @@ test('interrupted restore with a rescue sibling cannot create a fresh missing ac
   const fresh=path.join(root,'fresh');assert.equal(prepareApplicationPaths(fresh,root,root,true).database,path.join(fresh,'local-data','db','app.sqlite'));
  }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('startup recorder refuses a substituted regular diagnostics directory',()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-diagnostic-dir-swap-'))),profile=path.join(root,'profile'),diagnostics=path.join(profile,'diagnostics'),parked=path.join(profile,'parked');
+ try{
+  const log=createStartupRecorder(profile);log.record('startup.begin','begin');const prior=fs.readFileSync(log.file);
+  fs.renameSync(diagnostics,parked);fs.mkdirSync(diagnostics);
+  assert.throws(()=>log.record('startup.finish','pass'),/Unsafe|changed/);
+  assert.deepEqual(fs.readdirSync(diagnostics),[]);assert.deepEqual(fs.readFileSync(path.join(parked,'startup.jsonl')),prior);
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('synthetic lifecycle admission refuses linked files inside its persistent data census',async()=>{
+ const {resolveLifecycleProof}=await import('../../apps/desktop/src/main/bootstrap');
+ const profile=fs.mkdtempSync(path.join(os.tmpdir(),'tm-native-lifecycle-')),outside=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-lifecycle-linked-data-'));
+ const nonce='0123456789abcdef0123456789abcdef',env={TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:'reopen',TM_LIFECYCLE_NONCE:nonce};
+ try{
+  fs.writeFileSync(path.join(profile,'.tm-lifecycle.json'),JSON.stringify({schema:'tm-lifecycle-v1',nonce}),{mode:0o600});
+  fs.writeFileSync(path.join(profile,'lifecycle-seed.json'),JSON.stringify({schema:'tm-lifecycle-v1',nonce,stage:'seed',synthetic:true}),{mode:0o600});
+  const directory=path.join(profile,'local-data');fs.mkdirSync(directory);const external=path.join(outside,'unrelated.txt');fs.writeFileSync(external,'SYNTHETIC EXTERNAL');
+  fs.linkSync(external,path.join(directory,'linked.txt'));
+  assert.throws(()=>resolveLifecycleProof(env),/Invalid lifecycle profile object/);assert.equal(fs.readFileSync(external,'utf8'),'SYNTHETIC EXTERNAL');
+ }finally{fs.rmSync(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});fs.rmSync(outside,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

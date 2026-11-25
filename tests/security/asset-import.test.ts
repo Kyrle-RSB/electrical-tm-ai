@@ -128,3 +128,17 @@ test('image import rejects a redirected directory observed between vault validat
   assert.equal(swapped,true);assert.ok(failure instanceof Error);assert.match(failure.message,/Unsafe managed image directory/);assert.deepEqual(fs.readdirSync(outside),[]);assert.deepEqual(fs.readdirSync(parked),[]);
  }finally{fs.promises.lstat=nativeLstat;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('vault redirection at exclusive open never writes receipt bytes outside the selected owned directory',async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-image-open-race-'))),selected=path.join(root,'picked.png'),vault=path.join(root,'vault'),images=path.join(vault,'images'),parked=path.join(vault,'parked'),outside=path.join(root,'outside');
+ const open=fs.promises.open;let swapped=false;
+ try{
+  fs.copyFileSync('tests/fixtures/synthetic-receipt.png',selected);fs.mkdirSync(images,{recursive:true});fs.mkdirSync(outside);
+  fs.promises.open=(async(...args:Parameters<typeof open>)=>{if(!swapped&&path.dirname(String(args[0]))===images&&args[1]==='wx+'){swapped=true;fs.renameSync(images,parked);fs.symlinkSync(outside,images,process.platform==='win32'?'junction':'dir');}return open(...args);}) as typeof open;
+  await assert.rejects(importImageFromPickedFile(selected,vault));assert.equal(swapped,true);
+  assert.deepEqual(fs.readdirSync(parked),[]);
+  // An exclusive create can leave an empty object during a hostile directory swap.
+  // Never write sensitive content or delete the now-untrusted pathname.
+  for(const name of fs.readdirSync(outside))assert.equal(fs.statSync(path.join(outside,name)).size,0,'receipt bytes escaped the vault');
+ }finally{fs.promises.open=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

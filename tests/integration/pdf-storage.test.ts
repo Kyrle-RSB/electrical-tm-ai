@@ -78,10 +78,10 @@ test('confirmed export replacement is bound to the selected file identity',async
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-pdf-changed-')),file=path.join(root,'existing.pdf');
  try{
   await saveSyntheticInvoicePdf(file,fixture);
-  const expectedExisting=await capturePdfExportTarget(file,[]);
+  const expectedSelection=await capturePdfExportTarget(file,[]);
   fs.writeFileSync(file,makeSyntheticInvoicePdf({...fixture,amount:'33.00'}));
   const changed=fs.readFileSync(file);
-  await assert.rejects(saveSyntheticInvoicePdf(file,{...fixture,amount:'99.00'},{allowReplace:true,expectedExisting}),/changed after selection/);
+  await assert.rejects(saveSyntheticInvoicePdf(file,{...fixture,amount:'99.00'},{allowReplace:true,expectedSelection}),/changed after selection/);
   assert.deepEqual(fs.readFileSync(file),changed);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
@@ -226,4 +226,43 @@ test('new exclusive PDF creation refuses same-length tampering before success',a
   fs.promises.open=originalOpen;
   await saveSyntheticInvoicePdf(file,fixture);assert.deepEqual(fs.readFileSync(file),makeSyntheticInvoicePdf(fixture));
  }finally{fs.promises.open=originalOpen;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('selected new PDF destination refuses parent identity replacement before save',async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-pdf-consent-parent-'))),folder=path.join(root,'selected'),parked=path.join(root,'parked'),file=path.join(folder,'new.pdf');
+ try{
+  fs.mkdirSync(folder);const expectedSelection=await capturePdfExportTarget(file,[]);
+  fs.renameSync(folder,parked);fs.mkdirSync(folder);
+  await assert.rejects(saveSyntheticInvoicePdf(file,fixture,{expectedSelection}),/changed after selection|destination directory changed/);
+  assert.deepEqual(fs.readdirSync(folder),[]);assert.deepEqual(fs.readdirSync(parked),[]);
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+for(const mode of ['immutable','new-export','replace-export'] as const)test('PDF exclusive open directory substitution cannot disclose document bytes: '+mode,async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-pdf-open-race-'))),managed=path.join(root,'managed'),folder=mode==='immutable'?path.join(managed,'issued'):path.join(root,'external'),parked=path.join(root,'parked'),outside=path.join(root,'outside'),file=path.join(folder,'existing.pdf');
+ const open=fs.promises.open;let swapped=false;
+ try{
+  fs.mkdirSync(folder,{recursive:true});fs.mkdirSync(outside);
+  const original=makeSyntheticInvoicePdf(fixture);if(mode==='replace-export')fs.writeFileSync(file,original);
+  fs.promises.open=(async(...args:Parameters<typeof open>)=>{if(!swapped&&path.dirname(String(args[0]))===folder&&(args[1]==='wx'||args[1]==='wx+')){swapped=true;fs.renameSync(folder,parked);fs.symlinkSync(outside,folder,process.platform==='win32'?'junction':'dir');}return open(...args);}) as typeof open;
+  await assert.rejects(mode==='immutable'?storeImmutablePdf(managed,original):saveSyntheticInvoicePdf(file,{...fixture,amount:'99.00'},{allowReplace:mode==='replace-export'}));
+  assert.equal(swapped,true);
+  if(mode==='replace-export')assert.deepEqual(fs.readFileSync(path.join(parked,'existing.pdf')),original);else assert.deepEqual(fs.readdirSync(parked),[]);
+  for(const name of fs.readdirSync(outside))assert.equal(fs.statSync(path.join(outside,name)).size,0,'PDF bytes escaped the selected directory');
+ }finally{fs.promises.open=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('replacement stage corrupted during final destination verification is refused before rename',async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-pdf-late-stage-'))),file=path.join(root,'existing.pdf');const open=fs.promises.open;let checkedStage=false,changed=false;
+ try{
+  await saveSyntheticInvoicePdf(file,fixture);const original=fs.readFileSync(file);
+  fs.promises.open=(async(...args:Parameters<typeof open>)=>{
+   const target=String(args[0]);
+   if(typeof args[1]==='number'&&path.basename(target).startsWith('existing.pdf.tmp-'))checkedStage=true;
+   if(checkedStage&&!changed&&target===file){const stage=fs.readdirSync(root).find(n=>n.startsWith('existing.pdf.tmp-'));if(stage){const p=path.join(root,stage),b=fs.readFileSync(p);b[10]^=1;fs.writeFileSync(p,b);changed=true;}}
+   return open(...args);
+  }) as typeof open;
+  await assert.rejects(saveSyntheticInvoicePdf(file,{...fixture,amount:'99.00'},{allowReplace:true}),/staged file changed/);
+  assert.equal(changed,true);assert.deepEqual(fs.readFileSync(file),original);assert.deepEqual(fs.readdirSync(root),['existing.pdf']);
+ }finally{fs.promises.open=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });

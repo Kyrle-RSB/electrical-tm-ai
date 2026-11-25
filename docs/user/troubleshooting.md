@@ -31,3 +31,5 @@ If startup reports unsafe application data after an interrupted restore, inspect
 Project status changes require a reason in the cockpit, maximum 500 characters. Confirm only the intended synthetic action. Canceling discards the uncommitted reason and leaves the prior status and audit history intact.
 
 If the main entry is missing, Electron may fail before this application can open its local startup journal. If preload fails after startup begins, expect a safe `renderer.preload` failure and shutdown record. Do not repair an installed package by renaming or replacing its resources; use an intact verified package and preserve existing data.
+
+If an image or PDF save reports a changed or unsafe directory, keep the original and any retained empty/staged object for inspection. Re-select a stable external export folder, or inspect the application's owned data location with support; do not delete a substituted path blindly. Startup diagnostics also refuse an unexpectedly replaced diagnostics folder.

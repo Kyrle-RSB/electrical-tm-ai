@@ -118,13 +118,13 @@ async function run(){
   safeHandle(CHANNELS.pdfCreate,(e,r)=>operationQueue.run(async()=>{
     assertNoPayload(guard(e,r));const selected=await nativeDialogs.choosePdf();
     if(selected===null)return null;
-    const expectedExisting=await capturePdfExportTarget(selected,[P2_TEST_PROFILE]);
+    const expectedSelection=await capturePdfExportTarget(selected,[P2_TEST_PROFILE]);
     let allowReplace=false;
-    if(expectedExisting){
+    if(expectedSelection.existing){
       if(!await nativeDialogs.confirmPdfReplace())return null;
       allowReplace=true;
     }
-    return saveSyntheticInvoicePdf(selected,{company:'Synthetic Demo Electric Ltd.',customer:'Demo Customer',project:'SYNTHETIC-01',invoiceNumber:'TEST-0001',taxId:'FAKE-TAX-ID',contractorLicense:'FAKE-LICENSE',amount:'125.00'},{allowReplace,protectedRoots:[P2_TEST_PROFILE],expectedExisting});
+    return saveSyntheticInvoicePdf(selected,{company:'Synthetic Demo Electric Ltd.',customer:'Demo Customer',project:'SYNTHETIC-01',invoiceNumber:'TEST-0001',taxId:'FAKE-TAX-ID',contractorLicense:'FAKE-LICENSE',amount:'125.00'},{allowReplace,protectedRoots:[P2_TEST_PROFILE],expectedSelection});
   }));
   const registerBackup:ValidatedRegistrar=(channel,validate,operation)=>safeHandle(channel,(e,r)=>operationQueue.run(()=>{
     const payload=validate(guard(e,r));assertEnvelope(r);return operation(r.requestId,payload);

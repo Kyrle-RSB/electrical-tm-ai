@@ -9,3 +9,5 @@ Issued financial invoices and payment receipts are represented by immutable data
 Do not distribute or use this construction build for client billing.
 
 The export writer rechecks the selected destination directory and the staged content hash before replacement. If a directory is redirected while a replacement is in progress, the app refuses the detected unsafe path; a staged file may be retained rather than cleaned up through a redirected path. Do not delete an original issued artifact to recover a synthetic export.
+
+A synthetic PDF save is tied to the selected folder and file identities. If a folder or export changes after selection, the save is refused; select a fresh destination rather than forcing an overwrite. Only an existing export can require Replace confirmation. Issued originals in managed application storage remain excluded. This is not authorization to issue real invoices.

@@ -9,6 +9,9 @@ export async function writeNewPdfExclusive(file:string,pdf:Buffer,checkParent:()
   try{
    identity=await handle.stat();
    if(!identity.isFile()||identity.nlink!==1)throw new Error('Unsafe new PDF object');
+   await checkParent();
+   const created=await fs.promises.lstat(file);
+   if(!created.isFile()||created.isSymbolicLink()||created.nlink!==1||created.dev!==identity.dev||created.ino!==identity.ino)throw new Error('Unsafe new PDF identity');
    await handle.writeFile(pdf);await handle.sync();
    const written=await handle.stat();
    if(!written.isFile()||written.nlink!==1||written.size!==pdf.length)throw new Error('New PDF file changed during creation');

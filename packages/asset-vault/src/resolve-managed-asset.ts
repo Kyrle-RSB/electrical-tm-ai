@@ -29,6 +29,9 @@ export async function writeManagedImage(file:string,bytes:Buffer,checkParent:()=
   try{
    identity=await handle.stat();
    if(!identity.isFile()||identity.nlink!==1)throw new Error('Unsafe new managed image');
+   await checkParent();
+   const created=await fs.promises.lstat(file);
+   if(!created.isFile()||created.isSymbolicLink()||created.nlink!==1||created.dev!==identity.dev||created.ino!==identity.ino)throw new Error('Unsafe new managed image identity');
    await handle.writeFile(bytes);await handle.sync();
    const written=await handle.stat();
    if(!written.isFile()||written.nlink!==1||written.size!==bytes.length)throw new Error('Managed image changed during import');

@@ -7,17 +7,19 @@ const SAFE_EVENT=/^[a-z][a-z0-9.-]{1,80}$/;
 /** Validate the object actually opened, then verify the path still names it. */
 function ownedDescriptor(file:string,fd:number,maxBytes?:number):fs.Stats{
  const opened=fs.fstatSync(fd),named=fs.lstatSync(file);
- if(!opened.isFile()||!named.isFile()||named.isSymbolicLink()||opened.nlink!==1||named.nlink!==1||opened.dev!==named.dev||opened.ino!==named.ino||opened.size!==named.size||(maxBytes!==undefined&&opened.size>maxBytes))throw new Error('Unsafe or changed file identity');
+ if(!opened.isFile()||!named.isFile()||named.isSymbolicLink()||opened.nlink!==1||named.nlink!==1||opened.dev!==named.dev||opened.ino!==named.ino||opened.size!==named.size||opened.mtimeMs!==named.mtimeMs||opened.ctimeMs!==named.ctimeMs||(maxBytes!==undefined&&opened.size>maxBytes))throw new Error('Unsafe or changed file identity');
  return opened;
 }
-function readProofJson(file:string,maxBytes:number,label:string):unknown{
+function readProofJson(file:string,maxBytes:number,label:string,checkProfile:()=>void):unknown{
  let fd:number|undefined;
  try{
+  checkProfile();
   fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
-  const opened=ownedDescriptor(file,fd,maxBytes),bytes=Buffer.alloc(opened.size);
+  const opened=ownedDescriptor(file,fd,maxBytes);checkProfile();
+  const bytes=Buffer.alloc(opened.size);
   let offset=0;while(offset<bytes.length){const n=fs.readSync(fd,bytes,offset,bytes.length-offset,offset);if(n===0)throw new Error('Changed proof file');offset+=n;}
   const after=ownedDescriptor(file,fd,maxBytes);if(after.size!==opened.size||after.mtimeMs!==opened.mtimeMs||after.ctimeMs!==opened.ctimeMs)throw new Error('Changed proof file');
-  return JSON.parse(bytes.toString('utf8'));
+  checkProfile();return JSON.parse(bytes.toString('utf8'));
  }catch{throw new Error(label);}finally{if(fd!==undefined)fs.closeSync(fd);}
 }
 export type StartupEvent={atUtc:string;event:string;state:'begin'|'pass'|'fail'|'info'};
@@ -25,15 +27,18 @@ export function createStartupRecorder(userDataRoot:string){
  const file=path.join(userDataRoot,'diagnostics','startup.jsonl');
  ensureOwnedDirectory(userDataRoot);
  ensureOwnedDirectory(path.dirname(file));
+ const directories=[userDataRoot,path.dirname(file)].map(directory=>({directory,identity:fs.lstatSync(directory)}));
+ const checkDirectories=()=>{for(const {directory,identity} of directories){const named=fs.lstatSync(directory);if(!named.isDirectory()||named.isSymbolicLink()||named.dev!==identity.dev||named.ino!==identity.ino)throw new Error('Unsafe diagnostic directory changed');}};
+ checkDirectories();
  if(fs.existsSync(file)){const stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new Error('Unsafe diagnostic file');}
  return {
   file,
   record(event:string,state:StartupEvent['state']){
    if(!SAFE_EVENT.test(event))throw new Error('Invalid diagnostic event identifier');
    const line:StartupEvent={atUtc:new Date().toISOString(),event,state};
-   ensureOwnedDirectory(userDataRoot,false);ensureOwnedDirectory(path.dirname(file),false);
+   checkDirectories();
    const fd=fs.openSync(file,fs.constants.O_WRONLY|fs.constants.O_APPEND|fs.constants.O_CREAT|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0),0o600);
-   try{ownedDescriptor(file,fd);fs.appendFileSync(fd,JSON.stringify(line)+'\n',{encoding:'utf8'});}finally{fs.closeSync(fd);}
+   try{ownedDescriptor(file,fd);checkDirectories();fs.appendFileSync(fd,JSON.stringify(line)+'\n',{encoding:'utf8'});}finally{fs.closeSync(fd);}
   }
  };
 }
@@ -50,12 +55,13 @@ export function resolveLifecycleProof(env:NodeJS.ProcessEnv):LifecycleProof|null
  if(stat.isSymbolicLink()||!stat.isDirectory()||(process.platform!=='win32'&&((stat.mode&0o077)!==0||stat.uid!==process.getuid?.())))throw new Error('Invalid lifecycle profile object');
  const real=fs.realpathSync(profile),tmp=fs.realpathSync(os.tmpdir()),relative=path.relative(tmp,real);
  if(!/^tm-native-lifecycle-[a-zA-Z0-9]+$/.test(relative))throw new Error('Invalid lifecycle profile root');
+ const checkProfile=()=>{const current=fs.lstatSync(real);if(!current.isDirectory()||current.isSymbolicLink()||current.dev!==stat.dev||current.ino!==stat.ino||(process.platform!=='win32'&&((current.mode&0o077)!==0||current.uid!==process.getuid?.())))throw new Error('Invalid lifecycle profile identity');};
  const marker=path.join(real,'.tm-lifecycle.json');
- const value=readProofJson(marker,256,'Invalid lifecycle marker') as {schema?:string;nonce?:string}|null;
+ const value=readProofJson(marker,256,'Invalid lifecycle marker',checkProfile) as {schema?:string;nonce?:string}|null;
  if(value?.schema!=='tm-lifecycle-v1'||value.nonce!==nonce)throw new Error('Invalid lifecycle marker');
  const ownedRoots=['local-data','secrets','settings'];
  const visit=(p:string)=>{
-  const st=fs.lstatSync(p);if(st.isSymbolicLink()||(!st.isFile()&&!st.isDirectory()))throw new Error('Invalid lifecycle profile object');
+  const st=fs.lstatSync(p);if(st.isSymbolicLink()||(!st.isFile()&&!st.isDirectory())||(st.isFile()&&st.nlink!==1))throw new Error('Invalid lifecycle profile object');
   if(st.isDirectory())for(const n of fs.readdirSync(p))visit(path.join(p,n));
  };
  if(stage==='seed'){
@@ -63,12 +69,11 @@ export function resolveLifecycleProof(env:NodeJS.ProcessEnv):LifecycleProof|null
  }else{
   const prior=stage==='reopen'?'seed':'reopen';
   const receipt=path.join(real,`lifecycle-${prior}.json`);
-  const previous=readProofJson(receipt,4096,'Invalid prior lifecycle receipt') as {schema?:string;nonce?:string;stage?:string;synthetic?:boolean}|null;
+  const previous=readProofJson(receipt,4096,'Invalid prior lifecycle receipt',checkProfile) as {schema?:string;nonce?:string;stage?:string;synthetic?:boolean}|null;
   if(!previous||previous.schema!=='tm-lifecycle-v1'||previous.nonce!==nonce||previous.stage!==prior||previous.synthetic!==true)throw new Error('Invalid prior lifecycle receipt');
   for(const name of ownedRoots){const item=path.join(real,name);if(fs.existsSync(item))visit(item);}
  }
- const current=fs.lstatSync(real);
- if(!current.isDirectory()||current.isSymbolicLink()||current.dev!==stat.dev||current.ino!==stat.ino||(process.platform!=='win32'&&((current.mode&0o077)!==0||current.uid!==process.getuid?.())))throw new Error('Invalid lifecycle profile identity');
+ checkProfile();
  return {profile:real,stage,nonce};
 }
 

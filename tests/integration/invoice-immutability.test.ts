@@ -56,7 +56,7 @@ test('issued ledger row and actual content-addressed PDF remain identical across
   for(const sql of ["UPDATE issued_invoices SET amount_cents=1 WHERE id='issued'","DELETE FROM issued_invoices WHERE id='issued'"]){assert.throws(()=>store!.db.exec(sql),/immutable/);preserved();}
   for(const id of ['issued','different-id']){assert.throws(()=>store!.db.prepare('INSERT OR REPLACE INTO issued_invoices VALUES (?,?,?,?,?,?,?,?)').run(id,project,'SYN-001','{}','2026-11-23',1,'b'.repeat(64),'issued/other.pdf'),/immutable/);preserved();}
   const exported=path.join(dir,'external.pdf');await saveSyntheticInvoicePdf(exported,fixture,{protectedRoots:[profile]});assert.deepEqual(fs.readFileSync(exported),bytes);preserved();
-  const expectedExisting=await capturePdfExportTarget(exported,[profile]);await saveSyntheticInvoicePdf(exported,{...fixture,amount:'99.00'},{protectedRoots:[profile],allowReplace:true,expectedExisting});assert.notDeepEqual(fs.readFileSync(exported),bytes);preserved();
+  const expectedSelection=await capturePdfExportTarget(exported,[profile]);await saveSyntheticInvoicePdf(exported,{...fixture,amount:'99.00'},{protectedRoots:[profile],allowReplace:true,expectedSelection});assert.notDeepEqual(fs.readFileSync(exported),bytes);preserved();
   store.close();store=new LocalStore(dbPath);preserved();
  }finally{store?.close();fs.rmSync(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
