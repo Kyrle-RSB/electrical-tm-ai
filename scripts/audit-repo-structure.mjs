@@ -17,6 +17,7 @@ const supplemental=new Set([
  'packages/persistence-sqlite/src/migrations/0006-operation-receipts.sql',
  'packages/persistence-sqlite/src/migrations/0007-business-logo.sql',
  'packages/persistence-sqlite/src/migrations/0008-project-status-reason.sql',
+ 'packages/persistence-sqlite/src/migrations/0009-material-parent-capacity.sql',
  'scripts/audit-native-proof.mjs','scripts/capture-native-proof.mjs','scripts/run-foundation-tests.mjs',
  'tests/fixtures/synthetic-receipt.png','tests/foundation/foundation.test.ts','tests/integration/backup-location.test.ts',
  'tests/integration/financial-evidence-locks.test.ts','tests/integration/migration-rescue.test.ts','tests/integration/operation-queue.test.ts',

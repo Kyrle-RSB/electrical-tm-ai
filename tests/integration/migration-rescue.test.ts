@@ -53,7 +53,7 @@ test('interrupted SQLite schema transaction is rolled back on process restart',(
    assert.equal(db.db.prepare("SELECT name FROM sqlite_master WHERE name='interrupted_probe'").get(),undefined);
    assert.equal((db.db.prepare('PRAGMA quick_check').get() as any).quick_check,'ok');
    assert.deepEqual(db.db.prepare('PRAGMA foreign_key_check').all(),[]);
-   assert.deepEqual(db.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r:any)=>r.version),[1,2,3,4,5,6,7,8]);
+   assert.deepEqual(db.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r:any)=>r.version),[1,2,3,4,5,6,7,8,9]);
   }finally{db.close();}
  }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
@@ -144,4 +144,25 @@ test('v7 to v8 preserves historical events without fabricated reason and records
   db.setProjectStatus(id,'archived','Synthetic later reason');db.close();db=new LocalStore(file,full);
   assert.equal(db.listProjectsDetailed()[0].id,id);assert.equal(db.listProjectsDetailed()[0].status,'archived');assert.equal(db.db.prepare('SELECT reason FROM audit_events ORDER BY rowid DESC LIMIT 1').get()?.reason,'Synthetic later reason');assert.equal(db.db.prepare('PRAGMA quick_check').get()?.quick_check,'ok');
  }finally{db?.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('v8 overallocated purchase line blocks v9 upgrade and retains original records and rescue',()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-capacity-upgrade-'));
+ const old=path.join(root,'old'),file=path.join(root,'data','db','app.sqlite'),full='packages/persistence-sqlite/src/migrations';fs.mkdirSync(old);
+ let store:LocalStore|undefined;
+ try{
+  for(const n of fs.readdirSync(full).filter(n=>/^000[1-8]-.*\.sql$/.test(n)))fs.copyFileSync(path.join(full,n),path.join(old,n));
+  store=new LocalStore(file,old);store.initializeFictionalCompany();const db=store.db;
+  const stamp='2026-11-24T00:00:00Z';
+  db.prepare('INSERT INTO purchase_sources(id,business_id,source_hash,kind,vault_locator,added_utc) VALUES(?,?,?,?,?,?)').run('source','local','a'.repeat(64),'receipt','images/demo.png',stamp);
+  db.prepare('INSERT INTO purchase_lines(id,source_id,description,supplier_quantity_mills,net_unit_cost_cents) VALUES(?,?,?,?,?)').run('line','source','Synthetic',1000,1);
+  db.prepare('INSERT INTO material_dispositions(id,line_id,quantity_mills,category,created_utc) VALUES(?,?,?,?,?)').run('split','line',750,'stock',stamp);
+  db.exec("UPDATE purchase_lines SET supplier_quantity_mills=500 WHERE id='line'");
+  const census=(d:DatabaseSync)=>({lines:d.prepare('SELECT * FROM purchase_lines ORDER BY id').all(),splits:d.prepare('SELECT * FROM material_dispositions ORDER BY id').all(),history:d.prepare('SELECT * FROM schema_migrations ORDER BY version').all()});
+  const original=census(db);store.close();store=undefined;
+  assert.throws(()=>new LocalStore(file,full),/CHECK constraint failed|integer overflow/);
+  const inspect=new DatabaseSync(file,{readOnly:true});try{assert.deepEqual(census(inspect),original);assert.equal(inspect.prepare("SELECT name FROM sqlite_master WHERE name='material_parent_capacity_update'").get(),undefined);}finally{inspect.close();}
+  const rescueDir=path.join(root,'data','migration-rescues');const names=fs.readdirSync(rescueDir);assert.equal(names.length,1);
+  const rescue=new DatabaseSync(path.join(rescueDir,names[0]),{readOnly:true});try{assert.deepEqual(census(rescue),original);assert.equal(rescue.prepare('PRAGMA quick_check').get()?.quick_check,'ok');}finally{rescue.close();}
+ }finally{store?.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });

@@ -8,7 +8,7 @@ const temp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'tm-p2-sqlite-'));
 test('historical migrations apply exactly once, business and project details survive restart',()=>{
  const dir=temp();try{
   const file=path.join(dir,'app.sqlite');let store=new LocalStore(file);store.initializeFictionalCompany();
-  assert.deepEqual((store.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as {version:number}[]).map(x=>x.version),[1,2,3,4,5,6,7,8]);
+  assert.deepEqual((store.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as {version:number}[]).map(x=>x.version),[1,2,3,4,5,6,7,8,9]);
   const id=store.createProject({code:'SITE-01',customer:'Synthetic Customer',siteAddress:'101 Example'});
   store.updateBusinessProfile({legalName:'Demo Electric',tradeName:'Demo',phone:'555',email:'demo@example.test',mailingAddress:'PO Box 2',taxId:'TEST-TAX',contractorLicense:'TEST-ELEC'});
   store.updateProjectDetails(id,{name:'Panel change',billingAddress:'100 Billing St',notes:'Saturday work'});
@@ -16,7 +16,7 @@ test('historical migrations apply exactly once, business and project details sur
   assert.equal(store.getBusinessProfile().contractorLicense,'TEST-ELEC');
   assert.equal(store.listProjectsDetailed()[0].billing_address,'100 Billing St');
   assert.equal(store.listProjectsDetailed()[0].status,'complete');
-  assert.equal((store.db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get() as any).count,8);
+  assert.equal((store.db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get() as any).count,9);
   store.setProjectStatus(id,'archived');store.setProjectStatus(id,'active');
   assert.equal(store.listProjectsDetailed()[0].status,'active');
   store.close();
