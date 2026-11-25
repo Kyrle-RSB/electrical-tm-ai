@@ -54,6 +54,36 @@ export function validateRawIpcProof(proof){
 export function validatePortIsolation(proof){
  return proof?.schema==='tm-port-isolation-v1'&&proof.port===5173&&proof.ipv4?.address==='127.0.0.1'&&proof.ipv4?.port===5173&&proof.ipv4?.family==='IPv4'&&((proof.ipv6?.address==='::1'&&proof.ipv6?.port===5173&&proof.ipv6?.family==='IPv6'&&proof.ipv6Unavailable===null)||(proof.ipv6===null&&['EAFNOSUPPORT','EADDRNOTAVAIL','EPROTONOSUPPORT'].includes(proof.ipv6Unavailable)))&&proof.connections===0&&proof.trapError===false&&proof.packagedOrigin==='tmapp://app/index.html'&&proof.packagedHealth===true;
 }
+export function validateStartupReadiness(proof){
+ return proof?.health===true&&typeof proof.title==='string'&&proof.title.includes('Electrical T&M')&&proof.heading==='Local foundation cockpit'&&Number.isFinite(proof.elapsedMs)&&proof.elapsedMs>0&&proof.elapsedMs<=15000&&Number.isFinite(proof.rootWidth)&&proof.rootWidth>0&&Number.isFinite(proof.rootHeight)&&proof.rootHeight>0;
+}
+/** Simulate an interrupted directory switch only after a successful synthetic lifecycle. */
+function runInterruptedRestoreDenial(binary,env,profile){
+ const active=path.join(profile,'local-data'),rescue=path.join(profile,'.tm-rollback-native-proof');
+ const readRows=file=>{const db=new DatabaseSync(file,{readOnly:true});try{return JSON.stringify({projects:db.prepare('SELECT id,project_code FROM projects ORDER BY id').all(),history:db.prepare('SELECT version,checksum FROM schema_migrations ORDER BY version').all()});}finally{db.close();}};
+ const census=root=>{const out=[];const visit=(folder,prefix)=>{for(const item of fs.readdirSync(folder,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const p=path.join(folder,item.name),rel=prefix+item.name;if(item.isDirectory())visit(p,rel+'/');else if(item.isFile())out.push([rel,crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')]);else throw new Error('Unexpected restore fixture object');}};visit(root,'');return JSON.stringify(out);};
+ const file=path.join(active,'db','app.sqlite'),beforeRows=readRows(file),beforeBytes=census(active);
+ const logPath=path.join(profile,'diagnostics','startup.jsonl'),previous=fs.readFileSync(logPath,'utf8').trim().split('\n').length;
+ fs.renameSync(active,rescue);
+ let attempt,missingActive=false,rescueUnchanged=false,events=[];
+ try{
+  attempt=spawnSync(binary,['--tm-smoke'],{encoding:'utf8',timeout:30000,maxBuffer:2*1024*1024,windowsHide:true,env});
+  missingActive=!fs.existsSync(active);rescueUnchanged=census(rescue)===beforeBytes;
+  events=fs.readFileSync(logPath,'utf8').trim().split('\n').slice(previous).map(line=>JSON.parse(line));
+ }finally{
+  // Do not overwrite an unexpectedly created active data tree, even in a disposable fixture.
+  if(!fs.existsSync(active))fs.renameSync(rescue,active);
+ }
+ const safeEvents=events.every(e=>Object.keys(e).sort().join(',')==='atUtc,event,state'&&/^[a-z][a-z0-9.-]{1,80}$/.test(e.event)&&['begin','pass','fail','info'].includes(e.state));
+ const namedFailure=events.some(e=>e.event==='paths.prepare'&&e.state==='fail');
+ const noOpen=events.every(e=>e.event!=='sqlite.open');
+ const originalRecovered=missingActive&&rescueUnchanged&&census(active)===beforeBytes&&readRows(file)===beforeRows;
+ const receipt={exitCode:attempt?.status??null,spawnFailed:!!attempt?.error,missingActive,rescueUnchanged,safeEvents,namedFailure,noOpen,originalRecovered,events:events.map(({event,state})=>({event,state}))};
+ return {...receipt,verdict:validateInterruptedRestoreDenial({...receipt,verdict:'PASS'})?'PASS':'FAIL'};
+}
+export function validateInterruptedRestoreDenial(proof){
+ return proof?.verdict==='PASS'&&proof.exitCode===1&&proof.spawnFailed===false&&['missingActive','rescueUnchanged','safeEvents','namedFailure','noOpen','originalRecovered'].every(key=>proof[key]===true)&&Array.isArray(proof.events)&&proof.events.some(e=>e.event==='paths.prepare'&&e.state==='fail')&&!proof.events.some(e=>e.event==='sqlite.open');
+}
 /** Asynchronous launch so the runner can actually observe connection attempts while the app runs. */
 function spawnCaptured(executable,args,env,timeout=120000){
  return new Promise(resolve=>{
@@ -187,7 +217,7 @@ export function validateAdversarialLifecycle(lifecycle){
 async function runLifecycle(binary){
  const profile=fs.mkdtempSync(path.join(os.tmpdir(),'tm-native-lifecycle-'));
  const nonce=crypto.randomBytes(16).toString('hex');
- let receipts=[],runs=[],duplicate=null,startupDenial=null,diagnosticDenials=null;
+ let receipts=[],runs=[],duplicate=null,startupDenial=null,diagnosticDenials=null,interruptedRestore=null;
  try{
   fs.writeFileSync(path.join(profile,'.tm-lifecycle.json'),JSON.stringify({schema:'tm-lifecycle-v1',nonce}),{flag:'wx',mode:0o600});
   for(const stage of LIFECYCLE_STAGES){
@@ -210,11 +240,12 @@ async function runLifecycle(binary){
   if(runs.length===3&&runs.every(r=>r.exitCode===0&&!r.failed)&&validateLifecycleReceipts(receipts,nonce)&&shutdowns===3&&duplicateEvents===1){
    const denialEnv={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:'revoked',TM_LIFECYCLE_NONCE:nonce,ELECTRON_ENABLE_LOGGING:'1'};delete denialEnv.TM_LIFECYCLE_DUPLICATE_PROBE;delete denialEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete denialEnv.TM_LIFECYCLE_INVALID_RENDERER_PROBE;
    diagnosticDenials=runDiagnosticDenials(binary,denialEnv,profile);
+   interruptedRestore=runInterruptedRestoreDenial(binary,denialEnv,profile);
    startupDenial=runStartupDenial(binary,denialEnv,profile);
   }
-  const report={runs,receipts,shutdowns,duplicateEvents,duplicate,startupDenial,diagnosticDenials};
-  return {...report,verdict:runs.length===3&&runs.every(r=>r.exitCode===0&&!r.failed)&&validateLifecycleReceipts(receipts,nonce)&&shutdowns===3&&validateAdversarialLifecycle(report)&&validateDiagnosticDenials(diagnosticDenials)&&validateInvalidRendererDenial(diagnosticDenials)?'PASS':'FAIL'};
- }catch{return {verdict:'FAIL',runs,receipts,duplicate,startupDenial,diagnosticDenials,shutdowns:null};}
+  const report={runs,receipts,shutdowns,duplicateEvents,duplicate,startupDenial,diagnosticDenials,interruptedRestore};
+  return {...report,verdict:runs.length===3&&runs.every(r=>r.exitCode===0&&!r.failed)&&validateLifecycleReceipts(receipts,nonce)&&shutdowns===3&&validateAdversarialLifecycle(report)&&validateDiagnosticDenials(diagnosticDenials)&&validateInvalidRendererDenial(diagnosticDenials)&&validateInterruptedRestoreDenial(interruptedRestore)?'PASS':'FAIL'};
+ }catch{return {verdict:'FAIL',runs,receipts,duplicate,startupDenial,diagnosticDenials,interruptedRestore,shutdowns:null};}
  finally{fs.rmSync(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 }
 const DEV_CSP=REQUIRED_CSP.replace("style-src 'self'","style-src 'self' 'unsafe-inline'").replace("connect-src 'none'","connect-src 'self' ws://localhost:* ws://127.0.0.1:*");
@@ -324,6 +355,10 @@ if(process.argv.includes('--self-test')){
   if(!validatePortIsolation(port)||validatePortIsolation({...port,connections:1})||validatePortIsolation({...port,packagedOrigin:'http://localhost:5173/'})||validatePortIsolation({...port,ipv6:null})||!validatePortIsolation({...port,ipv6:null,ipv6Unavailable:'EAFNOSUPPORT'}))throw new Error('Port isolation receipt contract self-test failed');
   const invalid={...denials,invalidRenderer:diag('renderer.load')};
   if(!validateInvalidRendererDenial(invalid)||validateInvalidRendererDenial({...invalid,invalidRenderer:{...invalid.invalidRenderer,events:[...invalid.invalidRenderer.events,{event:'packaged.invalid-renderer-probe',state:'fail'}]}}))throw new Error('Invalid renderer receipt contract self-test failed');
+  const ready={elapsedMs:15000,title:'Electrical T&M',heading:'Local foundation cockpit',rootWidth:100,rootHeight:100,health:true};
+  if(!validateStartupReadiness(ready)||validateStartupReadiness({...ready,elapsedMs:15001})||validateStartupReadiness({...ready,rootWidth:0})||validateStartupReadiness({...ready,health:false}))throw new Error('Readiness receipt contract self-test failed');
+  const interruption={verdict:'PASS',exitCode:1,spawnFailed:false,missingActive:true,rescueUnchanged:true,safeEvents:true,namedFailure:true,noOpen:true,originalRecovered:true,events:[{event:'paths.prepare',state:'fail'}]};
+  if(!validateInterruptedRestoreDenial(interruption)||validateInterruptedRestoreDenial({...interruption,missingActive:false})||validateInterruptedRestoreDenial({...interruption,rescueUnchanged:false})||validateInterruptedRestoreDenial({...interruption,events:[...interruption.events,{event:'sqlite.open',state:'begin'}]}))throw new Error('Interrupted restore receipt contract self-test failed');
   console.log('PASS: native smoke, lifecycle and adversarial receipt-contract cases (NO NATIVE EXECUTION CLAIMED)');
 }else if(import.meta.url===pathToFileURL(path.resolve(process.argv[1]||'')).href){
   if(process.platform!=='darwin'&&process.platform!=='win32')
@@ -350,7 +385,7 @@ if(process.argv.includes('--self-test')){
     let receipt=null;
     try {receipt=JSON.parse(fs.readFileSync(evidencePath,'utf8'));}catch{/* Absence is a failure. */}
     const portIsolation={...proof,packagedOrigin:receipt?.packagedOrigin??null,packagedHealth:receipt?.packagedHealth===true};
-    const verified=validateNativeSmokeReceipt(receipt)&&validatePortIsolation(portIsolation);
+    const verified=validateNativeSmokeReceipt(receipt)&&validatePortIsolation(portIsolation)&&validateStartupReadiness(receipt?.startupReadiness);
     const smokeSuccess=result.status===0&&!result.error&&verified;
     let rawIpc=null;
     if(smokeSuccess){
@@ -367,7 +402,7 @@ if(process.argv.includes('--self-test')){
     console.log(JSON.stringify({schema:'tm-native-smoke-runner-v3',platform:process.platform,arch:process.arch,
       binarySha256,exitCode:result.status,signal:result.signal,verdict:success?'PASS':'FAIL',
       checks:receipt?.passed||[],failedCheck:receipt?.failed||(!verified?'missing-or-invalid-report':lifecycle?.verdict==='FAIL'?'full-process-lifecycle':!validateRawIpcProof(rawIpc?.receipt)?'raw-ipc':null),
-      lifecycle,cockpitFlow:receipt?.cockpitFlow??null,rendererSecurity:receipt?.rendererSecurity??null,portIsolation,rawIpc,
+      lifecycle,cockpitFlow:receipt?.cockpitFlow??null,rendererSecurity:receipt?.rendererSecurity??null,portIsolation,rawIpc,startupReadiness:receipt?.startupReadiness??null,
       note:'PACKAGED, ISOLATED, SYNTHETIC test only. Other Phase 2 acceptance/reviews remain open.',
       diagnosticTail:success?null:sanitize(((result.stdout||'')+'\n'+(result.stderr||'')).slice(-1200)),
       error:result.error?sanitize(result.error.message):null},null,2));

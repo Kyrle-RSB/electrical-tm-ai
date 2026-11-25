@@ -222,6 +222,7 @@ async function run(){
     let succeeded=false;
     let cockpitFlow:Awaited<ReturnType<typeof runPackagedCockpitFlow>>|null=null;
     let packagedHealth=false,packagedOrigin:string|null=null;
+    let startupReadiness:{elapsedMs:number;title:string;rootWidth:number;rootHeight:number;heading:string;health:boolean}|null=null;
     let rendererSecurity:Awaited<ReturnType<typeof runPackagedSecurityFlow>>|null=null;
     try {
       if(!app.isPackaged||DEV_URL)throw new Error('Not an independent packaged runtime');
@@ -229,10 +230,14 @@ async function run(){
       currentCheck='renderer-ipc';
       const probe=await win.webContents.executeJavaScript(`(async()=>{
         const health=await window.tmBridge.ping();
-        return {ok:health.status==='ok'&&document.title.includes('Electrical T&M')&&
-          document.body?.textContent?.includes('Local foundation')};
+        const root=document.querySelector('#root');const rect=root?.getBoundingClientRect();
+        const heading=root?.querySelector('h1');
+        return {title:document.title,rootWidth:rect?.width??0,rootHeight:rect?.height??0,
+          heading:heading?.textContent??'',health:health.status==='ok'&&health.foundation===true,
+          rendered:!!root&&getComputedStyle(root).display!=='none'&&getComputedStyle(root).visibility==='visible'};
       })()`);
-      if(!probe?.ok)throw new Error('Packaged renderer or IPC failed');
+      startupReadiness={elapsedMs:Math.ceil(process.uptime()*1000),title:probe.title,rootWidth:probe.rootWidth,rootHeight:probe.rootHeight,heading:probe.heading,health:probe.health};
+      if(!probe.rendered||!startupReadiness.title.includes('Electrical T&M')||startupReadiness.heading!=='Local foundation cockpit'||!startupReadiness.health||startupReadiness.rootWidth<=0||startupReadiness.rootHeight<=0||startupReadiness.elapsedMs>15000)throw new Error('Packaged renderer readiness oracle failed');
       packagedHealth=true;packagedOrigin=win.webContents.getURL();
       if(packagedOrigin!=='tmapp://app/index.html')throw new Error('Unexpected packaged renderer origin');
       // Disposable project and full logical mutation census, never production data.
@@ -346,7 +351,7 @@ async function run(){
       recorder.record('packaged.smoke.'+currentCheck,'fail');
     }
     const report={schema:'tm-native-smoke-v3',passed:checks,failed:succeeded?null:currentCheck,
-      source:'packaged-binary',synthetic:true,cockpitFlow,rendererSecurity,packagedOrigin,packagedHealth};
+      source:'packaged-binary',synthetic:true,cockpitFlow,rendererSecurity,packagedOrigin,packagedHealth,startupReadiness};
     // Windows GUI executables do not guarantee that stdout is attached to a terminal.
     // The native runner supplies a new, unpredictable, temp-only evidence path.
     const receiptPath=process.env.TM_SMOKE_REPORT_PATH;
