@@ -361,3 +361,51 @@ test('actual restore handler rejects tampered image, issued PDF, database, missi
   selected=saved.backupPath;const restored=await handlers.get(CHANNELS.backupRestore)!();assert.ok(restored);assert.equal(confirmations,1);assert.equal(reopens,1);assert.deepEqual(db.listProjects().map(p=>p.id),[project]);assert.equal(hash(path.join(live,'artifacts',pdf.relativePath)),before.pdf);
  }finally{try{db?.close();}catch{}fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('archive file copy refuses observed directory substitution before content escapes',async()=>{
+ const {copyRegularBackupFile}=await import('../../packages/backup/src/create-backup');
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-backup-copy-race-'))),source=path.join(root,'source.bin'),parent=path.join(root,'stage'),parked=path.join(root,'parked'),outside=path.join(root,'outside'),dest=path.join(parent,'copy.bin');
+ const original=Buffer.from('SYNTHETIC ARCHIVE CONTENT');fs.writeFileSync(source,original);fs.mkdirSync(parent);fs.mkdirSync(outside);
+ const open=fs.promises.open,stream=fs.createWriteStream;let swapped=false;
+ const swap=(name:unknown)=>{if(!swapped&&path.basename(String(name))==='copy.bin'){swapped=true;fs.renameSync(parent,parked);fs.symlinkSync(outside,parent,process.platform==='win32'?'junction':'dir');}};
+ try{
+  fs.promises.open=(async(...args:Parameters<typeof open>)=>{if(args[1]==='wx'||args[1]==='wx+')swap(args[0]);return open(...args);}) as typeof open;
+  fs.createWriteStream=((...args:Parameters<typeof stream>)=>{swap(args[0]);return stream(...args);}) as typeof stream;
+  const result=await copyRegularBackupFile(source,dest).then(()=>null,e=>e);
+  assert.equal(swapped,true,'copy fault did not execute');assert.ok(result instanceof Error,'redirected copy was not refused');
+  assert.deepEqual(fs.readFileSync(source),original);assert.deepEqual(fs.readdirSync(parked),[]);
+  for(const name of fs.readdirSync(outside))assert.equal(fs.statSync(path.join(outside,name)).size,0,'archive bytes escaped');
+ }finally{fs.promises.open=open;fs.createWriteStream=stream;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('failed backup never deletes a substituted ordinary staging directory',async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-backup-stage-race-'))),live=path.join(root,'live'),external=path.join(root,'external'),parked=path.join(root,'parked');
+ const store=new LocalStore(path.join(live,'db','app.sqlite'),migrations);store.initializeFictionalCompany();
+ const mkdir=fs.promises.mkdir;let swapped=false,substituted='';
+ try{
+  fs.promises.mkdir=(async(...args:Parameters<typeof mkdir>)=>{
+   const name=String(args[0]),parent=path.dirname(name);
+   if(!swapped&&path.basename(name)==='db'&&path.basename(parent).endsWith('.incomplete')){
+    swapped=true;substituted=parent;fs.renameSync(parent,parked);fs.mkdirSync(parent);fs.writeFileSync(path.join(parent,'unrelated.txt'),'SYNTHETIC UNRELATED');throw new Error('Synthetic stage substitution');
+   }
+   return mkdir(...args);
+  }) as typeof mkdir;
+  await assert.rejects(createBackup(store,live,external));assert.equal(swapped,true,'stage fault did not execute');
+  assert.equal(fs.readFileSync(path.join(substituted,'unrelated.txt'),'utf8'),'SYNTHETIC UNRELATED');assert.ok(fs.existsSync(parked));assert.deepEqual(store.listProjects(),[]);
+ }finally{fs.promises.mkdir=mkdir;store.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('failed restore preserves a substituted staging directory and the original live database',async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-restore-stage-race-'))),live=path.join(root,'live'),external=path.join(root,'external'),parked=path.join(root,'parked');
+ let store=new LocalStore(path.join(live,'db','app.sqlite'),migrations);store.initializeFictionalCompany();store.createProject({code:'SAVED',customer:'Synthetic',siteAddress:'Site'});const saved=await createBackup(store,live,external);store.createProject({code:'CURRENT',customer:'Synthetic',siteAddress:'Site'});store.close();
+ const mkdir=fs.promises.mkdir;let swapped=false,substituted='';
+ try{
+  fs.promises.mkdir=(async(...args:Parameters<typeof mkdir>)=>{
+   const name=String(args[0]),parent=path.dirname(name);
+   if(!swapped&&path.basename(name)==='db'&&path.basename(parent).startsWith('.tm-restore-')){swapped=true;substituted=parent;fs.renameSync(parent,parked);fs.mkdirSync(parent);fs.writeFileSync(path.join(parent,'unrelated.txt'),'SYNTHETIC UNRELATED');throw new Error('Synthetic stage substitution');}
+   return mkdir(...args);
+  }) as typeof mkdir;
+  await assert.rejects(restoreBackup(saved.backupPath,live,migrations));assert.equal(swapped,true,'restore stage fault did not execute');
+  assert.equal(fs.readFileSync(path.join(substituted,'unrelated.txt'),'utf8'),'SYNTHETIC UNRELATED');assert.ok(fs.existsSync(parked));store=new LocalStore(path.join(live,'db','app.sqlite'),migrations);assert.deepEqual(store.listProjects().map(p=>p.project_code),['CURRENT','SAVED']);store.close();
+ }finally{fs.promises.mkdir=mkdir;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

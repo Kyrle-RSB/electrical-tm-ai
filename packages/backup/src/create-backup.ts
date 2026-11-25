@@ -2,11 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import {pipeline} from 'node:stream/promises';
 import type {FileHandle} from 'node:fs/promises';
 import {backup,DatabaseSync} from 'node:sqlite';
 import { LocalStore } from '../../persistence-sqlite/src/connection';
-import {canonicalBackupPath,backupPathsOverlap} from './backup-destination';
+import {canonicalBackupPath,backupPathsOverlap,bindDirectory} from './backup-destination';
 import {assertReferencedEvidence,validateManifest,type Manifest} from './backup-manifest';
 export type {Manifest} from './backup-manifest';
 /** Use a single opened regular file for reading, copying and hashing. Refuse linked
@@ -39,10 +38,29 @@ export async function readBoundedBackupFile(file:string,limit:number):Promise<Bu
  });
 }
 export async function copyRegularBackupFile(source:string,dest:string):Promise<void>{
+ const checkSource=await bindDirectory(path.dirname(source)),checkDest=await bindDirectory(path.dirname(dest));
+ if(!checkSource||!checkDest)throw new Error('Backup copy directory unavailable');
  return withRegularSource(source,async(handle,stat)=>{
-  let bytes=0;
-  async function* bounded(){for await(const chunk of handle.createReadStream({autoClose:false})){bytes+=chunk.length;if(bytes>stat.size)throw new Error('Changed backup file');yield chunk;}if(bytes!==stat.size)throw new Error('Changed backup file');}
-  await pipeline(bounded(),fs.createWriteStream(dest,{flags:'wx',mode:0o600}));
+  await checkSource();await checkDest();
+  const output=await fs.promises.open(dest,'wx+',0o600);
+  try{
+   const original=await output.stat();
+   const checkOutput=async()=>{
+    await checkDest();const named=await fs.promises.lstat(dest),opened=await output.stat();
+    if(!named.isFile()||named.isSymbolicLink()||!opened.isFile()||named.nlink!==1||opened.nlink!==1||opened.dev!==original.dev||opened.ino!==original.ino||named.dev!==original.dev||named.ino!==original.ino)throw new Error('Unsafe backup copy destination changed');
+    return opened;
+   };
+   await checkOutput();await checkSource();
+   let bytes=0;
+   for await(const chunk of handle.createReadStream({autoClose:false})){
+    if(bytes+chunk.length>stat.size)throw new Error('Changed backup file');
+    await checkSource();await checkOutput();let offset=0;
+    while(offset<chunk.length){const {bytesWritten}=await output.write(chunk,offset,chunk.length-offset,bytes+offset);if(!bytesWritten)throw new Error('Short backup write');offset+=bytesWritten;}
+    bytes+=chunk.length;
+   }
+   if(bytes!==stat.size)throw new Error('Changed backup file');
+   await output.sync();if((await checkOutput()).size!==bytes)throw new Error('Changed backup copy size');await checkSource();
+  }finally{await output.close();}
  });
 }
 export async function traverseRegularFiles(root:string,rel=''):Promise<string[]> {
@@ -72,18 +90,19 @@ export async function createBackup(store:LocalStore,dataRoot:string,backupDestin
   const name=`tm-backup-${new Date().toISOString().replace(/[:.]/g,'-')}-${crypto.randomBytes(3).toString('hex')}`;
   const temp=path.join(backupDestination,`.${name}.incomplete`), finished=path.join(backupDestination,name);
   await fs.promises.mkdir(temp,{mode:0o700});
+  const checkStage=await bindDirectory(temp);if(!checkStage)throw new Error('Backup stage unavailable');
   try {
-    await fs.promises.mkdir(path.join(temp,'db'));
-    await backup(store.db,path.join(temp,'db','app.sqlite'));
+    await checkStage();await fs.promises.mkdir(path.join(temp,'db'));
+    await checkStage();await backup(store.db,path.join(temp,'db','app.sqlite'));
     for(const folder of ['vault','artifacts']){
       const source=path.join(dataRoot,folder);
       for(const relative of await traverseRegularFiles(source)){
-        const dest=path.join(temp,folder,relative);
+        await checkStage();const dest=path.join(temp,folder,relative);
         await fs.promises.mkdir(path.dirname(dest),{recursive:true});
-        await copyRegularBackupFile(path.join(source,relative),dest);
+        await checkStage();await copyRegularBackupFile(path.join(source,relative),dest);
       }
     }
-    const manifest:Manifest={schema:'tm-phase1-backup-v1',createdUtc:new Date().toISOString(),files:[],excluded:['OS-protected secrets','secret_references','temporary files']};
+    await checkStage();const manifest:Manifest={schema:'tm-phase1-backup-v1',createdUtc:new Date().toISOString(),files:[],excluded:['OS-protected secrets','secret_references','temporary files']};
     for(const relative of await traverseRegularFiles(temp)){
       if(relative==='manifest.json')continue;
       const filepath=path.join(temp,relative);
@@ -99,8 +118,12 @@ export async function createBackup(store:LocalStore,dataRoot:string,backupDestin
       const snapshot=new DatabaseSync(copy,{readOnly:true});
       try{assertReferencedEvidence(snapshot,manifest);}finally{snapshot.close();}
     }finally{await fs.promises.rm(inspectionDir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
-    await fs.promises.writeFile(path.join(temp,'manifest.json'),JSON.stringify(manifest,null,2),{mode:0o600,flag:'wx'});
-    await fs.promises.rename(temp,finished);
+    await checkStage();await fs.promises.writeFile(path.join(temp,'manifest.json'),JSON.stringify(manifest,null,2),{mode:0o600,flag:'wx'});
+    await checkStage();await fs.promises.rename(temp,finished);
     return {backupPath:finished,manifest};
-  }catch(e){await fs.promises.rm(temp,{recursive:true,force:true});throw e;}
+  }catch(e){
+    try{await checkStage();await fs.promises.rm(temp,{recursive:true,force:true});}
+    catch(cleanup){throw new AggregateError([e,cleanup],'Backup failed; unverified stage retained for recovery');}
+    throw e;
+  }
 }

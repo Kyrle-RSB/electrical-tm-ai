@@ -35,7 +35,7 @@ async function preferenceStat(file:string):Promise<fs.Stats|null>{
  catch(error){if(missing(error))return null;throw error;}
 }
 /** Bind the named directory to its observed identity. Do not claim an atomic filesystem lock. */
-async function bindDirectory(directory:string,create=false):Promise<(()=>Promise<void>)|null>{
+export async function bindDirectory(directory:string,create=false):Promise<(()=>Promise<void>)|null>{
  if(create)await fs.promises.mkdir(directory,{recursive:true,mode:0o700});
  let initial:fs.Stats;
  try{initial=await fs.promises.lstat(directory);}catch(error){if(!create&&missing(error))return null;throw error;}

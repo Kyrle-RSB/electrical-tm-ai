@@ -6,7 +6,7 @@ import {DatabaseSync} from 'node:sqlite';
 import { hashFile, traverseRegularFiles, readBoundedBackupFile, copyRegularBackupFile } from './create-backup';
 import {assertReferencedEvidence,validateManifest,backupManifestIdentity,type Manifest} from './backup-manifest';
 import { LocalStore } from '../../persistence-sqlite/src/connection';
-import {canonicalBackupPath,backupPathsOverlap} from './backup-destination';
+import {canonicalBackupPath,backupPathsOverlap,bindDirectory} from './backup-destination';
 export async function verifyBackup(backupPath:string,migrationsDir?:string):Promise<Manifest>{
   // Check the archive tree before opening its manifest or any listed content.
   const onDisk=await traverseRegularFiles(backupPath);
@@ -64,16 +64,17 @@ export async function restoreBackup(backupPath:string,activeRoot:string,migratio
   await fs.promises.mkdir(parent,{recursive:true});
   const nonce=crypto.randomBytes(5).toString('hex'),stage=path.join(parent,`.tm-restore-${nonce}`),rollback=path.join(parent,`.tm-rollback-${nonce}`);
   await fs.promises.mkdir(stage,{mode:0o700});
+  const checkStage=await bindDirectory(stage);if(!checkStage)throw new Error('Restore stage unavailable');
   let rolledBack=false,preserveStage=false;
   try{
     for(const entry of manifest.files){
-      const dest=path.join(stage,entry.path);
+      await checkStage();const dest=path.join(stage,entry.path);
       await fs.promises.mkdir(path.dirname(dest),{recursive:true});
-      await copyRegularBackupFile(path.join(backupPath,entry.path),dest);
+      await checkStage();await copyRegularBackupFile(path.join(backupPath,entry.path),dest);
     }
-    for(const entry of manifest.files) if(await hashFile(path.join(stage,entry.path),entry.bytes)!==entry.sha256) throw new Error('Restore staging mismatch');
-    if(fs.existsSync(target)){await fs.promises.rename(target,rollback);rolledBack=true;}
-    try{await fs.promises.rename(stage,target);}catch(activationError){
+    await checkStage();for(const entry of manifest.files) if(await hashFile(path.join(stage,entry.path),entry.bytes)!==entry.sha256) throw new Error('Restore staging mismatch');
+    await checkStage();if(fs.existsSync(target)){await fs.promises.rename(target,rollback);rolledBack=true;}
+    try{await checkStage();await fs.promises.rename(stage,target);}catch(activationError){
       if(rolledBack){
         try{await fs.promises.rename(rollback,target);}
         catch(rollbackError){preserveStage=true;throw new AggregateError([activationError,rollbackError],'Restore recovery requires operator intervention');}
@@ -81,5 +82,8 @@ export async function restoreBackup(backupPath:string,activeRoot:string,migratio
       throw activationError;
     }
     return {rollbackPath:rolledBack?rollback:null};
-  }catch(e){if(!preserveStage)await fs.promises.rm(stage,{recursive:true,force:true});throw e;}
+  }catch(e){
+    if(!preserveStage){try{await checkStage();await fs.promises.rm(stage,{recursive:true,force:true});}catch(cleanup){throw new AggregateError([e,cleanup],'Restore failed; unverified stage retained for recovery');}}
+    throw e;
+  }
 }
