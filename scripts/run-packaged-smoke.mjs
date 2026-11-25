@@ -226,14 +226,100 @@ function writeOwnedFixture(file,bytes){
   const check=Buffer.alloc(bytes.length);let read=0;while(read<check.length){const n=fs.readSync(fd,check,read,check.length-read,read);if(!n)throw new Error('Short fixture readback');read+=n;}if(!check.equals(bytes))throw new Error('Copied ASAR readback failed');
  }finally{fs.closeSync(fd);}
 }
+/** Read and dismiss only a named loader-error modal owned by the exact fixture PID.
+ * Do not enable accessibility permissions, change trust settings, or touch any other dialog. */
+const macLoaderDialogScript=String.raw`on run argv
+ set targetPid to item 1 of argv as integer
+ tell application "System Events"
+  set matches to every application process whose unix id is targetPid
+  if (count of matches) is not 1 then return "WAIT"
+  tell item 1 of matches
+   repeat with w in (every window)
+    try
+     set heading to name of w as text
+     set bodyText to ""
+     set okButtons to {}
+     repeat with el in (entire contents of w)
+      try
+       if role of el is "AXStaticText" then
+        set bodyText to bodyText & linefeed & (value of el as text)
+       else if role of el is "AXButton" and name of el is "OK" then
+        set end of okButtons to el
+       end if
+      end try
+     end repeat
+     set allText to heading & linefeed & bodyText
+     if allText contains "Error launching app" and allText contains "main.cjs" and (allText contains "Cannot find module" or allText contains "Unable to find Electron app" or allText contains "Cannot find Electron app") and (count of okButtons) is 1 then
+      click item 1 of okButtons
+      return "TM_LOADER_DIALOG_DISMISSED" & linefeed & allText
+     end if
+    end try
+   end repeat
+  end tell
+ end tell
+ return "WAIT"
+end run`;
+const windowsLoaderDialogScript=String.raw`$ErrorActionPreference='Stop'
+Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
+$targetPid=[int]$env:TM_NATIVE_DIALOG_PID
+$ae=[System.Windows.Automation.AutomationElement]
+$ts=[System.Windows.Automation.TreeScope]
+$pc=New-Object System.Windows.Automation.PropertyCondition($ae::ProcessIdProperty,$targetPid)
+$windows=$ae::RootElement.FindAll($ts::Children,$pc)
+foreach($w in $windows){
+ if($w.Current.Name -ne 'Error launching app'){continue}
+ $texts=@($w.Current.Name);$buttons=@()
+ foreach($el in $w.FindAll($ts::Descendants,[System.Windows.Automation.Condition]::TrueCondition)){
+  if($el.Current.ProcessId -ne $targetPid){continue}
+  if($el.Current.ControlType -eq [System.Windows.Automation.ControlType]::Text){$texts+=$el.Current.Name}
+  if($el.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $el.Current.Name -eq 'OK'){$buttons+=,$el}
+ }
+ $body=$texts -join [Environment]::NewLine
+ if($body -cmatch 'main\.cjs' -and $body -cmatch 'Cannot find module|Unable to find Electron app|Cannot find Electron app' -and $buttons.Count -eq 1){
+  $invoke=$buttons[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+  $invoke.Invoke();Write-Output 'TM_LOADER_DIALOG_DISMISSED';Write-Output $body;exit 0
+ }
+}
+Write-Output 'WAIT'`;
+function namedLoaderDialogText(text){
+ return typeof text==='string'&&text.length<=65536&&/^TM_LOADER_DIALOG_DISMISSED\r?\n/.test(text)&&text.includes('Error launching app')&&/main\.cjs/i.test(text)&&/Cannot find module|Unable to find Electron app|Cannot find Electron app/i.test(text);
+}
+function observeLoaderDialog(pid){
+ if(!Number.isSafeInteger(pid)||pid<=0)return {state:'UNAVAILABLE',text:null};
+ const result=process.platform==='darwin'?spawnSync('/usr/bin/osascript',['-e',macLoaderDialogScript,String(pid)],{encoding:'utf8',timeout:3500,maxBuffer:65536}):
+  spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',windowsLoaderDialogScript],{encoding:'utf8',timeout:3500,maxBuffer:65536,windowsHide:true,env:{...process.env,TM_NATIVE_DIALOG_PID:String(pid)}});
+ if(result.error||result.status!==0)return {state:'UNAVAILABLE',text:null};
+ if(namedLoaderDialogText(result.stdout))return {state:'NAMED_DISMISSED',text:result.stdout};
+ return {state:result.stdout?.trim()==='WAIT'?'WAIT':'UNAVAILABLE',text:null};
+}
+async function spawnWithLoaderObservation(executable,args,env){
+ const child=spawn(executable,args,{env,windowsHide:false,stdio:['ignore','pipe','pipe']});
+ let stdout='',stderr='',error=null,closed=false,status=null,signal=null,dialog={state:'WAIT',text:null};
+ const stop=e=>{error=error??e;if(!closed)child.kill('SIGKILL');};
+ child.stdout.on('data',bytes=>{stdout+=String(bytes);if(stdout.length>2*1024*1024)stop(new Error('Native stdout exceeded bound'));});
+ child.stderr.on('data',bytes=>{stderr+=String(bytes);if(stderr.length>2*1024*1024)stop(new Error('Native stderr exceeded bound'));});
+ const settled=new Promise(resolve=>{child.once('error',e=>{error=e;});child.once('close',(code,sig)=>{status=code;signal=sig;closed=true;resolve();});});
+ const deadline=Date.now()+30000;
+ try{
+  while(!closed&&Date.now()<deadline){
+   await new Promise(resolve=>setTimeout(resolve,500));
+   if(closed)break;
+   if(dialog.state==='WAIT'&&Number.isSafeInteger(child.pid))dialog=observeLoaderDialog(child.pid);
+  }
+  if(!closed)stop(Object.assign(new Error('Native loader observation timed out'),{code:'ETIMEDOUT'}));
+  await settled;
+  return {status,signal,error,stdout,stderr,dialog};
+ }finally{if(!closed){stop(new Error('Native loader observer interrupted'));await settled;}}
+}
 /** A pre-main loader failure cannot produce our own application diagnostics. Only
  * observed, named loader output and a natural exit count as loader evidence.
  * An OS refusal, signal, timeout or ambiguous exit is never substituted for it. */
 function classifyEntrypointDenial(entry,result,events,statePreserved,sentinelFree){
  const output=(result.stdout||'')+'\n'+(result.stderr||'');
  const loaderLine=entry==='main.cjs'?output.split(/\r?\n/).find(line=>/Cannot find module|Unable to find Electron app|Cannot find Electron app|Error launching app/i.test(line)&&/main\.cjs/i.test(line)):undefined;
- const loaderNamed=typeof loaderLine==='string';
- const loaderDiagnostic=loaderNamed?{message:'Named Electron loader error referring to main.cjs',lineSha256:entryHash(Buffer.from(loaderLine))}:null;
+ const observedDialog=entry==='main.cjs'&&result.dialog?.state==='NAMED_DISMISSED'&&namedLoaderDialogText(result.dialog.text);
+ const loaderNamed=typeof loaderLine==='string'||observedDialog;
+ const loaderDiagnostic=loaderNamed?{message:'Named Electron loader error referring to main.cjs',lineSha256:entryHash(Buffer.from(loaderLine??result.dialog.text)),surface:typeof loaderLine==='string'?'PROCESS_STREAM':'OWNED_NATIVE_ERROR_DIALOG'}:null;
  const streams=Object.fromEntries(['stdout','stderr'].map(key=>{const b=Buffer.from(result[key]||'');return [key,{bytes:b.length,sha256:entryHash(b)}];}));
  const timeout=result.error?.code==='ETIMEDOUT';
  const exitCode=result.status??null,signal=result.signal??null,spawnFailed=!!result.error;
@@ -246,7 +332,7 @@ function classifyEntrypointDenial(entry,result,events,statePreserved,sentinelFre
  const pass=!spawnFailed&&signal===null&&exitCode===1&&safeEvents&&statePreserved&&sentinelFree&&(loaderProof||preloadProof);
  return {entry,verdict:pass?'PASS':'FAIL',classification:pass?(loaderProof?'NAMED_ELECTRON_LOADER_DENIAL':'NAMED_APPLICATION_PRELOAD_DENIAL'):timeout?'TIMEOUT_UNPROVEN':spawnFailed?'SPAWN_ERROR_UNPROVEN':signal?'SIGNAL_UNPROVEN':'UNCLASSIFIED_OR_UNSAFE_DENIAL',exitCode,signal,spawnFailed,timeout,loaderNamed,loaderDiagnostic,streams,noApplicationStartup,safeEvents,namedFailure,shutdown,statePreserved,sentinelFree,events:events.map(({event,state})=>({event,state}))};
 }
-function runDamagedEntrypoints(copiedBinary,copiedAsar,originalBytes,env,profile,logPath,state,before,sentinels){
+async function runDamagedEntrypoints(copiedBinary,copiedAsar,originalBytes,env,profile,logPath,state,before,sentinels){
  const results=[];
  for(const entry of ['preload.cjs','main.cjs']){
   const changed=misnamePackedEntrypoint(originalBytes,entry);
@@ -256,15 +342,17 @@ function runDamagedEntrypoints(copiedBinary,copiedAsar,originalBytes,env,profile
    writeOwnedFixture(copiedAsar,changed);
    const injected=fs.readFileSync(copiedAsar).equals(changed);if(!injected)throw new Error('Entrypoint fault not injected');
    row.faultInjected=true;
-   const attempt=spawnSync(copiedBinary,['--tm-smoke','--user-data-dir='+profile],{encoding:'utf8',timeout:30000,killSignal:'SIGKILL',maxBuffer:2*1024*1024,windowsHide:true,env});
+   const args=['--tm-smoke','--user-data-dir='+profile];
+   const attempt=entry==='main.cjs'?await spawnWithLoaderObservation(copiedBinary,args,env):spawnSync(copiedBinary,args,{encoding:'utf8',timeout:30000,killSignal:'SIGKILL',maxBuffer:2*1024*1024,windowsHide:true,env});
    const log=fs.readFileSync(logPath,'utf8');
    const prefixPreserved=log.startsWith(prior);
    const events=prefixPreserved?log.slice(prior.length).trim().split('\n').filter(Boolean).map(line=>JSON.parse(line)):[];
    // Diagnostic content must not contain synthetic customer or credential values.
    // Loader messages may include the copied application's path; never publish them raw.
    const output=(attempt.stdout||'')+'\n'+(attempt.stderr||'');
-   const safe=sentinels.every(value=>!log.includes(value))&&sentinels.slice(0,2).every(value=>!output.includes(value));
+   const safe=sentinels.every(value=>!log.includes(value))&&sentinels.slice(0,2).every(value=>!output.includes(value)&&!(attempt.dialog?.text||'').includes(value));
    row=classifyEntrypointDenial(entry,attempt,events,prefixPreserved&&state()===before,safe);
+   if(entry==='main.cjs')row.dialogObservation=attempt.dialog?.state??'NOT_ATTEMPTED';
    row.faultInjected=injected&&fs.readFileSync(copiedAsar).equals(changed);row.mutatedSha256=entryHash(changed);
   }catch{/* Record only the fixed unproven classification; never echo arbitrary exception data. */}
   finally{writeOwnedFixture(copiedAsar,originalBytes);}
@@ -278,11 +366,11 @@ export function validateDamagedEntrypoints(proof){
  return new Set(proof.results.map(x=>x.mutatedSha256)).size===2&&proof.results.every((x,i)=>{
   const preload=i===0;
   if(x?.entry!==(preload?'preload.cjs':'main.cjs')||x.verdict!=='PASS'||x.exitCode!==1||x.signal!==null||x.spawnFailed!==false||x.timeout!==false||!['faultInjected','copyRestored','statePreserved','sentinelFree','safeEvents'].every(k=>x[k]===true)||!digest(x.mutatedSha256)||x.mutatedSha256===proof.originalAsarSha256||!Array.isArray(x.events)||!['stdout','stderr'].every(k=>Number.isSafeInteger(x.streams?.[k]?.bytes)&&x.streams[k].bytes>=0&&digest(x.streams[k].sha256)))return false;
-  return preload?x.classification==='NAMED_APPLICATION_PRELOAD_DENIAL'&&x.namedFailure===true&&x.shutdown===true&&x.events.some(e=>e.event==='renderer.preload'&&e.state==='fail')&&x.events.some(e=>e.event==='shutdown'&&e.state==='pass')&&!x.events.some(e=>e.event==='renderer.load'&&e.state==='pass'):x.classification==='NAMED_ELECTRON_LOADER_DENIAL'&&x.loaderNamed===true&&x.loaderDiagnostic?.message==='Named Electron loader error referring to main.cjs'&&digest(x.loaderDiagnostic.lineSha256)&&x.noApplicationStartup===true&&x.events.length===0;
+  return preload?x.classification==='NAMED_APPLICATION_PRELOAD_DENIAL'&&x.namedFailure===true&&x.shutdown===true&&x.events.some(e=>e.event==='renderer.preload'&&e.state==='fail')&&x.events.some(e=>e.event==='shutdown'&&e.state==='pass')&&!x.events.some(e=>e.event==='renderer.load'&&e.state==='pass'):x.classification==='NAMED_ELECTRON_LOADER_DENIAL'&&x.loaderNamed===true&&x.loaderDiagnostic?.message==='Named Electron loader error referring to main.cjs'&&digest(x.loaderDiagnostic.lineSha256)&&(!x.loaderDiagnostic.surface||x.loaderDiagnostic.surface==='PROCESS_STREAM'||x.loaderDiagnostic.surface==='OWNED_NATIVE_ERROR_DIALOG'&&x.dialogObservation==='NAMED_DISMISSED')&&x.noApplicationStartup===true&&x.events.length===0;
  });
 }
 /** A real native failure must terminate, preserve seeded synthetic data, and emit only safe diagnostic fields. */
-function runDiagnosticDenials(binary,env,profile){
+async function runDiagnosticDenials(binary,env,profile){
  const pii='SYNTHETIC-DIAGNOSTIC-CUSTOMER@example.invalid';
  const credential='TEST-FAKE-DIAGNOSTIC-CREDENTIAL-SENTINEL';
  const dbPath=path.join(profile,'local-data','db','app.sqlite');
@@ -323,7 +411,7 @@ function runDiagnosticDenials(binary,env,profile){
   fs.renameSync(path.join(copiedResources,'migrations-synthetic-missing'),path.join(copiedResources,'migrations'));
   const originalAsar=fs.readFileSync(path.join(originalResources,'app.asar')),copiedAsar=path.join(copiedResources,'app.asar');
   if(!fs.readFileSync(copiedAsar).equals(originalAsar))throw new Error('Copied ASAR differs from original before fault');
-  try{damagedEntrypoints=runDamagedEntrypoints(copiedBinary,copiedAsar,originalAsar,env,profile,logPath,state,before,[pii,credential,profile,sentinelPath]);}catch{damagedEntrypoints={schema:'tm-native-damaged-entrypoints-v1',synthetic:true,originalAsarSha256:entryHash(originalAsar),results:[],failure:'FIXTURE_OR_RESTORE_UNPROVEN'};}
+  try{damagedEntrypoints=await runDamagedEntrypoints(copiedBinary,copiedAsar,originalAsar,env,profile,logPath,state,before,[pii,credential,profile,sentinelPath]);}catch{damagedEntrypoints={schema:'tm-native-damaged-entrypoints-v1',synthetic:true,originalAsarSha256:entryHash(originalAsar),results:[],failure:'FIXTURE_OR_RESTORE_UNPROVEN'};}
   originalUnchanged=originalIdentity===resourceIdentity();
   invalidRenderer=attempt(binary,{...env,TM_LIFECYCLE_INVALID_RENDERER_PROBE:'1'},'renderer.load');
   rendererCrash=attempt(binary,{...env,TM_LIFECYCLE_RENDERER_CRASH_PROBE:'1'},'renderer.process');
@@ -370,7 +458,7 @@ async function runLifecycle(binary){
   const duplicateEvents=log.filter(x=>x.event==='packaged.lifecycle.duplicate'&&x.state==='pass').length;
   if(runs.length===3&&runs.every(r=>r.exitCode===0&&!r.failed)&&validateLifecycleReceipts(receipts,nonce)&&shutdowns===3&&duplicateEvents===1){
    const denialEnv={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:'revoked',TM_LIFECYCLE_NONCE:nonce,ELECTRON_ENABLE_LOGGING:'1'};delete denialEnv.TM_LIFECYCLE_DUPLICATE_PROBE;delete denialEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete denialEnv.TM_LIFECYCLE_INVALID_RENDERER_PROBE;delete denialEnv.TM_LIFECYCLE_ABNORMAL_PROBE;
-   diagnosticDenials=runDiagnosticDenials(binary,denialEnv,profile);
+   diagnosticDenials=await runDiagnosticDenials(binary,denialEnv,profile);
    interruptedRestore=runInterruptedRestoreDenial(binary,denialEnv,profile);
    startupDenial=runStartupDenial(binary,denialEnv,profile);
   }
@@ -500,6 +588,9 @@ if(process.argv.includes('--self-test')){
   const loader=classifyEntrypointDenial('main.cjs',{status:1,stderr:'Cannot find module <synthetic>/main.cjs'},[],true,true);
   const preload=classifyEntrypointDenial('preload.cjs',{status:1},nativeEvents,true,true);
   const damaged={schema:'tm-native-damaged-entrypoints-v1',synthetic:true,originalAsarSha256:entryHash(originalFixture),results:[{...preload,faultInjected:true,copyRestored:true,mutatedSha256:entryHash(renamedPreload)},{...loader,faultInjected:true,copyRestored:true,mutatedSha256:entryHash(renamedMain)}]};
+  const dialogText='TM_LOADER_DIALOG_DISMISSED\nError launching app\nCannot find module <synthetic>/main.cjs';
+  const dialogProof=classifyEntrypointDenial('main.cjs',{status:1,dialog:{state:'NAMED_DISMISSED',text:dialogText}},[],true,true);
+  if(dialogProof.verdict!=='PASS'||dialogProof.loaderDiagnostic.surface!=='OWNED_NATIVE_ERROR_DIALOG'||namedLoaderDialogText('TM_LOADER_DIALOG_DISMISSED\nWindows protected your PC\nmain.cjs')||classifyEntrypointDenial('main.cjs',{status:1,dialog:{state:'UNAVAILABLE',text:dialogText}},[],true,true).verdict!=='FAIL')throw new Error('Loader dialog observer contract self-test failed');
   if(!validateDamagedEntrypoints(damaged)||validateDamagedEntrypoints({...damaged,results:[damaged.results[0]]})||validateDamagedEntrypoints({...damaged,results:damaged.results.map(x=>({...x,copyRestored:false}))})||validateDamagedEntrypoints({...damaged,results:[damaged.results[0],{...damaged.results[1],loaderNamed:false}]}))throw new Error('Damaged entrypoint proof contract self-test failed');
   for(const result of [{status:null,signal:'SIGKILL'},{status:1,stderr:'unknown failure'},{status:1,stderr:'Cannot find module main.cjs',error:{code:'ETIMEDOUT'}}])if(classifyEntrypointDenial('main.cjs',result,[],true,true).verdict!=='FAIL')throw new Error('Unproven loader denial accepted');
   const backupProof=Object.fromEntries(['png','jpeg','distinctLogo','issuedPdf','exactInventory','verifiedSecretExclusion','freshRestore','activeRestore','assetHashes','logicalRows','tamperRejected'].map(key=>[key,true]));
