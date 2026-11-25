@@ -105,6 +105,9 @@ export function validateBusinessInput(v:unknown):BusinessInput{
  return output;
 }
 const ID=hexUuid;
+export function validateProjectIdentity(value:unknown):string{
+ const id=limitedText(value,36,true);if(!ID.test(id))throw new Error('Invalid project identity');return id;
+}
 function validateDetailsFields(v:unknown):ProjectDetailsFields{
  const d=requirePlainRecord(v,['name','billingAddress','notes']);
  return {name:limitedText(d.name,200),billingAddress:limitedText(d.billingAddress,600),notes:limitedText(d.notes,2000)};

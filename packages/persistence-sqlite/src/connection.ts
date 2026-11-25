@@ -134,6 +134,9 @@ export class LocalStore {
   listProjectsDetailed():DetailedProject[]{
     return this.projects.listDetailed();
   }
+  getProject(id:string):DetailedProject|null{
+    return this.projects.get(id);
+  }
   /** Durable rejection of successful database mutation IDs within this database history. */
   mutateOnce<T>(operationId:string,channel:string,action:()=>T):T{
     const id=operationId.toLowerCase();

@@ -18,19 +18,19 @@ export class ProjectRepository {
  }
  edit(id:string,input:ProjectInput):void {
   withImmediateTransaction(this.db,()=>{
-   const changed=this.db.prepare('UPDATE projects SET project_code=?,customer_name=?,site_address=? WHERE id=?')
-     .run(input.code,input.customer,input.siteAddress,id);
+   const changed=this.db.prepare('UPDATE projects SET project_code=?,customer_name=?,site_address=? WHERE id=? AND business_id=?')
+     .run(input.code,input.customer,input.siteAddress,id,'local');
    if(!changed.changes)throw new Error('Project not found');
    if(input.details)this.writeDetails(id,input.details);
    this.audit('project.edit',id);
   });
  }
  list():ProjectData[]{
-  return this.db.prepare('SELECT id,project_code,customer_name,site_address FROM projects ORDER BY project_code').all() as ProjectData[];
+  return this.db.prepare('SELECT id,project_code,customer_name,site_address FROM projects WHERE business_id=? ORDER BY project_code').all('local') as ProjectData[];
  }
  details(id:string,value:{name:string;billingAddress:string;notes:string}):void{
   withImmediateTransaction(this.db,()=>{
-   if(!this.db.prepare('SELECT id FROM projects WHERE id=?').get(id))throw new Error('Project not found');
+   if(!this.db.prepare('SELECT id FROM projects WHERE id=? AND business_id=?').get(id,'local'))throw new Error('Project not found');
    this.writeDetails(id,value);
    this.audit('project.update',id);
   });
@@ -39,18 +39,22 @@ export class ProjectRepository {
   const explanation=reason===undefined?'Local operator selected '+status:reason.trim();
   if(!explanation||explanation.length>500)throw new Error('Invalid project status reason');
   withImmediateTransaction(this.db,()=>{
-   if(!this.db.prepare('SELECT id FROM projects WHERE id=?').get(id))throw new Error('Project not found');
+   if(!this.db.prepare('SELECT id FROM projects WHERE id=? AND business_id=?').get(id,'local'))throw new Error('Project not found');
    this.db.prepare(`INSERT INTO project_details(project_id,status,updated_utc) VALUES(?,?,?)
      ON CONFLICT(project_id) DO UPDATE SET status=excluded.status,updated_utc=excluded.updated_utc`)
      .run(id,status,new Date().toISOString());
    this.audit('project.status.'+status,id,explanation);
   });
  }
- listDetailed():DetailedProject[]{
-  return this.db.prepare(`SELECT p.id,p.project_code,p.customer_name,p.site_address,p.opened_utc,
+ private readonly detailQuery=`SELECT p.id,p.project_code,p.customer_name,p.site_address,p.opened_utc,
       COALESCE(d.status,'active') AS status,COALESCE(d.project_name,'') AS project_name,
       COALESCE(d.billing_address,'') AS billing_address,COALESCE(d.notes,'') AS notes
-      FROM projects p LEFT JOIN project_details d ON p.id=d.project_id ORDER BY p.project_code`).all() as DetailedProject[];
+      FROM projects p LEFT JOIN project_details d ON p.id=d.project_id WHERE p.business_id=?`;
+ listDetailed():DetailedProject[]{
+  return this.db.prepare(this.detailQuery+' ORDER BY p.project_code').all('local') as DetailedProject[];
+ }
+ get(id:string):DetailedProject|null{
+  return (this.db.prepare(this.detailQuery+' AND p.id=?').get('local',id) as DetailedProject|undefined)??null;
  }
  private writeDetails(id:string,value:ProjectDetailsFields):void{
    this.db.prepare(`INSERT INTO project_details(project_id,project_name,billing_address,notes,updated_utc)

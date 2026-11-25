@@ -10,6 +10,7 @@ export interface ProjectStorePort extends MutationPort {
  updateProject(id:string,input:ProjectInput):void;
  listProjects():ProjectData[];
  listProjectsDetailed():DetailedProject[];
+ getProject(id:string):DetailedProject|null;
  updateProjectDetails(id:string,details:ProjectDetailsFields):void;
  setProjectStatus(id:string,status:ProjectState,reason?:string):void;
 }

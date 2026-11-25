@@ -75,3 +75,30 @@ test('explicit archive/reopen reasons persist atomically with audit history and 
   db.setProjectStatus(id,'archived');assert.equal(audit().at(-1)?.reason,'Local operator selected archived');
  }finally{db.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('application project get is scoped to local business and read-only across restart',async()=>{
+ const {createProjectUseCases}=await import('../../packages/application/src');
+ const {randomUUID}=await import('node:crypto');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-project-get-')),file=path.join(root,'app.sqlite');
+ let store=new LocalStore(file);store.initializeFictionalCompany();
+ try{
+  const id=store.createProject({code:'GET-01',customer:'Synthetic',siteAddress:'Site',details:{name:'Fixture',billingAddress:'Billing',notes:'Notes'}});
+  store.createProject({code:'GET-02',customer:'Second',siteAddress:'Other'});
+  const original=store.listProjectsDetailed().find(x=>x.id===id)!;
+  const count=()=>({audit:store.db.prepare('SELECT COUNT(*) AS n FROM audit_events').get()?.n,operations:store.db.prepare('SELECT COUNT(*) AS n FROM operation_receipts').get()?.n});
+  const before=count();const useCases=createProjectUseCases(store);
+  assert.deepEqual(useCases.get(id),original);assert.equal(useCases.get(randomUUID()),null);
+  assert.throws(()=>useCases.get('not-a-project-id'),/Invalid project identity/);
+  // Existing schema can contain a foreign business through direct SQL; the local lookup must not expose it.
+  const foreign=randomUUID();store.db.prepare('INSERT INTO business_profiles(id,legal_name) VALUES(?,?)').run('synthetic-foreign','Synthetic other');
+  store.db.prepare('INSERT INTO projects(id,business_id,project_code,customer_name,site_address,opened_utc) VALUES(?,?,?,?,?,?)').run(foreign,'synthetic-foreign','FOREIGN','Synthetic other','Other','2026-11-24T00:00:00Z');
+  assert.equal(useCases.get(foreign),null);assert.equal(useCases.list().some(x=>x.id===foreign),false);assert.equal(useCases.listDetailed().some(x=>x.id===foreign),false);
+  const foreignBefore=store.db.prepare('SELECT * FROM projects WHERE id=?').get(foreign);
+  assert.throws(()=>useCases.edit(randomUUID(),{id:foreign,code:'CHANGED',customer:'Other',siteAddress:'Other'}),/not found/);
+  assert.throws(()=>useCases.details(randomUUID(),{id:foreign,name:'Changed',billingAddress:'Other',notes:''}),/not found/);
+  assert.throws(()=>useCases.status(randomUUID(),{id:foreign,status:'archived'}),/not found/);
+  assert.deepEqual(store.db.prepare('SELECT * FROM projects WHERE id=?').get(foreign),foreignBefore);assert.equal(store.db.prepare('SELECT * FROM project_details WHERE project_id=?').get(foreign),undefined);assert.deepEqual(count(),before);
+  store.close();store=new LocalStore(file);
+  assert.deepEqual(createProjectUseCases(store).get(id),original);assert.deepEqual(count(),before);
+ }finally{store.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

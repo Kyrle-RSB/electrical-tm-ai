@@ -1,5 +1,5 @@
 import {CHANNELS,assertNoPayload,validateProjectInput,validateProjectEditInput,validateProjectDetailsInput,validateProjectStatusInput} from '../../../../../../packages/contracts/src';
-import {createProjectUseCases} from '../../../../../../packages/application/src/use-cases/projects';
+import {createProjectUseCases} from '../../../../../../packages/application/src';
 import type {ProjectStorePort} from '../../../../../../packages/application/src/ports/port-types';
 import type {ValidatedRegistrar} from '../register';
 /** Privileged transport delegates orchestration to application use cases. */
