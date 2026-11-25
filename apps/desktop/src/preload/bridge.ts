@@ -24,7 +24,7 @@ export function createBridge(invoke:BridgeTransport){return Object.freeze({
  chooseBackupFolder:()=>invoke<{folder:string}|null>(CHANNELS.backupChooseLocation),
  backUpToSelectedFolder:()=>invoke<{backupPath:string;manifest:unknown}>(CHANNELS.backupCreateStored),
  listVerifiedBackups:()=>invoke<BackupListResult>(CHANNELS.backupListVerified),
- chooseBackupAndRestore:()=>invoke<unknown>(CHANNELS.backupRestore),
+ chooseBackupAndRestore:()=>invoke<{restored:true;rollbackPath:string|null}|null>(CHANNELS.backupRestore),
  storeFakeSecretProof:()=>invoke<unknown>(CHANNELS.fakeSecretStore,'TEST-FAKE-EXAMPLE'),
  checkFakeSecretProof:()=>invoke<unknown>(CHANNELS.fakeSecretCheck),
  removeFakeSecretProof:()=>invoke<unknown>(CHANNELS.fakeSecretRemove)

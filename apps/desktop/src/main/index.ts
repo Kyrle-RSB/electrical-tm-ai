@@ -4,6 +4,7 @@ import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, native
 import os from 'node:os';
 import fs from 'node:fs';
 import {createHash} from 'node:crypto';
+import {DatabaseSync} from 'node:sqlite';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {LocalStore} from '../../../../packages/persistence-sqlite/src/connection';
@@ -22,7 +23,7 @@ import {registerBackupHandlers} from './ipc/handlers/backups';
 import {registerBrandingHandlers} from './ipc/handlers/settings';
 import {createNativeFileDialogs} from './os/file-dialogs';
 import {prepareApplicationPaths} from './os/paths';
-import {runPackagedCockpitFlow,runPackagedSecurityFlow,runDevelopmentHmrFlow,captureRawProofState,rawProofPage,rawProofPreload,collectRawIpcProof,RAW_PROOF_URL} from '../../../../tests/e2e/cockpit-flow.spec';
+import {runPackagedCockpitFlow,runPackagedRestoreUiFlow,runPackagedSecurityFlow,runDevelopmentHmrFlow,captureRawProofState,rawProofPage,rawProofPreload,collectRawIpcProof,RAW_PROOF_URL} from '../../../../tests/e2e/cockpit-flow.spec';
 import {storeImmutablePdf} from '../../../../packages/pdf/src/common/stored-pdf';
 import {LocalOperationQueue} from '../../../../packages/application/src/use-cases/backup-restore';
 import {createCockpitWindow} from './window';
@@ -131,7 +132,22 @@ async function run(){
     const payload=validate(guard(e,r));assertEnvelope(r);return operation(r.requestId,payload);
   }));
   registerBrandingHandlers(registerBackup,()=>store,async()=>{const selected=await nativeDialogs.pickLogo();return selected===null?null:importImageFromPickedFile(selected,path.join(DATA_ROOT,'vault'));});
-  registerBackupHandlers(registerBackup,{dialogs:nativeDialogs,preference:backupPreference,dataRoot:DATA_ROOT,migrationsDir,
+  // The ordinary packaged smoke owns its synthetic dialog responses. No renderer path,
+  // extra IPC channel, environment input or production caller can arm this fixture.
+  let restoreUiFixture:{folder:string;consent:Promise<boolean>;selected:number;confirmed:number}|null=null;
+  const restoreDialogs={
+    chooseFolder:async(allowCreate:boolean)=>{
+      if(!restoreUiFixture||allowCreate)return nativeDialogs.chooseFolder(allowCreate);
+      if(++restoreUiFixture.selected!==1)throw new Error('Unexpected repeated synthetic restore selection');
+      return restoreUiFixture.folder;
+    },
+    confirmRestore:async()=>{
+      if(!restoreUiFixture)return nativeDialogs.confirmRestore();
+      if(restoreUiFixture.selected!==1||++restoreUiFixture.confirmed!==1)throw new Error('Unexpected synthetic restore confirmation');
+      return restoreUiFixture.consent;
+    }
+  };
+  registerBackupHandlers(registerBackup,{dialogs:restoreDialogs,preference:backupPreference,dataRoot:DATA_ROOT,migrationsDir,
     getStore:()=>store,setStore:value=>{store=value;},reopen:()=>new LocalStore(paths.database,migrationsDir),
     onFatalRecovery:()=>{try{recorder.record('restore.recovery','fail');}catch{/* Fail closed even when diagnostics are unavailable. */}shutdown.fail();}});
   const secret=new ProtectedSecretFile(safeStorage,paths.secret);
@@ -393,14 +409,41 @@ async function run(){
         if(fs.existsSync(path.join(root,'secrets')))throw new Error('Restored backup contains credentials');
       };
       try{await verifyRestored(fresh,freshStore);}finally{freshStore.close();}
+      const beforeBusiness=store.getBusinessProfile();
       store.createProject({code:'SMOKE-LATER',customer:'Synthetic Check',siteAddress:'2 Test Road'});
-      store.close();
-      await restoreBackup(result.backupPath,DATA_ROOT,migrationsDir);
-      store=new LocalStore(paths.database,migrationsDir);
+      store.updateBusinessProfile({...beforeBusiness,legalName:'Synthetic Post-Backup Business'});
+      store.removeBusinessLogo();
+      await win.loadURL(currentUrl);
+      const beforeUiRestore=captureRawProofState(store.db,P2_TEST_PROFILE);
+      const rollbackBefore=new Set(fs.readdirSync(path.dirname(DATA_ROOT)).filter(n=>/^\.tm-rollback-[a-f0-9]{10}$/.test(n)));
+      let uiRestore:Awaited<ReturnType<typeof runPackagedRestoreUiFlow>>;
+      try{
+        uiRestore=await runPackagedRestoreUiFlow(win,confirm=>{
+          if(!isPackagedSmoke||!app.isPackaged||rawIpcProof||lifecycleProof||restoreUiFixture)throw new Error('Invalid synthetic restore fixture');
+          let release!:()=>void;
+          const consent=new Promise<boolean>(resolve=>{release=()=>resolve(confirm);});
+          const fixture={folder:result.backupPath,consent,selected:0,confirmed:0};restoreUiFixture=fixture;
+          return {release,finish:()=>{
+            if(restoreUiFixture!==fixture||fixture.selected!==1||fixture.confirmed!==1)throw new Error('Synthetic restore dialog count differs');
+            if(!confirm&&captureRawProofState(store.db,P2_TEST_PROFILE)!==beforeUiRestore)throw new Error('Cancelled restore mutated local data');
+            restoreUiFixture=null;
+          }};
+        });
+      }finally{restoreUiFixture=null;}
+      const rollbacks=fs.readdirSync(path.dirname(DATA_ROOT)).filter(n=>/^\.tm-rollback-[a-f0-9]{10}$/.test(n)&&!rollbackBefore.has(n));
+      if(rollbacks.length!==1)throw new Error('Native restore rollback folder missing');
+      const rollbackRoot=path.join(path.dirname(DATA_ROOT),rollbacks[0]);
+      const rollbackDb=new DatabaseSync(path.join(rollbackRoot,'db','app.sqlite'),{readOnly:true});
+      try{
+        const rows=JSON.parse(captureRawProofState(rollbackDb,P2_TEST_PROFILE)).rows;
+        if(JSON.stringify(rows)!==JSON.stringify(JSON.parse(beforeUiRestore).rows))throw new Error('Native rollback records mismatch');
+        for(const [name,digest] of expected){if(createHash('sha256').update(fs.readFileSync(path.join(rollbackRoot,name))).digest('hex')!==digest)throw new Error('Native rollback asset mismatch');}
+      }finally{rollbackDb.close();}
       await verifyRestored(DATA_ROOT,store);
+      if(JSON.stringify(store.getBusinessProfile())!==JSON.stringify(beforeBusiness))throw new Error('Native restored business profile mismatch');
       if(!store.listProjects().some(p=>p.id===id)||store.listProjects().some(p=>p.project_code==='SMOKE-LATER')||await secret.readFakeToken()!=='TEST-FAKE-EXAMPLE')throw new Error('Native backup restore lost project or credential isolation');
       await secret.remove();if(await secret.exists())throw new Error('Synthetic credential cleanup failed');
-      backupCoverage={png:true,jpeg:true,distinctLogo:true,issuedPdf:true,exactInventory:true,verifiedSecretExclusion:true,freshRestore:true,activeRestore:true,assetHashes:true,logicalRows:true,tamperRejected,verifiedList:true,rejectedList:true};
+      backupCoverage={png:true,jpeg:true,distinctLogo:true,issuedPdf:true,exactInventory:true,verifiedSecretExclusion:true,freshRestore:true,activeRestore:true,assetHashes:true,logicalRows:true,tamperRejected,verifiedList:true,rejectedList:true,...uiRestore,uiRollbackPreserved:true};
       checks.push(currentCheck);
       succeeded=true;
     }catch(_error){

@@ -223,6 +223,64 @@ export function readPackagedRuntimePrefs(webContents:object){
  const read=(key:string):boolean=>{const value:unknown=Reflect.get(prefs,key);if(typeof value!=='boolean')throw new Error('Native proof missing runtime preference '+key);return value;};
  return {contextIsolation:read('contextIsolation'),nodeIntegration:read('nodeIntegration'),sandbox:read('sandbox'),webSecurity:read('webSecurity'),webviewTag:read('webviewTag')};
 }
+/** Real packaged renderer + production restore IPC, with a runner-owned synthetic dialog
+ * adapter. OS picker/confirmation interactions remain separate manual evidence. */
+export async function runPackagedRestoreUiFlow(win:CockpitWindow,arm:(confirm:boolean)=>{release:()=>void;finish:()=>void}){
+ const evaluate=(code:string)=>win.webContents.executeJavaScript(code);
+ const setup=await evaluate(`(async()=>{
+  const wait=async(predicate)=>{const until=Date.now()+15000;while(Date.now()<until){if(predicate())return;await new Promise(r=>setTimeout(r,50));}throw new Error('Restore UI fixture not ready');};
+  const button=(root,label)=>root&&[...root.querySelectorAll('button')].find(e=>e.textContent.trim()===label);
+  const form=label=>[...document.querySelectorAll('form')].find(e=>button(e,label));
+  const field=(form,label)=>[...form.querySelectorAll('label')].find(e=>e.firstChild?.textContent?.trim()===label)?.querySelector('input,textarea');
+  const set=async(form,label,value)=>{const node=field(form,label);if(!node)throw new Error('Missing synthetic draft input');const proto=node.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(node,value);node.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,50));if(node.value!==value)throw new Error('Synthetic draft did not render');};
+  const row=()=>[...document.querySelectorAll('.project-list li')].find(e=>e.textContent.includes('COCKPIT-UI-001'));
+  await wait(()=>row()&&document.querySelector('.project-list')?.textContent?.includes('SMOKE-LATER')&&form('Save local business profile')&&field(form('Save local business profile'),'Legal business name')?.value==='Synthetic Post-Backup Business'&&!button(document,'Restore verified backup')?.disabled);
+  button(row(),'Edit').click();await wait(()=>row()?.querySelector('form'));
+  await set(row().querySelector('form'),'Project notes','UNSAVED RESTORE PROJECT DRAFT');
+  await set(form('Create fictional project'),'Project code','UNSAVED-RESTORE-CREATE');
+  await set(form('Save local business profile'),'Legal business name','UNSAVED RESTORE BUSINESS DRAFT');
+  return true;
+ })()`);
+ if(setup!==true)throw new Error('Restore UI synthetic setup failed');
+ const clickAndObserve=async(confirm:boolean)=>{
+  const fixture=arm(confirm);
+  try{
+   const blocked=await evaluate(`(async()=>{
+    const restore=[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Restore verified backup');
+    if(!restore||restore.disabled)throw new Error('Restore control unavailable');restore.click();
+    const until=Date.now()+10000;
+    while(Date.now()<until){const scope=document.querySelector('.operation-scope');if(scope?.disabled&&scope.getAttribute('aria-busy')==='true'&&[...scope.querySelectorAll('button,input,textarea')].every(e=>e.matches(':disabled'))){restore.click();return true;}await new Promise(r=>setTimeout(r,25));}
+    return false;
+   })()`);
+   if(blocked!==true)throw new Error('Restore controls did not lock');
+  }finally{fixture.release();}
+  const settled=await evaluate(confirm?`(async()=>{
+   const until=Date.now()+15000;
+   while(Date.now()<until){
+    const scope=document.querySelector('.operation-scope'),list=document.querySelector('.project-list'),feedback=document.querySelector('.feedback');
+    const business=[...document.querySelectorAll('form')].find(f=>[...f.querySelectorAll('button')].some(b=>b.textContent==='Save local business profile'));
+    const create=[...document.querySelectorAll('form')].find(f=>[...f.querySelectorAll('button')].some(b=>b.textContent==='Create fictional project'));
+    const value=(f,label)=>f&&[...f.querySelectorAll('label')].find(e=>e.firstChild?.textContent?.trim()===label)?.querySelector('input,textarea')?.value;
+    if(scope&&!scope.disabled&&feedback?.textContent?.includes('Restore completed. Project records reloaded.')&&list?.textContent?.includes('COCKPIT-UI-001')&&!list.textContent.includes('SMOKE-LATER')&&!list.querySelector('form')&&value(create,'Project code')==='SYN-001'&&value(business,'Legal business name')==='Synthetic Cockpit Electric'&&[...document.querySelectorAll('button')].some(b=>b.textContent==='Remove logo reference'))return true;
+    await new Promise(r=>setTimeout(r,50));
+   }return false;
+  })()`:`(async()=>{
+   const until=Date.now()+15000;
+   while(Date.now()<until){
+    const scope=document.querySelector('.operation-scope'),list=document.querySelector('.project-list'),feedback=document.querySelector('.feedback');
+    const forms=[...document.querySelectorAll('form')];
+    const values=forms.flatMap(f=>[...f.querySelectorAll('input,textarea')].map(e=>e.value));
+    if(scope&&!scope.disabled&&feedback?.textContent?.includes('Restore cancelled.')&&list?.textContent?.includes('SMOKE-LATER')&&list.querySelector('form')&&['UNSAVED RESTORE PROJECT DRAFT','UNSAVED-RESTORE-CREATE','UNSAVED RESTORE BUSINESS DRAFT'].every(v=>values.includes(v)))return true;
+    await new Promise(r=>setTimeout(r,50));
+   }return false;
+  })()`);
+  if(settled!==true)throw new Error(confirm?'Restored UI state not verified':'Cancelled UI state not preserved');
+  fixture.finish();
+ };
+ await clickAndObserve(false);await clickAndObserve(true);
+ return {uiRestore:true,uiCancelPreservedDrafts:true,uiDiscardedStaleDrafts:true,uiRestoredBusinessLogo:true,uiRestoreControlsLocked:true};
+}
+
 export async function runPackagedSecurityFlow(primary:SecurityWindow,foreign:SecurityWindow,projectId:string,snapshot:()=>string,navigationAttempts:()=>number){
  const baseline=snapshot();
  const project={code:'FOREIGN-SECURITY-PROBE',customer:'Synthetic denied',siteAddress:'Synthetic denied',details:{name:'Denied',billingAddress:'Denied',notes:'Denied'}};

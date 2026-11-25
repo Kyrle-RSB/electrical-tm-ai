@@ -1,7 +1,7 @@
 import {useEffect,useState} from 'react';
 import type {BackupListEntry} from '../../../../../../packages/contracts/src/ipc/settings.contract';
 /** A backup is not a proof of recovery until the separate restore test passes. */
-export function BackupLocation(){
+export function BackupLocation({track}:{track:<T>(action:()=>Promise<T>)=>Promise<T>}){
  const [folder,setFolder]=useState<string|null>(null);
  const [status,setStatus]=useState('Checking backup location...');
  const [busy,setBusy]=useState(false);
@@ -11,8 +11,8 @@ export function BackupLocation(){
  }).catch(err=>{if(active)setStatus('Backup setting unavailable: '+String(err));});return()=>{active=false};},[]);
  const perform=async(type:'choose'|'create'|'list')=>{
   setBusy(true);setBackups(null);setStatus('Working...');try{
-   if(type==='list'){const r=await window.tmBridge.listVerifiedBackups();setBackups(r.backups);setStatus(r.backups.length?'Backup verification finished. Review results below.':'No completed application backups found.');return;}
-   const response=type==='choose'?await window.tmBridge.chooseBackupFolder():await window.tmBridge.backUpToSelectedFolder();
+   if(type==='list'){const r=await track(()=>window.tmBridge.listVerifiedBackups());setBackups(r.backups);setStatus(r.backups.length?'Backup verification finished. Review results below.':'No completed application backups found.');return;}
+   const response=type==='choose'?await track(()=>window.tmBridge.chooseBackupFolder()):await track(()=>window.tmBridge.backUpToSelectedFolder());
    if(response===null){setStatus('Cancelled. No backup changes made.');return;}
    if(type==='choose'){
     const r=response as {folder:string};setFolder(r.folder);setStatus('Backup folder saved locally.');

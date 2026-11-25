@@ -1,7 +1,7 @@
 import {useRef,useState} from 'react';
 import type {DetailedProject} from '../../../../../../packages/contracts/src/ipc/projects.contract';
 export type ProjectRow=DetailedProject;
-export function ProjectsPanel({projects,onChanged}:{projects:ProjectRow[];onChanged:()=>Promise<void>}){
+export function ProjectsPanel({projects,onChanged,track}:{projects:ProjectRow[];onChanged:()=>Promise<void>;track:<T>(action:()=>Promise<T>)=>Promise<T>}){
  const [error,setError]=useState('');const [busy,setBusy]=useState<string|null>(null);
  const lock=useRef(false);
  const [editing,setEditing]=useState<string|null>(null);
@@ -11,13 +11,13 @@ export function ProjectsPanel({projects,onChanged}:{projects:ProjectRow[];onChan
  const startEdit=(p:ProjectRow)=>{setStatusEditing(null);setEditing(p.id);setDraft({code:p.project_code,customer:p.customer_name,siteAddress:p.site_address,details:{name:p.project_name,billingAddress:p.billing_address,notes:p.notes}});setError('');};
  async function toggle(project:ProjectRow){
   if(lock.current)return;lock.current=true;setBusy(project.id);setError('');try{
-    await window.tmBridge.setProjectStatus({id:project.id,status:project.status==='archived'?'active':'archived',reason:statusReason});
-    setStatusEditing(null);setStatusReason('');await onChanged();
+    await track(async()=>{await window.tmBridge.setProjectStatus({id:project.id,status:project.status==='archived'?'active':'archived',reason:statusReason});
+    setStatusEditing(null);setStatusReason('');await onChanged();});
   }catch(err){setError(String(err));}finally{lock.current=false;setBusy(null);}
  }
  async function save(id:string){
   if(lock.current)return;lock.current=true;setBusy(id);setError('');try{
-   await window.tmBridge.updateProject({id,...draft});setEditing(null);await onChanged();
+   await track(async()=>{await window.tmBridge.updateProject({id,...draft});setEditing(null);await onChanged();});
   }catch(err){setError('Unable to save project: '+String(err));}
   finally{lock.current=false;setBusy(null);}
  }

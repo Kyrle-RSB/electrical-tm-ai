@@ -16,7 +16,7 @@ export function createNativeFileDialogs(adapter:DialogAdapter){
    return !result.canceled&&result.filePath&&path.isAbsolute(result.filePath)?result.filePath:null;
   },
   confirmPdfReplace:async()=>(await adapter.confirm({type:'warning',title:'Replace existing synthetic PDF?',message:'A file with this name already exists.',detail:'Replace only this synthetic test PDF? This operation never edits issued invoice records.',buttons:['Keep existing file','Replace synthetic PDF'],defaultId:0,cancelId:0})).response===1,
-  confirmRestore:async()=>(await adapter.confirm({type:'warning',title:'Restore synthetic records?',message:'Replace current local demo data with selected verified backup?',detail:'The current profile will be held in a separate rollback folder. Synthetic records only.',buttons:['Cancel','Restore demo data'],defaultId:0,cancelId:0})).response===1
+  confirmRestore:async()=>(await adapter.confirm({type:'warning',title:'Restore synthetic records?',message:'Replace current local demo data with selected verified backup?',detail:'The current profile will be held in a separate rollback folder. Unsaved project and business drafts will be discarded only if restore succeeds. Synthetic records only.',buttons:['Cancel','Restore demo data'],defaultId:0,cancelId:0})).response===1
  };
 }
 export type NativeFileDialogs=ReturnType<typeof createNativeFileDialogs>;

@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react';
 type Business = Awaited<ReturnType<Window['tmBridge']['getBusinessProfile']>>;
-export function BusinessBranding(){
+export function BusinessBranding({track}:{track:<T>(action:()=>Promise<T>)=>Promise<T>}){
  const [profile,setProfile]=useState<Business|null>(null);
  const [logo,setLogo]=useState<Awaited<ReturnType<Window['tmBridge']['getBusinessLogo']>>>(null);
  const [logoStatus,setLogoStatus]=useState('Loading logo status...');
@@ -19,7 +19,7 @@ export function BusinessBranding(){
   <p>Your company's legal identity and invoice footer fields. Fictional data only in this foundation build.</p>
   <form onSubmit={async e=>{e.preventDefault();setStatus('Saving...');try{
    const {currency:_currency,...input}=profile;
-   await window.tmBridge.updateBusinessProfile(input);
+   await track(()=>window.tmBridge.updateBusinessProfile(input));
    setStatus('Saved to local SQLite.');
   }catch(error){setStatus('Could not save: '+String(error));}}}>
    {field('legalName','Legal business name',200)}
@@ -32,7 +32,7 @@ export function BusinessBranding(){
    <button type="submit">Save local business profile</button>
   </form><p role="status" className="project-status">{status}</p>
   <h3>Optional local logo</h3><p role="status">{logoStatus}</p>
-  <div className="actions"><button type="button" disabled={logoBusy} onClick={async()=>{setLogoBusy(true);try{const picked=await window.tmBridge.chooseBusinessLogo();if(picked){setLogo(picked);setLogoStatus('Synthetic logo stored locally.');}else setLogoStatus('Selection canceled. Existing logo unchanged.');}catch(error){setLogoStatus('Logo not saved: '+String(error));}finally{setLogoBusy(false);}}}>Choose synthetic logo</button>
-  {logo&&<button type="button" disabled={logoBusy} onClick={async()=>{setLogoBusy(true);try{await window.tmBridge.removeBusinessLogo();setLogo(null);setLogoStatus('Logo reference removed. Historical assets retained.');}catch(error){setLogoStatus('Logo not removed: '+String(error));}finally{setLogoBusy(false);}}}>Remove logo reference</button>}</div>
+  <div className="actions"><button type="button" disabled={logoBusy} onClick={async()=>{setLogoBusy(true);try{const picked=await track(()=>window.tmBridge.chooseBusinessLogo());if(picked){setLogo(picked);setLogoStatus('Synthetic logo stored locally.');}else setLogoStatus('Selection canceled. Existing logo unchanged.');}catch(error){setLogoStatus('Logo not saved: '+String(error));}finally{setLogoBusy(false);}}}>Choose synthetic logo</button>
+  {logo&&<button type="button" disabled={logoBusy} onClick={async()=>{setLogoBusy(true);try{await track(()=>window.tmBridge.removeBusinessLogo());setLogo(null);setLogoStatus('Logo reference removed. Historical assets retained.');}catch(error){setLogoStatus('Logo not removed: '+String(error));}finally{setLogoBusy(false);}}}>Remove logo reference</button>}</div>
  </section>;
 }
