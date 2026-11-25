@@ -35,13 +35,15 @@ export class ProjectRepository {
    this.audit('project.update',id);
   });
  }
- status(id:string,status:ProjectState):void {
+ status(id:string,status:ProjectState,reason?:string):void {
+  const explanation=reason===undefined?'Local operator selected '+status:reason.trim();
+  if(!explanation||explanation.length>500)throw new Error('Invalid project status reason');
   withImmediateTransaction(this.db,()=>{
    if(!this.db.prepare('SELECT id FROM projects WHERE id=?').get(id))throw new Error('Project not found');
    this.db.prepare(`INSERT INTO project_details(project_id,status,updated_utc) VALUES(?,?,?)
      ON CONFLICT(project_id) DO UPDATE SET status=excluded.status,updated_utc=excluded.updated_utc`)
      .run(id,status,new Date().toISOString());
-   this.audit('project.status.'+status,id);
+   this.audit('project.status.'+status,id,explanation);
   });
  }
  listDetailed():DetailedProject[]{
@@ -56,8 +58,8 @@ export class ProjectRepository {
      project_name=excluded.project_name,billing_address=excluded.billing_address,notes=excluded.notes,updated_utc=excluded.updated_utc`)
      .run(id,value.name,value.billingAddress,value.notes,new Date().toISOString());
  }
- private audit(action:string,id:string):void {
-  this.db.prepare('INSERT INTO audit_events(action,entity_id,occurred_utc) VALUES(?,?,?)')
-    .run(action,id,new Date().toISOString());
+ private audit(action:string,id:string,reason?:string):void {
+  if(reason===undefined){this.db.prepare('INSERT INTO audit_events(action,entity_id,occurred_utc) VALUES(?,?,?)').run(action,id,new Date().toISOString());return;}
+  this.db.prepare('INSERT INTO audit_events(action,entity_id,occurred_utc,reason) VALUES(?,?,?,?)').run(action,id,new Date().toISOString(),reason);
  }
 }

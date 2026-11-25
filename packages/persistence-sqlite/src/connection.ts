@@ -128,8 +128,8 @@ export class LocalStore {
   updateProjectDetails(id:string,details:{name:string;billingAddress:string;notes:string}):void{
     this.projects.details(id,details);
   }
-  setProjectStatus(id:string,status:ProjectState):void{
-    this.projects.status(id,status);
+  setProjectStatus(id:string,status:ProjectState,reason?:string):void{
+    this.projects.status(id,status,reason);
   }
   listProjectsDetailed():DetailedProject[]{
     return this.projects.listDetailed();

@@ -22,6 +22,19 @@ export function validateCockpitFlowReceipt(receipt){
  const expected=[[1440,900,'light'],[1440,900,'dark'],[1280,800,'light'],[1280,800,'dark']];
  return receipt.layouts.every((x,i)=>x.requestedWidth===expected[i][0]&&x.requestedHeight===expected[i][1]&&x.appearance===expected[i][2]&&x.zoomFactor===2&&x.overflow===false&&x.labels===true&&Number.isFinite(x.viewportWidth)&&x.viewportWidth>0&&Number.isFinite(x.viewportHeight)&&x.viewportHeight>0&&Array.isArray(x.contentSize)&&x.contentSize.length===2&&x.contentSize.every(n=>Number.isFinite(n)&&n>0));
 }
+/** Contract 11 extends, never replaces, the historical receipt checks. */
+export function validateExtendedCockpitReceipt(receipt){
+ if(!validateCockpitFlowReceipt(receipt)||receipt.firstRunEmpty!==true||receipt.statusReasonsPersisted!==true||receipt.themeStatePreserved!==true)return false;
+ const flags=['duplicateDenied','missingCustomerDenied','taxLengthDenied','cancelEdit','cancelStatus','longContent','disabledReason'];
+ if(flags.some(flag=>receipt.interaction?.[flag]!==true))return false;
+ return receipt.layouts.every(x=>{
+  const shot=x.screenshot;
+  return x.contentSize[0]===x.requestedWidth&&x.contentSize[1]===x.requestedHeight&&Number.isInteger(x.textChecks)&&x.textChecks>=20&&Number.isFinite(x.minTextRatio)&&x.minTextRatio>=4.5&&Number.isFinite(x.minLargeRatio)&&x.minLargeRatio>=3&&Number.isFinite(x.focusRatio)&&x.focusRatio>=3&&x.focusVisible===true&&shot?.name===`cockpit-${x.requestedWidth}x${x.requestedHeight}-${x.appearance}.png`&&Number.isInteger(shot.bytes)&&shot.bytes>=1024&&shot.bytes<=10*1024*1024&&/^[a-f0-9]{64}$/.test(shot.sha256)&&Number.isInteger(shot.width)&&shot.width>0&&Number.isInteger(shot.height)&&shot.height>0;
+ });
+}
+export function validateCockpitPng(bytes,shot){
+ return Buffer.isBuffer(bytes)&&bytes.length===shot.bytes&&bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))&&bytes.subarray(12,16).toString()==='IHDR'&&bytes.readUInt32BE(16)===shot.width&&bytes.readUInt32BE(20)===shot.height&&crypto.createHash('sha256').update(bytes).digest('hex')===shot.sha256;
+}
 const SECURITY_METHODS=Object.freeze(['ping','createProject','updateProject','listProjects','listProjectsDetailed','updateProjectDetails','setProjectStatus','getBusinessProfile','updateBusinessProfile','getBusinessLogo','chooseBusinessLogo','removeBusinessLogo','importReceiptImage','saveSyntheticPdf','chooseBackupFolderAndBackUp','getBackupFolder','chooseBackupFolder','backUpToSelectedFolder','chooseBackupAndRestore','storeFakeSecretProof','checkFakeSecretProof','removeFakeSecretProof']);
 const MALFORMED_CASES=Object.freeze(['create-missing','create-extra','create-oversize','create-unsafe-code','edit-id','details-extra','status-invalid','profile-extra','profile-required']);
 const REQUIRED_CSP="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'";
@@ -324,6 +337,8 @@ async function runDevelopmentHmr(root){
 if(process.argv.includes('--self-test')){
   const cockpitFlow={schema:'tm-cockpit-flow-v1',synthetic:true,interaction:{profileSaved:true,projectCreated:true,projectEdited:true,archiveReopen:true,stableIdentity:true,helpFocusReturn:true},layouts:[[1440,900,'light'],[1440,900,'dark'],[1280,800,'light'],[1280,800,'dark']].map(([width,height,appearance])=>({requestedWidth:width,requestedHeight:height,contentSize:[width,height],zoomFactor:2,appearance,viewportWidth:width/2,viewportHeight:height/2,overflow:false,labels:true}))};
   const rendererSecurity={schema:'tm-renderer-security-v1',synthetic:true,stateUnchanged:true,navigationAttempted:true,navigationDenied:true,actualPrefs:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,webviewTag:false},isolation:{requireAbsent:true,processAbsent:true,bridgeKeys:[...SECURITY_METHODS],csp:REQUIRED_CSP},expectedCsp:REQUIRED_CSP,security:{inlineBlocked:true,evalBlocked:true,networkBlocked:true,frameBlocked:true,popupDenied:true,permissionDenied:true,violations:['script-src-elem','script-src','connect-src','frame-src']},foreignResults:SECURITY_METHODS.map(method=>({method,code:'SECURITY'})),malformedResults:MALFORMED_CASES.map(id=>({id,code:'VALIDATION'}))};
+  const extended={...cockpitFlow,firstRunEmpty:true,statusReasonsPersisted:true,themeStatePreserved:true,interaction:{...cockpitFlow.interaction,duplicateDenied:true,missingCustomerDenied:true,taxLengthDenied:true,cancelEdit:true,cancelStatus:true,longContent:true,disabledReason:true},layouts:cockpitFlow.layouts.map(x=>({...x,contentSize:[x.requestedWidth,x.requestedHeight],textChecks:25,minTextRatio:4.5,minLargeRatio:3,focusRatio:3,focusVisible:true,screenshot:{name:`cockpit-${x.requestedWidth}x${x.requestedHeight}-${x.appearance}.png`,bytes:1024,sha256:'a'.repeat(64),width:1440,height:900}}))};
+  if(!validateExtendedCockpitReceipt(extended)||validateExtendedCockpitReceipt({...extended,statusReasonsPersisted:false})||validateExtendedCockpitReceipt({...extended,layouts:extended.layouts.map(x=>({...x,minTextRatio:4.49}))})||validateExtendedCockpitReceipt({...extended,layouts:extended.layouts.map(x=>({...x,screenshot:null}))}))throw new Error('Extended cockpit receipt contract self-test failed');
   const valid={schema:'tm-native-smoke-v3',source:'packaged-binary',synthetic:true,
     failed:null,passed:[...NATIVE_REQUIRED_CHECKS],cockpitFlow,rendererSecurity};
   if(!validateNativeSmokeReceipt(valid)||validateNativeSmokeReceipt({...valid,rendererSecurity:null})||validateNativeSmokeReceipt({...valid,rendererSecurity:{...rendererSecurity,stateUnchanged:false}})||validateNativeSmokeReceipt({...valid,rendererSecurity:{...rendererSecurity,foreignResults:rendererSecurity.foreignResults.slice(0,-1)}})||validateNativeSmokeReceipt({...valid,rendererSecurity:{...rendererSecurity,malformedResults:rendererSecurity.malformedResults.map(x=>({...x,code:'INTERNAL'}))}})||validateNativeSmokeReceipt({...valid,rendererSecurity:{...rendererSecurity,security:{...rendererSecurity.security,evalBlocked:false}}})||validateNativeSmokeReceipt({...valid,cockpitFlow:null})||validateNativeSmokeReceipt({...valid,cockpitFlow:{...cockpitFlow,layouts:cockpitFlow.layouts.map(x=>({...x,overflow:true}))}})||validateNativeSmokeReceipt({...valid,failed:'native-os-credential'})||
@@ -385,7 +400,19 @@ if(process.argv.includes('--self-test')){
     let receipt=null;
     try {receipt=JSON.parse(fs.readFileSync(evidencePath,'utf8'));}catch{/* Absence is a failure. */}
     const portIsolation={...proof,packagedOrigin:receipt?.packagedOrigin??null,packagedHealth:receipt?.packagedHealth===true};
-    const verified=validateNativeSmokeReceipt(receipt)&&validatePortIsolation(portIsolation)&&validateStartupReadiness(receipt?.startupReadiness);
+    const extended=validateExtendedCockpitReceipt(receipt?.cockpitFlow);
+    let screenshotsValid=false;
+    if(extended){
+      const images=receipt.cockpitFlow.layouts.map(x=>({shot:x.screenshot,bytes:fs.readFileSync(path.join(evidenceDir,x.screenshot.name))}));
+      screenshotsValid=images.every(x=>validateCockpitPng(x.bytes,x.shot));
+      const target=process.env.TM_NATIVE_SCREENSHOT_DIR;
+      if(screenshotsValid&&target){
+        const real=fs.realpathSync(target),approved=path.resolve(root,'.local-evidence');
+        if(!path.relative(fs.realpathSync(approved),real).match(/^native-[^/\\]+[\\/]screenshots$/))throw new Error('Unapproved native screenshot evidence destination');
+        for(const {shot,bytes} of images)fs.writeFileSync(path.join(real,shot.name),bytes,{flag:'wx',mode:0o600});
+      }
+    }
+    const verified=validateNativeSmokeReceipt(receipt)&&validatePortIsolation(portIsolation)&&validateStartupReadiness(receipt?.startupReadiness)&&extended&&screenshotsValid;
     const smokeSuccess=result.status===0&&!result.error&&verified;
     let rawIpc=null;
     if(smokeSuccess){

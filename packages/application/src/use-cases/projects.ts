@@ -9,6 +9,6 @@ export function createProjectUseCases(store:ProjectStorePort){
   list:()=>store.listProjects(),
   listDetailed:()=>store.listProjectsDetailed(),
   details:(operationId:string,{id,...input}:ProjectDetailsInput)=>store.mutateOnce(operationId,CHANNELS.projectDetails,()=>{store.updateProjectDetails(id,input);return {updated:true};}),
-  status:(operationId:string,input:ProjectStatusInput)=>store.mutateOnce(operationId,CHANNELS.projectStatus,()=>{store.setProjectStatus(input.id,input.status);return {updated:true};})
+  status:(operationId:string,input:ProjectStatusInput)=>store.mutateOnce(operationId,CHANNELS.projectStatus,()=>{store.setProjectStatus(input.id,input.status,input.reason);return {updated:true};})
  };
 }

@@ -5,7 +5,7 @@ This build is **not ready for actual client information**. Open the standalone E
 - Enter a unique synthetic project code and fictional customer/site address. Click **Create fictional project**.
 - Enter a fictional project name, separate billing address and notes if needed. Edit saves those fields together with project code/customer/site; the original project ID remains unchanged.
 - Saved projects load automatically after app restart. Click **Refresh** to verify.
-- Each project has an Archive/Reopen button, preserving audit history rather than deleting historical records.
+- Each project has an Archive/Reopen button. Enter a synthetic status reason, then Confirm or Cancel status change. The reason is stored with the status transition in the local audit history; cancellation leaves records untouched. Archiving does not delete historical records.
 - The Business profile form stores a fictional company identity, contact address, tax ID and contractor-license ID in the local SQLite database. Do not input genuine credentials into the proof app.
 - Labor rates and timesheet workflows are future steps; the initial schema holds rate-version structures only.
 

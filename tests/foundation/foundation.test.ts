@@ -309,3 +309,12 @@ test('database mutation operation IDs cannot be replayed after reopen or reused 
   }finally{db.close();}
  }finally{rm(dir);}
 });
+
+test('flat-paint contrast oracle preserves alpha composition and standard luminance ratios',async()=>{
+ const {contrastForPaint}=await import('../e2e/cockpit-flow.spec');
+ assert.equal(contrastForPaint('rgb(0, 0, 0)',['rgb(255, 255, 255)']),21);
+ assert.equal(contrastForPaint('rgb(255, 255, 255)',['rgb(255, 255, 255)']),1);
+ assert.equal(contrastForPaint('rgb(0, 0, 0)',['rgb(0, 0, 0)','rgba(255, 255, 255, 1)']),21);
+ assert.equal(contrastForPaint('rgba(0, 0, 0, 0)',['rgb(255, 255, 255)']),1);
+ assert.throws(()=>contrastForPaint('red',['rgb(0, 0, 0)']),/Unsupported/);
+});

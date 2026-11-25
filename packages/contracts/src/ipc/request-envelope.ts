@@ -116,10 +116,10 @@ export function validateProjectDetailsInput(v:unknown):ProjectDetailsInput{
  return {id,...validateDetailsFields({name:d.name,billingAddress:d.billingAddress,notes:d.notes})};
 }
 export function validateProjectStatusInput(v:unknown):ProjectStatusInput{
- const d=requirePlainRecord(v,['id','status']);const id=limitedText(d.id,36,true);
+ const d=requirePlainRecord(v,['id','status','reason']);const id=limitedText(d.id,36,true);
  if(!ID.test(id))throw new Error('Invalid project identity');
  if(typeof d.status!=='string'||!['planned','active','on-hold','complete','closed','archived'].includes(d.status))throw new Error('Invalid project status');
- return {id,status:d.status as ProjectState};
+ return {id,status:d.status as ProjectState,...(Object.prototype.hasOwnProperty.call(d,'reason')?{reason:limitedText(d.reason,500,true)}:{})};
 }
 
 /** Editable fields for a project. Archiving is separate; issued records are never deleted. */

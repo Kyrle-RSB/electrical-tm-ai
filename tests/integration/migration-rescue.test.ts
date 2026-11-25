@@ -53,7 +53,7 @@ test('interrupted SQLite schema transaction is rolled back on process restart',(
    assert.equal(db.db.prepare("SELECT name FROM sqlite_master WHERE name='interrupted_probe'").get(),undefined);
    assert.equal((db.db.prepare('PRAGMA quick_check').get() as any).quick_check,'ok');
    assert.deepEqual(db.db.prepare('PRAGMA foreign_key_check').all(),[]);
-   assert.deepEqual(db.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r:any)=>r.version),[1,2,3,4,5,6,7]);
+   assert.deepEqual(db.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((r:any)=>r.version),[1,2,3,4,5,6,7,8]);
   }finally{db.close();}
  }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
@@ -128,4 +128,20 @@ test('kill the real upgrade child after original migration SQL and before receip
   try{assert.deepEqual(history(restarted.db),expected);assert.deepEqual(restarted.listProjects(),oldRows);assert.equal(restarted.db.prepare('PRAGMA quick_check').get()?.quick_check,'ok');assert.deepEqual(restarted.db.prepare('PRAGMA foreign_key_check').all(),[]);upgradedSchema=schema(restarted.db);}finally{restarted.close();}
   const noOp=new LocalStore(file,full);try{assert.equal(noOp.lastMigrationRescuePath,null);assert.equal(schema(noOp.db),upgradedSchema);assert.deepEqual(history(noOp.db),expected);assert.deepEqual(noOp.listProjects(),oldRows);}finally{noOp.close();}
  }finally{if(child&&child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('v7 to v8 preserves historical events without fabricated reason and records new reason after reopen',()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-reason-migration-'));
+ const old=path.join(root,'old'),file=path.join(root,'data','db','app.sqlite'),full='packages/persistence-sqlite/src/migrations';fs.mkdirSync(old);
+ let db:LocalStore|undefined;
+ try{
+  for(const n of fs.readdirSync(full).filter(n=>/^000[1-7]-.*\.sql$/.test(n)))fs.copyFileSync(path.join(full,n),path.join(old,n));
+  db=new LocalStore(file,old);db.initializeFictionalCompany();const id=db.createProject({code:'OLD-STATUS',customer:'Synthetic',siteAddress:'Stable'});
+  db.db.prepare('INSERT INTO audit_events(action,entity_id,occurred_utc) VALUES(?,?,?)').run('project.status.active',id,'2026-01-01T00:00:00Z');
+  const history=db.db.prepare('SELECT * FROM schema_migrations ORDER BY version').all();const events=db.db.prepare('SELECT * FROM audit_events ORDER BY rowid').all();db.close();db=undefined;
+  db=new LocalStore(file,full);assert.ok(db.lastMigrationRescuePath);assert.deepEqual(db.db.prepare('SELECT * FROM schema_migrations WHERE version<=7 ORDER BY version').all(),history);
+  assert.deepEqual(db.db.prepare('SELECT * FROM audit_events ORDER BY rowid').all().map(x=>({...x})),events.map(x=>({...x,reason:null})));
+  db.setProjectStatus(id,'archived','Synthetic later reason');db.close();db=new LocalStore(file,full);
+  assert.equal(db.listProjectsDetailed()[0].id,id);assert.equal(db.listProjectsDetailed()[0].status,'archived');assert.equal(db.db.prepare('SELECT reason FROM audit_events ORDER BY rowid DESC LIMIT 1').get()?.reason,'Synthetic later reason');assert.equal(db.db.prepare('PRAGMA quick_check').get()?.quick_check,'ok');
+ }finally{db?.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });

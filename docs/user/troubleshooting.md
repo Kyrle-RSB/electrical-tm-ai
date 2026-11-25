@@ -27,3 +27,5 @@ A packaged application with an unexpected development URL fails before opening i
 If a synthetic managed image import is interrupted or disk space is exhausted, the app refuses to acknowledge the import; it removes only the incomplete file it can still identify as its own. If identity changes make cleanup unsafe, the unverified file is retained for review, not treated as an imported receipt. Restore available disk space and retry from the original source. Do not manually remove an issued original or an unrelated file to recover a failed import or credential update.
 
 If startup reports unsafe application data after an interrupted restore, inspect the redacted `paths.prepare` or `restore.recovery` event. Preserve the profile, rollback and staging directories, and obtain qualified recovery assistance. Never initialize a replacement empty business or delete a rescue to make startup succeed.
+
+Project status changes require a reason in the cockpit, maximum 500 characters. Confirm only the intended synthetic action. Canceling discards the uncommitted reason and leaves the prior status and audit history intact.

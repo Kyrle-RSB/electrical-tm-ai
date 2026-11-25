@@ -241,6 +241,7 @@ async function run(){
       packagedHealth=true;packagedOrigin=win.webContents.getURL();
       if(packagedOrigin!=='tmapp://app/index.html')throw new Error('Unexpected packaged renderer origin');
       // Disposable project and full logical mutation census, never production data.
+      if(store.listProjects().length!==0)throw new Error('Fresh synthetic profile is not empty');
       const securityProject=store.createProject({code:'SECURITY-CONTROL-001',customer:'Synthetic security control',siteAddress:'Synthetic site'});
       const snapshot=()=>captureRawProofState(store.db,P2_TEST_PROFILE);
       // A distinct native WebContents with the same preload and URL must still be denied.
@@ -250,7 +251,20 @@ async function run(){
       win.webContents.on('will-navigate',observeNavigation);
       try{await foreign.loadURL(currentUrl);rendererSecurity=await runPackagedSecurityFlow(win,foreign,securityProject,snapshot,()=>navigationAttempts);}
       finally{win.webContents.removeListener('will-navigate',observeNavigation);foreign.destroy();}
-      cockpitFlow=await runPackagedCockpitFlow(win,nativeTheme);
+      const report=process.env.TM_SMOKE_REPORT_PATH;
+      if(!report||!path.isAbsolute(report))throw new Error('Missing synthetic capture destination');
+      const dir=fs.realpathSync(path.dirname(report)),tmp=fs.realpathSync(os.tmpdir()),relative=path.relative(tmp,dir);
+      const stat=fs.lstatSync(dir);if(!/^tm-native-smoke-run-[a-zA-Z0-9]+$/.test(relative)||!stat.isDirectory()||stat.isSymbolicLink()||(process.platform!=='win32'&&((stat.mode&0o077)!==0||stat.uid!==process.getuid?.())))throw new Error('Invalid synthetic capture destination');
+      cockpitFlow=await runPackagedCockpitFlow(win,nativeTheme,(name,bytes)=>{
+        if(!/^cockpit-(1440x900|1280x800)-(light|dark)\.png$/.test(name))throw new Error('Invalid synthetic capture name');
+        const current=fs.lstatSync(dir);if(current.isSymbolicLink()||!current.isDirectory()||current.dev!==stat.dev||current.ino!==stat.ino)throw new Error('Changed synthetic capture destination');
+        fs.writeFileSync(path.join(dir,name),bytes,{flag:'wx',mode:0o600});
+      });
+      const uiProject=store.listProjectsDetailed().find(p=>p.project_code==='COCKPIT-UI-001');
+      if(!uiProject)throw new Error('Missing synthetic UI project');
+      const reasons=store.db.prepare("SELECT action,reason FROM audit_events WHERE entity_id=? AND action LIKE 'project.status.%' ORDER BY rowid").all(uiProject.id);
+      if(reasons.length!==2||reasons[0].action!=='project.status.archived'||reasons[0].reason!=='Synthetic UI archive reason'||reasons[1].action!=='project.status.active'||reasons[1].reason!=='Synthetic UI reopen reason')throw new Error('Status reasons or cancellation audit mismatch');
+      Object.assign(cockpitFlow,{firstRunEmpty:true,statusReasonsPersisted:true});
       checks.push(currentCheck);
 
       currentCheck='sqlite-persistence';

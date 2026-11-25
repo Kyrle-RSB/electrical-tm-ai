@@ -48,3 +48,30 @@ test('project create and edit contracts preserve distinct billing/site fields at
   assert.equal(db.listProjectsDetailed().find(x=>x.id===id)?.notes,'Updated notes');
  }finally{db.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('explicit archive/reopen reasons persist atomically with audit history and malformed reasons cannot mutate',async()=>{
+ const {registerFoundationHandlers}=await import('../../apps/desktop/src/main/ipc/register');
+ const {CHANNELS}=await import('../../packages/contracts/src/ipc/channel-map');
+ const {randomUUID}=await import('node:crypto');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-project-status-reason-')),file=path.join(root,'app.sqlite');
+ let db=new LocalStore(file);db.initializeFictionalCompany();
+ try{
+  const id=db.createProject({code:'REASON-01',customer:'Synthetic',siteAddress:'Site'});
+  const original=db.listProjectsDetailed()[0];const primary={id:51},url='tmapp://app/index.html',frame:any={url};frame.top=frame;
+  const handlers=new Map<string,(e:any,r:unknown)=>Promise<unknown>>();
+  registerFoundationHandlers({handle:(ch,h)=>handlers.set(ch,h)},{primary,url,getStore:()=>db});
+  const invoke=(payload:unknown)=>handlers.get(CHANNELS.projectStatus)!({sender:primary,senderFrame:frame},{requestId:randomUUID(),version:1,payload});
+  await invoke({id,status:'archived',reason:'Synthetic work concluded'});
+  const archived=db.listProjectsDetailed()[0];assert.equal(archived.status,'archived');assert.equal(archived.opened_utc,original.opened_utc);
+  const audit=()=>db.db.prepare('SELECT action,entity_id,reason FROM audit_events ORDER BY id').all();
+  const receipts=()=>db.db.prepare('SELECT * FROM operation_receipts ORDER BY operation_id').all();
+  const beforeAudit=audit(),beforeReceipts=receipts();
+  for(const reason of ['', '  ', 'x'.repeat(501), 3]){await assert.rejects(invoke({id,status:'active',reason}));assert.deepEqual(db.listProjectsDetailed()[0],archived);assert.deepEqual(audit(),beforeAudit);assert.deepEqual(receipts(),beforeReceipts);}
+  await invoke({id,status:'active',reason:'Synthetic service resumed'});
+  db.close();db=new LocalStore(file);
+  assert.deepEqual(db.listProjectsDetailed()[0],original);
+  assert.deepEqual(audit().map(x=>({...x})),[{action:'project.create',entity_id:id,reason:null},{action:'project.status.archived',entity_id:id,reason:'Synthetic work concluded'},{action:'project.status.active',entity_id:id,reason:'Synthetic service resumed'}]);
+  // A preexisting typed client without a reason remains supported, with honest operation-only metadata.
+  db.setProjectStatus(id,'archived');assert.equal(audit().at(-1)?.reason,'Local operator selected archived');
+ }finally{db.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

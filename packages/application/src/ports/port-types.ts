@@ -11,7 +11,7 @@ export interface ProjectStorePort extends MutationPort {
  listProjects():ProjectData[];
  listProjectsDetailed():DetailedProject[];
  updateProjectDetails(id:string,details:ProjectDetailsFields):void;
- setProjectStatus(id:string,status:ProjectState):void;
+ setProjectStatus(id:string,status:ProjectState,reason?:string):void;
 }
 export interface BusinessStorePort extends MutationPort {
  getBusinessProfile():BusinessInput&{currency:string};

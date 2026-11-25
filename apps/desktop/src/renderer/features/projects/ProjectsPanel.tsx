@@ -5,12 +5,14 @@ export function ProjectsPanel({projects,onChanged}:{projects:ProjectRow[];onChan
  const [error,setError]=useState('');const [busy,setBusy]=useState<string|null>(null);
  const lock=useRef(false);
  const [editing,setEditing]=useState<string|null>(null);
+ const [statusEditing,setStatusEditing]=useState<string|null>(null);
+ const [statusReason,setStatusReason]=useState('');
  const [draft,setDraft]=useState({code:'',customer:'',siteAddress:'',details:{name:'',billingAddress:'',notes:''}});
- const startEdit=(p:ProjectRow)=>{setEditing(p.id);setDraft({code:p.project_code,customer:p.customer_name,siteAddress:p.site_address,details:{name:p.project_name,billingAddress:p.billing_address,notes:p.notes}});setError('');};
+ const startEdit=(p:ProjectRow)=>{setStatusEditing(null);setEditing(p.id);setDraft({code:p.project_code,customer:p.customer_name,siteAddress:p.site_address,details:{name:p.project_name,billingAddress:p.billing_address,notes:p.notes}});setError('');};
  async function toggle(project:ProjectRow){
   if(lock.current)return;lock.current=true;setBusy(project.id);setError('');try{
-    await window.tmBridge.setProjectStatus({id:project.id,status:project.status==='archived'?'active':'archived'});
-    await onChanged();
+    await window.tmBridge.setProjectStatus({id:project.id,status:project.status==='archived'?'active':'archived',reason:statusReason});
+    setStatusEditing(null);setStatusReason('');await onChanged();
   }catch(err){setError(String(err));}finally{lock.current=false;setBusy(null);}
  }
  async function save(id:string){
@@ -26,8 +28,13 @@ export function ProjectsPanel({projects,onChanged}:{projects:ProjectRow[];onChan
       {project.billing_address&&<div>Billing: {project.billing_address}</div>}
       {project.notes&&<div>Notes: {project.notes}</div>}
     </div><div className="actions"><button type="button" disabled={busy!==null} onClick={()=>startEdit(project)}>Edit</button>
-    <button type="button" disabled={busy!==null} onClick={()=>toggle(project)}>
+    <button type="button" disabled={busy!==null} onClick={()=>{setEditing(null);setStatusEditing(project.id);setStatusReason('');setError('');}}>
       {project.status==='archived'?'Reopen':'Archive'}</button></div></div>
+    {statusEditing===project.id&&<form aria-label={'Change project status '+project.project_code} onSubmit={e=>{e.preventDefault();void toggle(project);}}>
+      <label>Status reason<input required maxLength={500} value={statusReason} onChange={e=>setStatusReason(e.target.value)}/></label>
+      <button disabled={busy!==null} type="submit">Confirm {project.status==='archived'?'reopen':'archive'}</button>
+      <button disabled={busy!==null} type="button" onClick={()=>{setStatusEditing(null);setStatusReason('');}}>Cancel status change</button>
+    </form>}
     {editing===project.id&&<form aria-label={'Edit project '+project.project_code} onSubmit={e=>{e.preventDefault();save(project.id);}}>
       <label>Code<input required maxLength={60} value={draft.code} onChange={e=>setDraft({...draft,code:e.target.value})}/></label>
       <label>Customer<input required maxLength={200} value={draft.customer} onChange={e=>setDraft({...draft,customer:e.target.value})}/></label>
