@@ -7,7 +7,7 @@ import {createBackup} from '../../../../../../packages/backup/src/create-backup'
 import {backupManifestIdentity} from '../../../../../../packages/backup/src/backup-manifest';
 import {listVerifiedBackups,restoreBackup,verifyBackup} from '../../../../../../packages/backup/src/restore-backup';
 import type {BackupPort} from '../../../../../../packages/application/src/ports/port-types';
-import type {BackupDestinationPreference} from '../../../../../../packages/backup/src/backup-destination';
+import {bindDirectory,type BackupDestinationPreference} from '../../../../../../packages/backup/src/backup-destination';
 import type {NativeFileDialogs} from '../../os/file-dialogs';
 import type {ValidatedRegistrar} from '../register';
 import {requireExistingDatabase} from '../../os/paths';
@@ -49,6 +49,9 @@ export function registerBackupHandlers(register:ValidatedRegistrar,opts:BackupHa
   const expectedIdentity=backupManifestIdentity(await backups.verify(selected));
   if(!await dialogs.confirmRestore())return null;
   requireExistingDatabase(dataRoot);
+  const checkOriginal=await bindDirectory(dataRoot);if(!checkOriginal)throw new Error('Restore recovery requires operator intervention');
+  const originalIdentity=await fs.promises.lstat(dataRoot);
+  await checkOriginal();
   opts.getStore().close();
   let restored:{rollbackPath:string|null}|null=null;
   try{
@@ -57,11 +60,14 @@ export function registerBackupHandlers(register:ValidatedRegistrar,opts:BackupHa
    opts.setStore(opts.reopen());return {restored:true,rollbackPath:restored.rollbackPath};
   }catch(error){
    try{
-    if(restored?.rollbackPath&&fs.existsSync(restored.rollbackPath)){
+    if(restored?.rollbackPath){
+     const original=await fs.promises.lstat(restored.rollbackPath);
+     if(!original.isDirectory()||original.isSymbolicLink()||original.dev!==originalIdentity.dev||original.ino!==originalIdentity.ino)throw new Error('Restore recovery directory changed');
      const failed=path.join(path.dirname(dataRoot),path.basename(dataRoot)+'.restore-failed-'+randomUUID());
      if(fs.existsSync(dataRoot))await fs.promises.rename(dataRoot,failed);
      await fs.promises.rename(restored.rollbackPath,dataRoot);
     }
+    await checkOriginal();
     requireExistingDatabase(dataRoot);
     opts.setStore(opts.reopen());
    }catch(recoveryError){opts.onFatalRecovery();throw new AggregateError([error,recoveryError],'Restore recovery requires operator intervention');}

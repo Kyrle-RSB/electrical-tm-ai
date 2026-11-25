@@ -87,10 +87,19 @@ export async function restoreBackup(backupPath:string,activeRoot:string,migratio
   const target=await canonicalBackupPath(activeRoot), source=await canonicalBackupPath(backupPath);
   if(backupPathsOverlap(target,source))throw new Error('Cannot restore onto backup');
   backupPath=source;
+  // Capture the active identity before archive preflight (which can take time).
+  const checkActive=await bindDirectory(target);
+  const requireAbsent=async(file:string)=>{
+    try{await fs.promises.lstat(file);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
+    throw new Error('Restore destination directory changed');
+  };
+  const checkTarget=async()=>{if(checkActive)await checkActive();else await requireAbsent(target);};
   const manifest=await verifyBackup(backupPath,migrationsDir);
   if(expectedIdentity!==undefined&&backupManifestIdentity(manifest)!==expectedIdentity)throw new Error('Backup changed after verification; select and verify it again');
+  await checkTarget();
   const parent=path.dirname(target);
   await fs.promises.mkdir(parent,{recursive:true});
+  const checkParent=await bindDirectory(parent);if(!checkParent)throw new Error('Restore parent unavailable');
   const nonce=crypto.randomBytes(5).toString('hex'),stage=path.join(parent,`.tm-restore-${nonce}`),rollback=path.join(parent,`.tm-rollback-${nonce}`);
   await fs.promises.mkdir(stage,{mode:0o700});
   const checkStage=await bindDirectory(stage);if(!checkStage)throw new Error('Restore stage unavailable');
@@ -102,10 +111,11 @@ export async function restoreBackup(backupPath:string,activeRoot:string,migratio
       await checkStage();await copyRegularBackupFile(path.join(backupPath,entry.path),dest);
     }
     await checkStage();for(const entry of manifest.files) if(await hashFile(path.join(stage,entry.path),entry.bytes)!==entry.sha256) throw new Error('Restore staging mismatch');
-    await checkStage();if(fs.existsSync(target)){await fs.promises.rename(target,rollback);rolledBack=true;}
-    try{await checkStage();await fs.promises.rename(stage,target);}catch(activationError){
+    await checkStage();await checkParent();await requireAbsent(rollback);await checkTarget();
+    if(checkActive){await fs.promises.rename(target,rollback);rolledBack=true;}
+    try{await checkStage();await checkParent();await requireAbsent(target);await fs.promises.rename(stage,target);}catch(activationError){
       if(rolledBack){
-        try{await fs.promises.rename(rollback,target);}
+        try{await checkParent();await requireAbsent(target);await fs.promises.rename(rollback,target);await checkTarget();}
         catch(rollbackError){preserveStage=true;throw new AggregateError([activationError,rollbackError],'Restore recovery requires operator intervention');}
       }
       throw activationError;

@@ -507,3 +507,45 @@ test('configured backup list verifies archive identities without accepting rende
   await assert.rejects(list!(),/separate/);
  }finally{db.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('restore refuses active-root substitution during archive preflight before moving any business',async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-restore-active-substitution-'))),live=path.join(root,'live'),parked=path.join(root,'parked'),external=path.join(root,'external');
+ let db:LocalStore|undefined;const readdir=fs.promises.readdir;let swapped=false;
+ try{
+  db=new LocalStore(path.join(live,'db','app.sqlite'),migrations);db.initializeFictionalCompany();db.createProject({code:'ORIGINAL',customer:'Synthetic',siteAddress:'Site'});
+  const saved=await createBackup(db,live,external);db.createProject({code:'LATEST',customer:'Synthetic',siteAddress:'Site'});db.close();db=undefined;
+  fs.promises.readdir=(async(...args:Parameters<typeof readdir>)=>{
+   if(!swapped&&path.relative(saved.backupPath,String(args[0]))===''){
+    fs.renameSync(live,parked);fs.mkdirSync(live);fs.writeFileSync(path.join(live,'unrelated.txt'),'UNRELATED SYNTHETIC');swapped=true;
+   }return readdir(...args);
+  }) as typeof readdir;
+  await assert.rejects(restoreBackup(saved.backupPath,live,migrations),/directory changed/);
+  assert.equal(swapped,true);assert.deepEqual(fs.readdirSync(live),['unrelated.txt']);assert.equal(fs.readFileSync(path.join(live,'unrelated.txt'),'utf8'),'UNRELATED SYNTHETIC');
+  assert.equal(fs.readdirSync(root).some(name=>name.startsWith('.tm-rollback-')),false);
+  db=new LocalStore(path.join(parked,'db','app.sqlite'),migrations);assert.deepEqual(db.listProjects().map(p=>p.project_code),['LATEST','ORIGINAL']);
+ }finally{fs.promises.readdir=readdir;db?.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('restore IPC never reopens a substituted active business after a failed restore',async()=>{
+ const {registerBackupHandlers}=await import('../../apps/desktop/src/main/ipc/handlers/backups');
+ const {BackupDestinationPreference}=await import('../../packages/backup/src/backup-destination');
+ const {CHANNELS}=await import('../../packages/contracts/src');
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-restore-rebind-substitution-'))),profile=path.join(root,'profile'),live=path.join(profile,'data'),parked=path.join(root,'parked'),other=path.join(root,'other');
+ const file=path.join(live,'db','app.sqlite');let db:LocalStore|undefined;const readdir=fs.promises.readdir;let swapped=false,fatal=false,reopens=0,confirmed=false;
+ try{
+  db=new LocalStore(file,migrations);db.initializeFictionalCompany();db.createProject({code:'ORIGINAL',customer:'Synthetic',siteAddress:'Site'});
+  const saved=await createBackup(db,live,path.join(root,'external'));db.createProject({code:'LATEST',customer:'Synthetic',siteAddress:'Site'});
+  const replacement=new LocalStore(path.join(other,'db','app.sqlite'),migrations);replacement.initializeFictionalCompany();replacement.createProject({code:'UNRELATED',customer:'Synthetic',siteAddress:'Site'});replacement.close();
+  const before=fs.readFileSync(path.join(other,'db','app.sqlite'));
+  const handlers=new Map<string,()=>Promise<unknown>>();
+  registerBackupHandlers((channel,validate,operation)=>{handlers.set(channel,async()=>operation('synthetic',validate(undefined)));},{dialogs:{chooseFolder:async()=>saved.backupPath,confirmRestore:async()=>{confirmed=true;return true;}},preference:new BackupDestinationPreference(path.join(profile,'settings','backup.json'),profile),dataRoot:live,migrationsDir:migrations,getStore:()=>db!,setStore:v=>{db=v;},reopen:()=>{reopens++;return new LocalStore(file,migrations);},onFatalRecovery:()=>{fatal=true;}});
+  fs.promises.readdir=(async(...args:Parameters<typeof readdir>)=>{
+   if(confirmed&&!swapped&&path.relative(saved.backupPath,String(args[0]))===''){
+    fs.renameSync(live,parked);fs.renameSync(other,live);swapped=true;
+   }return readdir(...args);
+  }) as typeof readdir;
+  await assert.rejects(handlers.get(CHANNELS.backupRestore)!(),/operator intervention/);
+  assert.equal(swapped,true);assert.equal(fatal,true);assert.equal(reopens,0);assert.deepEqual(fs.readFileSync(file),before);
+  const original=new LocalStore(path.join(parked,'db','app.sqlite'),migrations);try{assert.deepEqual(original.listProjects().map(p=>p.project_code),['LATEST','ORIGINAL']);}finally{original.close();}
+ }finally{fs.promises.readdir=readdir;try{db?.close();}catch{}fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
