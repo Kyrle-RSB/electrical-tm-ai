@@ -10,6 +10,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {DatabaseSync} from 'node:sqlite';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {createRequire} from 'node:module';
+import {createServer} from 'node:net';
 
 export const NATIVE_REQUIRED_CHECKS=Object.freeze([
   'packaging','renderer-ipc','sqlite-persistence','pdf-create-and-replace',
@@ -40,6 +41,47 @@ export function validateNativeSmokeReceipt(receipt){
   if(receipt.passed.length!==NATIVE_REQUIRED_CHECKS.length)return false;
   return NATIVE_REQUIRED_CHECKS.every((check,index)=>receipt.passed[index]===check);
 }
+const RAW_CHANNELS=Object.freeze(['health.ping','projects.create','projects.edit','projects.list','projects.listDetailed','projects.updateDetails','projects.setStatus','business.get','business.update','business.logo.get','business.logo.choose','business.logo.remove','documents.importImage','documents.renderInvoiceProof','backup.create','backup.getLocation','backup.chooseLocation','backup.createInSelectedFolder','backup.restore','secrets.probeStoreFake','secrets.probeCheckFake','secrets.probeRemoveFake']);
+const RAW_CASES=Object.freeze([['valid-ping','OK'],['replayed-ping','SECURITY'],['wrong-version','VALIDATION'],['bad-envelope','VALIDATION'],['missing-argument','VALIDATION'],['extra-argument','VALIDATION'],['oversized','VALIDATION'],['cyclic','VALIDATION'],['invalid-mutation','VALIDATION'],['replayed-altered-mutation','SECURITY'],['unknown-channel','UNREGISTERED']]);
+export function validateRawIpcProof(proof){
+ if(proof?.schema!=='tm-native-raw-ipc-v1'||proof.synthetic!==true||proof.source!=='packaged-binary'||proof.stateUnchanged!==true)return false;
+ const match=(frame,url,main,cases)=>frame?.url===url&&frame.main===main&&Array.isArray(frame.results)&&frame.results.length===cases.length&&cases.every(([name,code],i)=>{
+  const result=frame.results[i];return result?.name===name&&result.code===code&&result.correlated===(code!=='UNREGISTERED')&&(code!=='OK'||result.health===true);
+ });
+ const denied=RAW_CHANNELS.map(channel=>[channel,'SECURITY']);
+ return match(proof.trusted,'tmapp://app/raw-ipc-proof.html',true,RAW_CASES)&&Array.isArray(proof.children)&&proof.children.length===2&&match(proof.children[0],'tmapp://app/raw-frame.html',false,denied)&&match(proof.children[1],'tmapp://raw-fixture/raw-frame.html',false,denied)&&match(proof.wrongTop,'tmapp://app/raw-denied.html',true,denied);
+}
+export function validatePortIsolation(proof){
+ return proof?.schema==='tm-port-isolation-v1'&&proof.port===5173&&proof.ipv4?.address==='127.0.0.1'&&proof.ipv4?.port===5173&&proof.ipv4?.family==='IPv4'&&((proof.ipv6?.address==='::1'&&proof.ipv6?.port===5173&&proof.ipv6?.family==='IPv6'&&proof.ipv6Unavailable===null)||(proof.ipv6===null&&['EAFNOSUPPORT','EADDRNOTAVAIL','EPROTONOSUPPORT'].includes(proof.ipv6Unavailable)))&&proof.connections===0&&proof.trapError===false&&proof.packagedOrigin==='tmapp://app/index.html'&&proof.packagedHealth===true;
+}
+/** Asynchronous launch so the runner can actually observe connection attempts while the app runs. */
+function spawnCaptured(executable,args,env,timeout=120000){
+ return new Promise(resolve=>{
+  const child=spawn(executable,args,{env,windowsHide:true,stdio:['ignore','pipe','pipe']});let stdout='',stderr='',error=null;
+  const stop=reason=>{error=error??new Error(reason);child.kill('SIGKILL');};
+  const timer=setTimeout(()=>stop('Native proof timed out'),timeout);
+  child.stdout.on('data',bytes=>{stdout=(stdout+String(bytes)).slice(-2*1024*1024-1);if(stdout.length>2*1024*1024)stop('Native stdout exceeded bound');});
+  child.stderr.on('data',bytes=>{stderr=(stderr+String(bytes)).slice(-2*1024*1024-1);if(stderr.length>2*1024*1024)stop('Native stderr exceeded bound');});
+  child.once('error',e=>{error=e;});
+  child.once('close',(status,signal)=>{clearTimeout(timer);resolve({status,signal,error,stdout,stderr});});
+ });
+}
+/** Own only loopback sockets. Do not terminate or probe an unrelated process occupying 5173. */
+async function runWithPortTrap(binary,env){
+ let connections=0,ipv6Unavailable=null,trapError=false;const servers=[];
+ const listen=async(host,ipv6Only=false)=>{
+  const server=createServer(socket=>{connections++;socket.destroy();});
+  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen({host,port:5173,exclusive:true,ipv6Only},resolve);});
+  servers.push(server);server.on('error',()=>{trapError=true;});const address=server.address();if(!address||typeof address==='string')throw new Error('Missing bound socket identity');return address;
+ };
+ try{
+  const ipv4=await listen('127.0.0.1');let ipv6=null;
+  try{ipv6=await listen('::1',true);}catch(error){if(!['EAFNOSUPPORT','EADDRNOTAVAIL','EPROTONOSUPPORT'].includes(error.code))throw error;ipv6Unavailable=error.code;}
+  const result=await spawnCaptured(binary,['--tm-smoke'],env);
+  await new Promise(resolve=>setImmediate(resolve));
+  return {result,proof:{schema:'tm-port-isolation-v1',port:5173,ipv4,ipv6,ipv6Unavailable,connections,trapError}};
+ }finally{await Promise.all(servers.map(server=>new Promise(resolve=>server.close(resolve))));}
+}
 export const LIFECYCLE_STAGES=Object.freeze(['seed','reopen','revoked']);
 export function validateLifecycleReceipts(receipts,nonce){
  if(!Array.isArray(receipts)||receipts.length!==3||!/^[a-f0-9]{32}$/.test(nonce))return false;
@@ -51,7 +93,7 @@ export function validateLifecycleReceipts(receipts,nonce){
 }
 /** Actual second-process contention, not a second window in the primary process. */
 async function runDuplicateLifecycle(binary,env,profile,nonce){
- const probeEnv={...env,TM_LIFECYCLE_DUPLICATE_PROBE:'1'};delete probeEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;
+ const probeEnv={...env,TM_LIFECYCLE_DUPLICATE_PROBE:'1'};delete probeEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete probeEnv.TM_LIFECYCLE_INVALID_RENDERER_PROBE;
  const primary=spawn(binary,['--tm-smoke'],{stdio:'ignore',windowsHide:true,env:probeEnv});
  let primaryExit=null;
  const settled=new Promise(resolve=>{primary.once('error',()=>resolve({exitCode:null,signal:null,failed:true}));primary.once('close',(exitCode,signal)=>resolve({exitCode,signal,failed:false}));});
@@ -110,7 +152,7 @@ function runDiagnosticDenials(binary,env,profile){
   return {verdict,exitCode:result.status,spawnFailed:!!result.error,safeEventFields,sentinelFree,namedFailure,shutdown,logicalStatePreserved,events:events.map(({event,state})=>({event,state}))};
  };
  const fixture=fs.mkdtempSync(path.join(os.tmpdir(),'tm-native-resource-denial-'));
- let missingResource=null,rendererCrash=null,originalUnchanged=false;
+ let missingResource=null,rendererCrash=null,invalidRenderer=null,originalUnchanged=false;
  try{
   const appDir=process.platform==='darwin'?path.resolve(binary,'../../..'):path.dirname(binary);
   const originalResources=process.platform==='darwin'?path.join(appDir,'Contents','Resources'):path.join(appDir,'resources');
@@ -124,15 +166,20 @@ function runDiagnosticDenials(binary,env,profile){
   if(fs.existsSync(path.join(copiedResources,'migrations')))throw new Error('Missing resource fault not injected');
   missingResource=attempt(copiedBinary,env,'sqlite.open');
   originalUnchanged=originalIdentity===resourceIdentity();
+  invalidRenderer=attempt(binary,{...env,TM_LIFECYCLE_INVALID_RENDERER_PROBE:'1'},'renderer.load');
   rendererCrash=attempt(binary,{...env,TM_LIFECYCLE_RENDERER_CRASH_PROBE:'1'},'renderer.process');
   originalUnchanged=originalUnchanged&&originalIdentity===resourceIdentity();
  }finally{fs.rmSync(fixture,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
- return {schema:'tm-native-diagnostic-denials-v1',synthetic:true,missingResource,rendererCrash,originalUnchanged};
+ return {schema:'tm-native-diagnostic-denials-v1',synthetic:true,missingResource,rendererCrash,invalidRenderer,originalUnchanged};
 }
 export function validateDiagnosticDenials(report){
  return report?.schema==='tm-native-diagnostic-denials-v1'&&report.synthetic===true&&report.originalUnchanged===true&&['missingResource','rendererCrash'].every(k=>{
   const v=report[k];return v?.verdict==='PASS'&&v.exitCode===1&&v.spawnFailed===false&&['safeEventFields','sentinelFree','namedFailure','shutdown','logicalStatePreserved'].every(flag=>v[flag]===true)&&Array.isArray(v.events)&&v.events.some(e=>e.event===(k==='missingResource'?'sqlite.open':'renderer.process')&&e.state==='fail')&&v.events.some(e=>e.event==='shutdown'&&e.state==='pass');
  });
+}
+export function validateInvalidRendererDenial(report){
+ const v=report?.invalidRenderer;
+ return v?.verdict==='PASS'&&v.exitCode===1&&v.spawnFailed===false&&['safeEventFields','sentinelFree','namedFailure','shutdown','logicalStatePreserved'].every(flag=>v[flag]===true)&&Array.isArray(v.events)&&v.events.some(e=>e.event==='renderer.load'&&e.state==='fail')&&v.events.some(e=>e.event==='shutdown'&&e.state==='pass')&&!v.events.some(e=>e.event==='packaged.invalid-renderer-probe'&&e.state==='fail');
 }
 export function validateAdversarialLifecycle(lifecycle){
  return lifecycle?.duplicate?.verdict==='PASS'&&lifecycle.duplicate.primary?.exitCode===0&&lifecycle.duplicate.secondary?.exitCode===0&&Number.isInteger(lifecycle.duplicate.primaryPid)&&lifecycle.duplicate.primaryPid>0&&Number.isInteger(lifecycle.duplicate.secondary?.pid)&&lifecycle.duplicate.secondary.pid>0&&lifecycle.duplicate.secondary.pid!==lifecycle.duplicate.primaryPid&&lifecycle.receipts?.[2]?.secondaryLaunches===1&&lifecycle.duplicateEvents===1&&lifecycle.startupDenial?.verdict==='PASS'&&lifecycle.startupDenial.exitCode===1&&lifecycle.startupDenial.logicalStatePreserved===true&&lifecycle.startupDenial.safeEventFields===true&&lifecycle.startupDenial.namedFailure===true;
@@ -145,7 +192,7 @@ async function runLifecycle(binary){
   fs.writeFileSync(path.join(profile,'.tm-lifecycle.json'),JSON.stringify({schema:'tm-lifecycle-v1',nonce}),{flag:'wx',mode:0o600});
   for(const stage of LIFECYCLE_STAGES){
    const env={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:stage,TM_LIFECYCLE_NONCE:nonce,ELECTRON_ENABLE_LOGGING:'1'};
-   delete env.TM_LIFECYCLE_DUPLICATE_PROBE;delete env.TM_LIFECYCLE_RENDERER_CRASH_PROBE;
+   delete env.TM_LIFECYCLE_DUPLICATE_PROBE;delete env.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete env.TM_LIFECYCLE_INVALID_RENDERER_PROBE;
    if(stage==='revoked'){
     duplicate=await runDuplicateLifecycle(binary,env,profile,nonce);
     runs.push({stage,exitCode:duplicate.primary?.exitCode??null,signal:duplicate.primary?.signal??null,failed:duplicate.verdict!=='PASS'});
@@ -161,12 +208,12 @@ async function runLifecycle(binary){
   const shutdowns=log.filter(x=>x.event==='shutdown'&&x.state==='pass').length;
   const duplicateEvents=log.filter(x=>x.event==='packaged.lifecycle.duplicate'&&x.state==='pass').length;
   if(runs.length===3&&runs.every(r=>r.exitCode===0&&!r.failed)&&validateLifecycleReceipts(receipts,nonce)&&shutdowns===3&&duplicateEvents===1){
-   const denialEnv={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:'revoked',TM_LIFECYCLE_NONCE:nonce,ELECTRON_ENABLE_LOGGING:'1'};delete denialEnv.TM_LIFECYCLE_DUPLICATE_PROBE;delete denialEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;
+   const denialEnv={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:'revoked',TM_LIFECYCLE_NONCE:nonce,ELECTRON_ENABLE_LOGGING:'1'};delete denialEnv.TM_LIFECYCLE_DUPLICATE_PROBE;delete denialEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete denialEnv.TM_LIFECYCLE_INVALID_RENDERER_PROBE;
    diagnosticDenials=runDiagnosticDenials(binary,denialEnv,profile);
    startupDenial=runStartupDenial(binary,denialEnv,profile);
   }
   const report={runs,receipts,shutdowns,duplicateEvents,duplicate,startupDenial,diagnosticDenials};
-  return {...report,verdict:runs.length===3&&runs.every(r=>r.exitCode===0&&!r.failed)&&validateLifecycleReceipts(receipts,nonce)&&shutdowns===3&&validateAdversarialLifecycle(report)&&validateDiagnosticDenials(diagnosticDenials)?'PASS':'FAIL'};
+  return {...report,verdict:runs.length===3&&runs.every(r=>r.exitCode===0&&!r.failed)&&validateLifecycleReceipts(receipts,nonce)&&shutdowns===3&&validateAdversarialLifecycle(report)&&validateDiagnosticDenials(diagnosticDenials)&&validateInvalidRendererDenial(diagnosticDenials)?'PASS':'FAIL'};
  }catch{return {verdict:'FAIL',runs,receipts,duplicate,startupDenial,diagnosticDenials,shutdowns:null};}
  finally{fs.rmSync(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 }
@@ -214,7 +261,7 @@ async function runDevelopmentHmr(root){
    await vite.build({root:desktop,configFile:path.join(desktop,'vite.'+target+'.config.ts'),logLevel:'silent',define:{MAIN_WINDOW_VITE_DEV_SERVER_URL:JSON.stringify(url)},build:{outDir:buildDir,emptyOutDir:false,target:'node22',minify:false,lib:{entry:path.join(desktop,'src',target,'index.ts'),formats:['cjs'],fileName:()=>target+'.cjs'}}});
   }
   stage='launch';
-  const env={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:'seed',TM_LIFECYCLE_NONCE:nonce};delete env.TM_LIFECYCLE_DUPLICATE_PROBE;delete env.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete env.TM_SMOKE_REPORT_PATH;delete env.ELECTRON_RUN_AS_NODE;
+  const env={...process.env,TM_LIFECYCLE_PROFILE:profile,TM_LIFECYCLE_STAGE:'seed',TM_LIFECYCLE_NONCE:nonce};delete env.TM_LIFECYCLE_DUPLICATE_PROBE;delete env.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete env.TM_LIFECYCLE_INVALID_RENDERER_PROBE;delete env.TM_SMOKE_REPORT_PATH;delete env.ELECTRON_RUN_AS_NODE;
   child=spawn(electron,[appDir,'--tm-smoke','--tm-dev-hmr-proof'],{env,stdio:'ignore',windowsHide:true});
   settled=new Promise(resolve=>{child.once('error',()=>resolve({exitCode:null,spawnFailed:true}));child.once('close',(exitCode)=>resolve({exitCode,spawnFailed:false}));});settled.then(value=>{exit=value;});
   stage='initial-renderer';const readyPath=path.join(profile,'dev-hmr-ready.json'),resultPath=path.join(profile,'dev-hmr-result.json'),readyDeadline=Date.now()+45000;
@@ -269,6 +316,14 @@ if(process.argv.includes('--self-test')){
   for(const log of ['unknown notice\n'+hmrLog,'Downloading Electron binary...\nDownloading Electron binary...\n'+hmrLog,hmrLog+'\n{}',hmrLog.replace('"spawnFailed":false','"spawnFailed":true'),hmrLog.replace('"fixtureOnly":true','"fixtureOnly":false')]){
    let rejected=false;try{parseDevelopmentHmrRunnerLog(log);}catch{rejected=true;}if(!rejected)throw new Error('Invalid HMR runner log accepted');
   }
+  const rawRow=(url,main,cases)=>({url,main,results:cases.map(([name,code])=>({name,code,correlated:code!=='UNREGISTERED',health:code==='OK'}))});
+  const deny=RAW_CHANNELS.map(channel=>[channel,'SECURITY']);
+  const raw={schema:'tm-native-raw-ipc-v1',synthetic:true,source:'packaged-binary',stateUnchanged:true,trusted:rawRow('tmapp://app/raw-ipc-proof.html',true,RAW_CASES),children:[rawRow('tmapp://app/raw-frame.html',false,deny),rawRow('tmapp://raw-fixture/raw-frame.html',false,deny)],wrongTop:rawRow('tmapp://app/raw-denied.html',true,deny)};
+  if(!validateRawIpcProof(raw)||validateRawIpcProof({...raw,stateUnchanged:false})||validateRawIpcProof({...raw,children:raw.children.slice(0,1)})||validateRawIpcProof({...raw,trusted:{...raw.trusted,results:raw.trusted.results.map(x=>x.name==='extra-argument'?{...x,code:'OK'}:x)}})||validateRawIpcProof({...raw,wrongTop:{...raw.wrongTop,results:raw.wrongTop.results.map(x=>({...x,correlated:false}))}}))throw new Error('Raw IPC receipt contract self-test failed');
+  const port={schema:'tm-port-isolation-v1',port:5173,ipv4:{address:'127.0.0.1',port:5173,family:'IPv4'},ipv6:{address:'::1',port:5173,family:'IPv6'},ipv6Unavailable:null,connections:0,trapError:false,packagedOrigin:'tmapp://app/index.html',packagedHealth:true};
+  if(!validatePortIsolation(port)||validatePortIsolation({...port,connections:1})||validatePortIsolation({...port,packagedOrigin:'http://localhost:5173/'})||validatePortIsolation({...port,ipv6:null})||!validatePortIsolation({...port,ipv6:null,ipv6Unavailable:'EAFNOSUPPORT'}))throw new Error('Port isolation receipt contract self-test failed');
+  const invalid={...denials,invalidRenderer:diag('renderer.load')};
+  if(!validateInvalidRendererDenial(invalid)||validateInvalidRendererDenial({...invalid,invalidRenderer:{...invalid.invalidRenderer,events:[...invalid.invalidRenderer.events,{event:'packaged.invalid-renderer-probe',state:'fail'}]}}))throw new Error('Invalid renderer receipt contract self-test failed');
   console.log('PASS: native smoke, lifecycle and adversarial receipt-contract cases (NO NATIVE EXECUTION CLAIMED)');
 }else if(import.meta.url===pathToFileURL(path.resolve(process.argv[1]||'')).href){
   if(process.platform!=='darwin'&&process.platform!=='win32')
@@ -290,24 +345,29 @@ if(process.argv.includes('--self-test')){
   const evidencePath=path.join(evidenceDir,'result.json');
   try {
     const smokeEnv={...process.env,ELECTRON_ENABLE_LOGGING:'1',TM_SMOKE_REPORT_PATH:evidencePath};
-    delete smokeEnv.TM_LIFECYCLE_PROFILE;delete smokeEnv.TM_LIFECYCLE_STAGE;delete smokeEnv.TM_LIFECYCLE_NONCE;delete smokeEnv.TM_LIFECYCLE_DUPLICATE_PROBE;delete smokeEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;
-    const result=spawnSync(binary,['--tm-smoke'],{
-      encoding:'utf8',timeout:120000,maxBuffer:2*1024*1024,windowsHide:true,
-      env:smokeEnv
-    });
+    delete smokeEnv.TM_LIFECYCLE_PROFILE;delete smokeEnv.TM_LIFECYCLE_STAGE;delete smokeEnv.TM_LIFECYCLE_NONCE;delete smokeEnv.TM_LIFECYCLE_DUPLICATE_PROBE;delete smokeEnv.TM_LIFECYCLE_RENDERER_CRASH_PROBE;delete smokeEnv.TM_LIFECYCLE_INVALID_RENDERER_PROBE;
+    const {result,proof}=await runWithPortTrap(binary,smokeEnv);
     let receipt=null;
     try {receipt=JSON.parse(fs.readFileSync(evidencePath,'utf8'));}catch{/* Absence is a failure. */}
-    const verified=validateNativeSmokeReceipt(receipt);
+    const portIsolation={...proof,packagedOrigin:receipt?.packagedOrigin??null,packagedHealth:receipt?.packagedHealth===true};
+    const verified=validateNativeSmokeReceipt(receipt)&&validatePortIsolation(portIsolation);
     const smokeSuccess=result.status===0&&!result.error&&verified;
+    let rawIpc=null;
+    if(smokeSuccess){
+     const rawPath=path.join(evidenceDir,'raw-ipc.json');
+     const rawResult=await spawnCaptured(binary,['--tm-smoke','--tm-raw-ipc-proof'],{...smokeEnv,TM_SMOKE_REPORT_PATH:rawPath});
+     let rawReceipt=null;try{rawReceipt=JSON.parse(fs.readFileSync(rawPath,'utf8'));}catch{/* Absence is failure. */}
+     rawIpc={exitCode:rawResult.status,spawnFailed:!!rawResult.error,receipt:rawReceipt};
+    }
     const lifecycle=smokeSuccess?await runLifecycle(binary):null;
-    const success=smokeSuccess&&lifecycle?.verdict==='PASS';
+    const success=smokeSuccess&&rawIpc?.exitCode===0&&!rawIpc.spawnFailed&&validateRawIpcProof(rawIpc.receipt)&&lifecycle?.verdict==='PASS';
     const binarySha256=crypto.createHash('sha256').update(fs.readFileSync(binary)).digest('hex');
     const sanitize=s=>String(s||'').replaceAll(os.homedir(),'<HOME>')
       .replace(/\b(?:sk-ant-|sk-proj-)[A-Za-z0-9_-]{12,}\b/gi,'<REDACTED_SECRET>');
     console.log(JSON.stringify({schema:'tm-native-smoke-runner-v3',platform:process.platform,arch:process.arch,
       binarySha256,exitCode:result.status,signal:result.signal,verdict:success?'PASS':'FAIL',
-      checks:receipt?.passed||[],failedCheck:receipt?.failed||(!verified?'missing-or-invalid-report':lifecycle?.verdict==='FAIL'?'full-process-lifecycle':null),
-      lifecycle,cockpitFlow:receipt?.cockpitFlow??null,rendererSecurity:receipt?.rendererSecurity??null,
+      checks:receipt?.passed||[],failedCheck:receipt?.failed||(!verified?'missing-or-invalid-report':lifecycle?.verdict==='FAIL'?'full-process-lifecycle':!validateRawIpcProof(rawIpc?.receipt)?'raw-ipc':null),
+      lifecycle,cockpitFlow:receipt?.cockpitFlow??null,rendererSecurity:receipt?.rendererSecurity??null,portIsolation,rawIpc,
       note:'PACKAGED, ISOLATED, SYNTHETIC test only. Other Phase 2 acceptance/reviews remain open.',
       diagnosticTail:success?null:sanitize(((result.stdout||'')+'\n'+(result.stderr||'')).slice(-1200)),
       error:result.error?sanitize(result.error.message):null},null,2));

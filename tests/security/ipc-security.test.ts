@@ -124,3 +124,45 @@ test('actual outer IPC boundary refuses extra raw arguments and preserves a safe
  logThrows=true;const noLog=await handler({...trusted,sender:{id:12}},request);assert.equal(noLog.ok,false);if(!noLog.ok)assert.equal(noLog.error.code,'SECURITY');assert.equal(calls,1);
  assert.throws(()=>register('unregistered.synthetic',async()=>null),/allowlist/);assert.equal(handlers.has('unregistered.synthetic'),false);
 });
+
+test('fixed raw proof program exercises the actual outer boundary against every channel and all planned frame cases locally',async()=>{
+ const {rawProofPreload,rawProofPage,RAW_PROOF_URL,RAW_DENIED_URL,RAW_FRAME_URLS,RAW_TRUSTED_CASES,captureRawProofState}=await import('../e2e/cockpit-flow.spec');
+ const {createIpcBoundary,registerFoundationHandlers}=await import('../../apps/desktop/src/main/ipc/register');
+ const {ALL_CHANNELS}=await import('../../packages/contracts/src/ipc/channel-map');
+ const {LocalStore}=await import('../../packages/persistence-sqlite/src/connection');
+ const {randomUUID}=await import('node:crypto');const {runInNewContext}=await import('node:vm');
+ const fs=await import('node:fs');const os=await import('node:os');const path=await import('node:path');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-raw-plan-'));
+ const db=new LocalStore(path.join(root,'local-data','db','app.sqlite'));
+ try{
+  db.initializeFictionalCompany();const projectId=db.createProject({code:'RAW-PROOF-CONTROL',customer:'Synthetic',siteAddress:'Site'});
+  const baseline=captureRawProofState(db.db,root),primary={id:1};
+  const top={url:RAW_PROOF_URL,top:undefined as import('../../apps/desktop/src/main/ipc/sender-guard').FrameLike|undefined};top.top=top;
+  type Event=import('../../apps/desktop/src/main/ipc/sender-guard').SenderEventLike;
+  const handlers=new Map<string,(event:Event,...args:unknown[])=>Promise<unknown>>();let unauthorizedDispatches=0;
+  const register=createIpcBoundary({handle:(ch,h)=>handlers.set(ch,h)},{primary,url:RAW_PROOF_URL,record:()=>{}});
+  registerFoundationHandlers({handle:register},{primary,url:RAW_PROOF_URL,getStore:()=>db});
+  for(const channel of ALL_CHANNELS)if(!handlers.has(channel))register(channel,async()=>{unauthorizedDispatches++;throw new Error('Unexpected dispatch');});
+  assert.deepEqual([...handlers.keys()].sort(),[...ALL_CHANNELS].sort());
+  const script=rawProofPreload(projectId);
+  assert.ok(!script.includes('contextBridge'));assert.ok(!script.includes('exposeInMainWorld'));
+  assert.equal(rawProofPage('https://example.invalid/'),null);assert.equal(rawProofPage('tmapp://app/index.html'),null);
+  const run=async(url:string,main:boolean,event:Event)=>{
+   let action:(()=>Promise<void>)|undefined,receipt='';
+   const invoke=(channel:string,...args:unknown[])=>{
+    const h=handlers.get(channel);if(!h)return Promise.reject(new Error('No handler registered for synthetic channel'));
+    // Transfer into the host realm as Electron structured clone does, preserving cycles.
+    return h(event,...structuredClone(args));
+   };
+   runInNewContext(script,{require:(name:string)=>{assert.equal(name,'electron');return {ipcRenderer:{invoke}};},crypto:{randomUUID},location:{href:url},process:{isMainFrame:main},window:{addEventListener:(name:string,fn:()=>Promise<void>)=>{assert.equal(name,'DOMContentLoaded');assert.equal(action,undefined);action=fn;}},document:{documentElement:{setAttribute:(name:string,value:string)=>{assert.equal(name,'data-tm-raw-receipt');receipt=value;}}}});
+   assert.ok(action);await action();return JSON.parse(receipt) as {url:string;main:boolean;results:Array<{name:string;code:string;correlated:boolean;health?:boolean}>};
+  };
+  const trusted=await run(RAW_PROOF_URL,true,{sender:primary,senderFrame:top});
+  assert.deepEqual(trusted.results.map(x=>[x.name,x.code]),RAW_TRUSTED_CASES);assert.equal(trusted.results[0].health,true);
+  for(const url of RAW_FRAME_URLS){const r=await run(url,false,{sender:primary,senderFrame:{url,top}});assert.deepEqual(r.results.map(x=>x.name),[...ALL_CHANNELS]);assert.ok(r.results.every(x=>x.code==='SECURITY'&&x.correlated));}
+  const denied={url:RAW_DENIED_URL,top:undefined as import('../../apps/desktop/src/main/ipc/sender-guard').FrameLike|undefined};denied.top=denied;
+  const r=await run(RAW_DENIED_URL,true,{sender:primary,senderFrame:denied});assert.ok(r.results.every(x=>x.code==='SECURITY'&&x.correlated));
+  assert.equal(unauthorizedDispatches,0);assert.equal(captureRawProofState(db.db,root),baseline);
+  db.createProject({code:'DETECT-CHANGE',customer:'Synthetic',siteAddress:'Site'});assert.notEqual(captureRawProofState(db.db,root),baseline);
+ }finally{db.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

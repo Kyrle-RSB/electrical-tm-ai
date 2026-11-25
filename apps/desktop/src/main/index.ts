@@ -20,7 +20,7 @@ import {registerBackupHandlers} from './ipc/handlers/backups';
 import {registerBrandingHandlers} from './ipc/handlers/settings';
 import {createNativeFileDialogs} from './os/file-dialogs';
 import {prepareApplicationPaths} from './os/paths';
-import {hashSyntheticCensusFile,runPackagedCockpitFlow,runPackagedSecurityFlow,runDevelopmentHmrFlow} from '../../../../tests/e2e/cockpit-flow.spec';
+import {runPackagedCockpitFlow,runPackagedSecurityFlow,runDevelopmentHmrFlow,captureRawProofState,rawProofPage,rawProofPreload,collectRawIpcProof,RAW_PROOF_URL} from '../../../../tests/e2e/cockpit-flow.spec';
 import {storeImmutablePdf} from '../../../../packages/pdf/src/common/stored-pdf';
 import {LocalOperationQueue} from '../../../../packages/application/src/use-cases/backup-restore';
 import {createCockpitWindow} from './window';
@@ -32,6 +32,7 @@ protocol.registerSchemesAsPrivileged([{scheme:'tmapp',privileges:{standard:true,
 // verified Phase 1 Mac data. Do not switch to a production data root before migration/backup proofs.
 const isPackagedSmoke=process.argv.includes('--tm-smoke');
 const lifecycleProof=isPackagedSmoke?resolveLifecycleProof(process.env):null;
+const rawIpcProof=isPackagedSmoke&&process.argv.includes('--tm-raw-ipc-proof');
 const P2_TEST_PROFILE=isPackagedSmoke
   ? lifecycleProof?.profile??fs.mkdtempSync(path.join(os.tmpdir(),'electrical-tm-packaged-smoke-'))
   : path.join(app.getPath('appData'),'ElectricalTMCockpit-P2-Internal');
@@ -62,6 +63,7 @@ const DEV_URL=typeof MAIN_WINDOW_VITE_DEV_SERVER_URL==='string'?MAIN_WINDOW_VITE
 async function run(){
   recorder.record('renderer.target','begin');
   try{currentUrl=selectRendererUrl(app.isPackaged,DEV_URL);}catch(error){recorder.record('renderer.target','fail');throw error;}
+  if(rawIpcProof){if(!app.isPackaged||lifecycleProof||DEV_URL)throw new Error('Raw IPC proof requires a fresh isolated packaged profile');currentUrl=RAW_PROOF_URL;}
   recorder.record('renderer.target','pass');
   recorder.record('sqlite.open','begin');
   fs.mkdirSync(DATA_ROOT,{recursive:true,mode:0o700});
@@ -71,6 +73,7 @@ async function run(){
   recorder.record('sqlite.open','pass');
   const rendererRoot=path.resolve(app.getAppPath(),'.vite','renderer','main_window');
   if(!DEV_URL)protocol.handle('tmapp',request=>{
+    if(rawIpcProof){const html=rawProofPage(request.url);return html===null?new Response('Not found',{status:404}):new Response(html,{headers:{'content-type':'text/html; charset=utf-8'}});}
     const url=new URL(request.url);
     if(url.hostname!=='app')return new Response('Not found',{status:404});
     const requestPath=url.pathname==='/'?'/index.html':url.pathname;
@@ -78,7 +81,18 @@ async function run(){
     if(!abs.startsWith(rendererRoot+path.sep))return new Response('Forbidden',{status:403});
     return net.fetch(pathToFileURL(abs).toString());
   });
-  mainWindow=createCockpitWindow(__dirname,isPackagedSmoke);
+  let rawBaseline:string|undefined;
+  if(rawIpcProof){
+    const id=store.createProject({code:'RAW-PROOF-CONTROL',customer:'Synthetic control',siteAddress:'Synthetic site'});
+    rawBaseline=captureRawProofState(store.db,P2_TEST_PROFILE);
+    const preload=path.join(P2_TEST_PROFILE,'raw-proof.cjs');fs.writeFileSync(preload,rawProofPreload(id),{flag:'wx',mode:0o600});
+    // Separate proof-only window. The normal production cockpit retains its unchanged preload/CSP.
+    mainWindow=new BrowserWindow({show:false,webPreferences:{preload,contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,webviewTag:false,nodeIntegrationInSubFrames:true}});
+    mainWindow.webContents.setWindowOpenHandler(()=>({action:'deny'}));
+    mainWindow.webContents.on('will-navigate',event=>event.preventDefault());
+    mainWindow.webContents.session.setPermissionCheckHandler(()=>false);
+    mainWindow.webContents.session.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false));
+  }else mainWindow=createCockpitWindow(__dirname,isPackagedSmoke);
   const win=mainWindow;
   const rendererFailure=createRendererFailureGate({record:(event,state)=>recorder.record(event,state),fail:()=>shutdown.fail()});
   win.webContents.on('did-fail-load',(_event,code,_description,_url,isMainFrame)=>{if(isMainFrame&&code!==-3)rendererFailure.fail('renderer.load');});
@@ -130,9 +144,19 @@ async function run(){
   safeHandle(CHANNELS.fakeSecretRemove,(e,r)=>operationQueue.run(async()=>{
     assertNoPayload(guard(e,r));await secret.remove();return {removed:true};
   }));
-  await mainWindow.loadURL(currentUrl);
+  const loadTarget=lifecycleProof?.stage==='revoked'&&process.env.TM_LIFECYCLE_INVALID_RENDERER_PROBE==='1'?'tmapp://app/nonexistent-synthetic-renderer.html':currentUrl;
+  try{await mainWindow.loadURL(loadTarget);}catch(error){rendererFailure.fail('renderer.load');throw error;}
+  if(loadTarget!==currentUrl){recorder.record('packaged.invalid-renderer-probe','fail');throw new Error('Synthetic invalid renderer did not reject');}
   rendererFailure.assertHealthy();
   recorder.record('renderer.load','pass');
+  if(rawIpcProof){
+    if(rawBaseline===undefined)throw new Error('Missing synthetic raw IPC baseline');
+    const report=await collectRawIpcProof(win,()=>captureRawProofState(store.db,P2_TEST_PROFILE),rawBaseline);
+    const receiptPath=process.env.TM_SMOKE_REPORT_PATH;
+    if(!receiptPath||!path.isAbsolute(receiptPath))throw new Error('Missing native raw proof receipt destination');
+    fs.writeFileSync(receiptPath,JSON.stringify(report)+'\n',{flag:'wx',mode:0o600});
+    recorder.record('packaged.raw-ipc','info');app.quit();return;
+  }
   if(isPackagedSmoke&&process.argv.includes('--tm-dev-hmr-proof')){
     if(app.isPackaged||!DEV_URL||!isPackagedSmoke||lifecycleProof?.stage!=='seed')throw new Error('Development HMR proof requires its isolated marked profile and development server');
     const report=await runDevelopmentHmrFlow(win,lifecycleProof.nonce,before=>fs.writeFileSync(path.join(P2_TEST_PROFILE,'dev-hmr-ready.json'),JSON.stringify({nonce:lifecycleProof.nonce,before}),{flag:'wx',mode:0o600}));
@@ -197,6 +221,7 @@ async function run(){
     let currentCheck='packaging';
     let succeeded=false;
     let cockpitFlow:Awaited<ReturnType<typeof runPackagedCockpitFlow>>|null=null;
+    let packagedHealth=false,packagedOrigin:string|null=null;
     let rendererSecurity:Awaited<ReturnType<typeof runPackagedSecurityFlow>>|null=null;
     try {
       if(!app.isPackaged||DEV_URL)throw new Error('Not an independent packaged runtime');
@@ -208,23 +233,11 @@ async function run(){
           document.body?.textContent?.includes('Local foundation')};
       })()`);
       if(!probe?.ok)throw new Error('Packaged renderer or IPC failed');
+      packagedHealth=true;packagedOrigin=win.webContents.getURL();
+      if(packagedOrigin!=='tmapp://app/index.html')throw new Error('Unexpected packaged renderer origin');
       // Disposable project and full logical mutation census, never production data.
       const securityProject=store.createProject({code:'SECURITY-CONTROL-001',customer:'Synthetic security control',siteAddress:'Synthetic site'});
-      const snapshot=()=>{
-        const rows={projects:store.db.prepare('SELECT * FROM projects ORDER BY id').all(),details:store.db.prepare('SELECT * FROM project_details ORDER BY project_id').all(),
-          business:store.db.prepare('SELECT * FROM business_profiles ORDER BY id').all(),settings:store.db.prepare('SELECT * FROM business_settings ORDER BY business_id').all(),
-          logo:store.db.prepare('SELECT * FROM business_logo_assets ORDER BY business_id').all(),audits:store.db.prepare('SELECT * FROM audit_events ORDER BY rowid').all(),receipts:store.db.prepare('SELECT * FROM operation_receipts ORDER BY rowid').all()};
-        const files:Array<[string,string]>=[];
-        const visit=(relative:string)=>{
-          const abs=path.join(P2_TEST_PROFILE,relative);if(!fs.existsSync(abs))return;
-          const stat=fs.lstatSync(abs);if(stat.isSymbolicLink())throw new Error('Unexpected synthetic security probe alias');
-          if(stat.isDirectory()){files.push([relative,'directory']);for(const name of fs.readdirSync(abs).sort())visit(path.join(relative,name));}
-          else if(stat.isFile())files.push([relative,hashSyntheticCensusFile(abs,stat)]);
-          else throw new Error('Unexpected synthetic security probe file');
-        };
-        for(const relative of ['local-data/vault','local-data/artifacts','local-data/migration-rescues','settings','secrets'])visit(relative);
-        return JSON.stringify({rows,files});
-      };
+      const snapshot=()=>captureRawProofState(store.db,P2_TEST_PROFILE);
       // A distinct native WebContents with the same preload and URL must still be denied.
       const foreign=createCockpitWindow(__dirname,true);
       let navigationAttempts=0;
@@ -333,7 +346,7 @@ async function run(){
       recorder.record('packaged.smoke.'+currentCheck,'fail');
     }
     const report={schema:'tm-native-smoke-v3',passed:checks,failed:succeeded?null:currentCheck,
-      source:'packaged-binary',synthetic:true,cockpitFlow,rendererSecurity};
+      source:'packaged-binary',synthetic:true,cockpitFlow,rendererSecurity,packagedOrigin,packagedHealth};
     // Windows GUI executables do not guarantee that stdout is attached to a terminal.
     // The native runner supplies a new, unpredictable, temp-only evidence path.
     const receiptPath=process.env.TM_SMOKE_REPORT_PATH;

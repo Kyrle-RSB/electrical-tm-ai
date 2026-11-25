@@ -1,3 +1,6 @@
+import path from 'node:path';
+import type {DatabaseSync} from 'node:sqlite';
+import {ALL_CHANNELS,CHANNELS} from '../../packages/contracts/src/ipc/channel-map';
 import fs from 'node:fs';
 import {createHash} from 'node:crypto';
 /** Executed inside the isolated --tm-smoke packaged runtime on native hosts only.
@@ -204,4 +207,100 @@ export async function runDevelopmentHmrFlow(win:SecurityWindow,nonce:string,read
  const a=after as typeof b;
  if(a.value!=='updated-'+nonce||a.title!==b.title||a.csp!==expectedCsp||a.health!==true||a.requireAbsent!==true||a.processAbsent!==true||a.marker!==nonce||win.webContents.getURL()!==url.href)throw new Error('Development proof hot-update observations invalid');
  return {schema:'tm-dev-hmr-v1',synthetic:true,nonce,before,after,documentPreserved:true,loopbackOrigin:true};
+}
+
+/** Read every synthetic table and all managed evidence roots, not diagnostics or Chromium caches. */
+export function captureRawProofState(db:DatabaseSync,profile:string):string{
+ const rows:Record<string,unknown>={};
+ for(const table of db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()){
+  const name=table.name;if(typeof name!=='string'||!/^[a-z][a-z0-9_]*$/.test(name))throw new Error('Unexpected synthetic schema identifier');
+  rows[name]=db.prepare('SELECT * FROM "'+name+'" ORDER BY rowid').all();
+ }
+ const files:Array<[string,string]>=[];
+ const visit=(relative:string)=>{
+  const file=path.join(profile,relative);let stat:fs.Stats;
+  try{stat=fs.lstatSync(file);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
+  if(stat.isSymbolicLink())throw new Error('Unexpected synthetic proof alias');
+  if(stat.isDirectory()){files.push([relative,'directory']);for(const name of fs.readdirSync(file).sort())visit(path.join(relative,name));}
+  else if(stat.isFile())files.push([relative,hashSyntheticCensusFile(file,stat)]);
+  else throw new Error('Unexpected synthetic proof file');
+ };
+ for(const root of ['local-data/vault','local-data/artifacts','local-data/migration-rescues','settings','secrets'])visit(root);
+ return JSON.stringify({rows,files});
+}
+export const RAW_PROOF_URL='tmapp://app/raw-ipc-proof.html';
+export const RAW_DENIED_URL='tmapp://app/raw-denied.html';
+export const RAW_FRAME_URLS=Object.freeze(['tmapp://app/raw-frame.html','tmapp://raw-fixture/raw-frame.html']);
+export const RAW_TRUSTED_CASES=Object.freeze([
+ ['valid-ping','OK'],['replayed-ping','SECURITY'],['wrong-version','VALIDATION'],['bad-envelope','VALIDATION'],['missing-argument','VALIDATION'],['extra-argument','VALIDATION'],['oversized','VALIDATION'],['cyclic','VALIDATION'],['invalid-mutation','VALIDATION'],['replayed-altered-mutation','SECURITY'],['unknown-channel','UNREGISTERED']
+] as const);
+/** Synthetic page, separate from production HTML. No remote origin, script or network resource. */
+export function rawProofPage(url:string):string|null{
+ if(url===RAW_PROOF_URL)return '<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; frame-src tmapp://app tmapp://raw-fixture; base-uri \'none\'; form-action \'none\'"></head><body><iframe src="'+RAW_FRAME_URLS[0]+'"></iframe><iframe src="'+RAW_FRAME_URLS[1]+'"></iframe></body></html>';
+ if(url===RAW_DENIED_URL||RAW_FRAME_URLS.includes(url))return '<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; base-uri \'none\'; form-action \'none\'"></head><body>Synthetic IPC frame</body></html>';
+ return null;
+}
+/** A fixed preload program, generated only for the disposable raw proof. No contextBridge or
+ * input listener: no callable transport is installed in either the main or isolated page world. */
+export function rawProofPreload(projectId:string):string{
+ if(!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(projectId))throw new Error('Unexpected synthetic project identity');
+ const channels=JSON.stringify(ALL_CHANNELS),map=JSON.stringify(CHANNELS),id=JSON.stringify(projectId);
+ return `const {ipcRenderer}=require('electron');
+ const channels=${channels},c=${map},projectId=${id};
+ const mainUrl=${JSON.stringify(RAW_PROOF_URL)},deniedUrl=${JSON.stringify(RAW_DENIED_URL)},frames=${JSON.stringify(RAW_FRAME_URLS)};
+ const project={code:'RAW-DENIED',customer:'Synthetic denied',siteAddress:'Synthetic site'};
+ const profile={legalName:'Synthetic denied',tradeName:'',phone:'',email:'',mailingAddress:'',taxId:'',contractorLicense:''};
+ const payloads={[c.projectAdd]:project,[c.projectEdit]:{id:projectId,...project},[c.projectDetails]:{id:projectId,name:'Denied',billingAddress:'Denied',notes:'Denied'},[c.projectStatus]:{id:projectId,status:'archived'},[c.businessUpdate]:profile,[c.fakeSecretStore]:'TEST-FAKE-EXAMPLE'};
+ const make=(payload=null)=>({requestId:crypto.randomUUID(),version:1,payload});
+ const observe=async(name,channel,args)=>{
+  const id=args[0]?.requestId;
+  try{
+   const result=await ipcRenderer.invoke(channel,...args);
+   const correlated=typeof result?.requestId==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(result.requestId)&&(!id||id===result.requestId);
+   if(result?.ok===true)return {name,code:'OK',correlated,health:result.data?.status==='ok'&&result.data?.foundation===true};
+   return {name,code:result?.ok===false&&result.error?.correlationId===result.requestId?result.error.code:'INVALID_RESPONSE',correlated};
+  }catch(error){return {name,code:channel==='tm.proof.unregistered'&&/No handler registered/.test(String(error))?'UNREGISTERED':'TRANSPORT_ERROR',correlated:false};}
+ };
+ window.addEventListener('DOMContentLoaded',async()=>{
+  const url=location.href,main=process.isMainFrame===true,results=[];
+  if(url===mainUrl&&main){
+   const ping=make(),invalid=make(null),cyclic={};cyclic.self=cyclic;
+   results.push(await observe('valid-ping',c.ping,[ping]));
+   results.push(await observe('replayed-ping',c.ping,[ping]));
+   results.push(await observe('wrong-version',c.projectAdd,[{...make(project),version:2}]));
+   results.push(await observe('bad-envelope',c.projectAdd,[{...make(project),extra:true}]));
+   results.push(await observe('missing-argument',c.projectAdd,[]));
+   results.push(await observe('extra-argument',c.projectAdd,[make(project),'extra']));
+   results.push(await observe('oversized',c.projectAdd,[make({...project,customer:'x'.repeat(18000)})]));
+   results.push(await observe('cyclic',c.projectAdd,[make(cyclic)]));
+   results.push(await observe('invalid-mutation',c.projectAdd,[invalid]));
+   results.push(await observe('replayed-altered-mutation',c.projectAdd,[{...invalid,payload:project}]));
+   results.push(await observe('unknown-channel','tm.proof.unregistered',[make(project)]));
+  }else if((frames.includes(url)&&!main)||(url===deniedUrl&&main)){
+   for(const channel of channels)results.push(await observe(channel,channel,[make(payloads[channel]??null)]));
+  }else return;
+  document.documentElement.setAttribute('data-tm-raw-receipt',JSON.stringify({url,main,results}));
+ },{once:true});`;
+}
+interface RawProofFrame{url:string;frames:RawProofFrame[];executeJavaScript(code:string):Promise<unknown>}
+interface RawProofWindow{webContents:{mainFrame:RawProofFrame};loadURL(url:string):Promise<void>}
+/** Actual frame objects come from Electron; renderer receipt alone cannot identify a subframe. */
+export async function collectRawIpcProof(win:RawProofWindow,snapshot:()=>string,baseline:string){
+ const read=async(frame:RawProofFrame,expectedUrl:string)=>{
+  if(frame.url!==expectedUrl)throw new Error('Native raw proof frame URL mismatch');
+  const deadline=Date.now()+15000;
+  while(Date.now()<deadline){
+   const text=await frame.executeJavaScript("document.documentElement.getAttribute('data-tm-raw-receipt')");
+   if(typeof text==='string')return JSON.parse(text) as unknown;
+   await new Promise(resolve=>setTimeout(resolve,50));
+  }
+  throw new Error('Native raw proof frame did not return receipt');
+ };
+ const top=win.webContents.mainFrame,trusted=await read(top,RAW_PROOF_URL);
+ const children=[];
+ for(const url of RAW_FRAME_URLS){const matches=top.frames.filter(f=>f.url===url);if(matches.length!==1)throw new Error('Missing unique native IPC subframe');children.push(await read(matches[0],url));}
+ const firstUnchanged=snapshot()===baseline;
+ await win.loadURL(RAW_DENIED_URL);
+ const wrongTop=await read(win.webContents.mainFrame,RAW_DENIED_URL);
+ return {schema:'tm-native-raw-ipc-v1',synthetic:true,source:'packaged-binary',trusted,children,wrongTop,stateUnchanged:firstUnchanged&&snapshot()===baseline};
 }
