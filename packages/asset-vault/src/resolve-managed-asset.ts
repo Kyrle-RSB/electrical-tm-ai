@@ -9,12 +9,44 @@ export function resolveManagedImage(vaultRoot:string,locator:string):string{
  return target;
 }
 
-/** The application owns these two directory levels; do not follow a redirected root or child. */
-export async function assertManagedImageDirectory(root:string,create=false):Promise<void>{
+/** Bind the owned directories for the entire operation, including the final check. */
+export async function assertManagedImageDirectory(root:string,create=false):Promise<()=>Promise<void>>{
+ const parents=new Map<string,fs.Stats>();
  for(const directory of [path.resolve(root),path.resolve(root,'images')]){
   if(create)await fs.promises.mkdir(directory,{recursive:true,mode:0o700});
   const stat=await fs.promises.lstat(directory);
   if(!stat.isDirectory()||stat.isSymbolicLink())throw new Error('Unsafe managed image directory');
+  parents.set(directory,stat);
+ }
+ return async()=>{for(const [directory,identity] of parents){const named=await fs.promises.lstat(directory);if(!named.isDirectory()||named.isSymbolicLink()||named.dev!==identity.dev||named.ino!==identity.ino)throw new Error('Unsafe managed image directory changed');}};
+}
+/** Exclusive import with descriptor readback and identity-bound failure cleanup. */
+export async function writeManagedImage(file:string,bytes:Buffer,checkParent:()=>Promise<void>):Promise<void>{
+ let identity:fs.Stats|undefined;
+ try{
+  await checkParent();
+  const handle=await fs.promises.open(file,'wx+',0o600);
+  try{
+   identity=await handle.stat();
+   if(!identity.isFile()||identity.nlink!==1)throw new Error('Unsafe new managed image');
+   await handle.writeFile(bytes);await handle.sync();
+   const written=await handle.stat();
+   if(!written.isFile()||written.nlink!==1||written.size!==bytes.length)throw new Error('Managed image changed during import');
+   const readback=Buffer.alloc(bytes.length);let offset=0;
+   while(offset<readback.length){const {bytesRead}=await handle.read(readback,offset,readback.length-offset,offset);if(!bytesRead)throw new Error('Managed image changed during import');offset+=bytesRead;}
+   await checkParent();
+   const after=await handle.stat(),named=await fs.promises.lstat(file);
+   if(!readback.equals(bytes)||!after.isFile()||after.nlink!==1||after.size!==bytes.length||after.mtimeMs!==written.mtimeMs||after.ctimeMs!==written.ctimeMs||!named.isFile()||named.isSymbolicLink()||named.nlink!==1||named.dev!==identity.dev||named.ino!==identity.ino||named.size!==after.size||named.mtimeMs!==after.mtimeMs||named.ctimeMs!==after.ctimeMs)throw new Error('Managed image changed during import');
+  }finally{await handle.close();}
+ }catch(error){
+  if(identity){
+   try{
+    await checkParent();const named=await fs.promises.lstat(file);
+    if(!named.isFile()||named.isSymbolicLink()||named.nlink!==1||named.dev!==identity.dev||named.ino!==identity.ino)throw new Error('Unsafe managed image cleanup identity');
+    await fs.promises.rm(file);
+   }catch(cleanup){if((cleanup as NodeJS.ErrnoException).code!=='ENOENT')throw new AggregateError([error,cleanup],'Image import failed; unverified file retained for recovery');}
+  }
+  throw error;
  }
 }
 export const MAX_IMAGE_BYTES=12*1024*1024;

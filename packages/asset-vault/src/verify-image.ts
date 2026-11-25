@@ -4,8 +4,10 @@ import {resolveManagedImage,assertManagedImageDirectory,readRegularImage} from '
 export async function verifyManagedImage(root:string,relativePath:string,expectedSha256:string):Promise<{mime:string;bytes:number}>{
  if(!/^[a-f0-9]{64}$/i.test(expectedSha256))throw new Error('Invalid expected image hash');
  const file=resolveManagedImage(root,relativePath);
- await assertManagedImageDirectory(root);
+ const checkParent=await assertManagedImageDirectory(root);
+ await checkParent();
  const bytes=await readRegularImage(file);
+ await checkParent();
  if(sha256Bytes(bytes)!==expectedSha256.toLowerCase())throw new Error('Managed image hash mismatch');
  const mime=validateImageBytes(bytes);
  if(relativePath.endsWith('.png')&&mime!=='image/png'||relativePath.endsWith('.jpg')&&mime!=='image/jpeg')throw new Error('Managed image extension mismatch');

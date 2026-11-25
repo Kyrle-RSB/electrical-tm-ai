@@ -23,3 +23,5 @@ For synthetic lifecycle proof runs, the runner-created POSIX temp directory must
 If a backup changes after verification, select and verify it again rather than bypassing confirmation. A detected unsafe PDF cleanup retains the staged file and preserves the original failure; inspect both before removing any retained temporary export.
 
 A packaged application with an unexpected development URL fails before opening its renderer. Do not work around this by starting a Vite server or changing trust settings. Use a verified internal candidate and preserve safe startup diagnostics for investigation.
+
+If a synthetic managed image import is interrupted or disk space is exhausted, the app refuses to acknowledge the import; it removes only the incomplete file it can still identify as its own. If identity changes make cleanup unsafe, the unverified file is retained for review, not treated as an imported receipt. Restore available disk space and retry from the original source. Do not manually remove an issued original or an unrelated file to recover a failed import or credential update.

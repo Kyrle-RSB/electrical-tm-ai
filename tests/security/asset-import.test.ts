@@ -98,3 +98,33 @@ test('receipt import and managed verification reject multiply-linked image ident
   assert.deepEqual(fs.readFileSync(alias),fs.readFileSync(selected));
  }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('failed partial image import removes only its own incomplete file and retry verifies original content',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-image-partial-')),selected=path.join(root,'picked.png'),vault=path.join(root,'vault');
+ const nativeOpen=fs.promises.open,nativeWrite=fs.promises.writeFile;
+ try{
+  fs.copyFileSync('tests/fixtures/synthetic-receipt.png',selected);let injected=0;
+  fs.promises.writeFile=(async(...args:Parameters<typeof nativeWrite>)=>{
+   if(String(args[0]).includes(path.sep+'images'+path.sep)){injected++;await nativeWrite(args[0],Buffer.from('partial'),args[2]);throw Object.assign(new Error('Synthetic image disk full'),{code:'ENOSPC'});}return nativeWrite(...args);
+  }) as typeof nativeWrite;
+  fs.promises.open=(async(...args:Parameters<typeof nativeOpen>)=>{
+   const handle=await nativeOpen(...args);
+   if(String(args[0]).includes(path.sep+'images'+path.sep)&&String(args[1]).startsWith('wx')){const write=handle.writeFile.bind(handle);handle.writeFile=(async()=>{injected++;await write(Buffer.from('partial'));throw Object.assign(new Error('Synthetic image disk full'),{code:'ENOSPC'});}) as typeof handle.writeFile;}
+   return handle;
+  }) as typeof nativeOpen;
+  await assert.rejects(importImageFromPickedFile(selected,vault),/disk full/);assert.equal(injected,1);assert.deepEqual(fs.readdirSync(path.join(vault,'images')),[]);
+  fs.promises.open=nativeOpen;fs.promises.writeFile=nativeWrite;
+  const receipt=await importImageFromPickedFile(selected,vault);assert.equal((await verifyManagedImage(vault,receipt.relativePath,receipt.sha256)).bytes,fs.statSync(selected).size);
+ }finally{fs.promises.open=nativeOpen;fs.promises.writeFile=nativeWrite;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('image import rejects a redirected directory observed between vault validation and write',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-image-dir-race-')),selected=path.join(root,'picked.png'),vault=path.join(root,'vault'),images=path.join(vault,'images'),parked=path.join(vault,'parked'),outside=path.join(root,'outside');
+ const nativeLstat=fs.promises.lstat;
+ try{
+  fs.copyFileSync('tests/fixtures/synthetic-receipt.png',selected);fs.mkdirSync(images,{recursive:true});fs.mkdirSync(outside);let swapped=false;
+  fs.promises.lstat=(async(...args:Parameters<typeof nativeLstat>)=>{const st=await nativeLstat(...args);if(!swapped&&String(args[0])===images){swapped=true;fs.renameSync(images,parked);fs.symlinkSync(outside,images,process.platform==='win32'?'junction':'dir');}return st;}) as typeof nativeLstat;
+  let failure:unknown;try{await importImageFromPickedFile(selected,vault);}catch(error){failure=error;}
+  assert.equal(swapped,true);assert.ok(failure instanceof Error);assert.match(failure.message,/Unsafe managed image directory/);assert.deepEqual(fs.readdirSync(outside),[]);assert.deepEqual(fs.readdirSync(parked),[]);
+ }finally{fs.promises.lstat=nativeLstat;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

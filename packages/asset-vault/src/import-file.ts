@@ -1,8 +1,7 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 export type ImportedImage = {id:string;relativePath:string; sha256:string; mime:'image/png'|'image/jpeg'; size:number};
-import {assertManagedImageDirectory,readRegularImage,MAX_IMAGE_BYTES} from './resolve-managed-asset';
+import {assertManagedImageDirectory,readRegularImage,MAX_IMAGE_BYTES,writeManagedImage} from './resolve-managed-asset';
 const PNG_SIGNATURE=Buffer.from([137,80,78,71,13,10,26,10]);
 const CRC_TABLE=Uint32Array.from({length:256},(_,index)=>{
  let value=index;for(let bit=0;bit<8;bit++)value=(value>>>1)^((value&1)?0xedb88320:0);return value>>>0;
@@ -83,7 +82,7 @@ export async function importImageFromPickedFile(source:string, vaultRoot:string)
   const ext=mime==='image/png'?'png':'jpg';
   // Portable vault locators are always POSIX paths, even on Windows.
   const id=crypto.randomUUID(), relativePath=`images/${id}.${ext}`;
-  await assertManagedImageDirectory(vaultRoot,true);
-  await fs.promises.writeFile(path.join(vaultRoot,relativePath),bytes,{flag:'wx',mode:0o600});
+  const checkParent=await assertManagedImageDirectory(vaultRoot,true);
+  await writeManagedImage(path.join(vaultRoot,relativePath),bytes,checkParent);
   return {id,relativePath,sha256,mime,size:bytes.length};
 }

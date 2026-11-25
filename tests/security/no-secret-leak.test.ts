@@ -106,3 +106,29 @@ test('credential rotation succeeds for an unchanged record and fails closed if r
   await assert.rejects(interrupted.readFakeToken(),/credential storage file changed/);assert.equal(revoked,true);assert.equal(await original.exists(),false);assert.deepEqual(fs.readdirSync(root),[]);
  }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('credential replacement refuses modified staged ciphertext and preserves prior bytes',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-secret-stage-')),file=path.join(root,'probe.bin'),nativeOpen=fs.promises.open;
+ try{
+  const vault=new ProtectedSecretFile(demoProvider,file);await vault.storeFakeToken('TEST-FAKE-original');const prior=fs.readFileSync(file);let modified=false;
+  fs.promises.open=(async(...args:Parameters<typeof nativeOpen>)=>{
+   const handle=await nativeOpen(...args);
+   if(String(args[0]).startsWith(file+'.new-')){const write=handle.writeFile.bind(handle);handle.writeFile=(async(data:Buffer)=>{await write(data);const changed=Buffer.from(data);changed[0]^=1;await write(changed,{encoding:'utf8'});await handle.truncate(data.length);await handle.write(changed,0,changed.length,0);modified=true;}) as typeof handle.writeFile;}
+   return handle;
+  }) as typeof nativeOpen;
+  let failure:unknown;try{await vault.storeFakeToken('TEST-FAKE-replacement');}catch(error){failure=error;}
+  assert.equal(modified,true);assert.ok(failure instanceof Error);assert.match(failure.message,/staged credential|ciphertext changed/i);assert.deepEqual(fs.readFileSync(file),prior);assert.deepEqual(fs.readdirSync(root),['probe.bin']);
+ }finally{fs.promises.open=nativeOpen;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('credential staging collision never deletes a file this operation did not create',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-secret-collision-')),file=path.join(root,'probe.bin'),nativeOpen=fs.promises.open;
+ try{
+  const vault=new ProtectedSecretFile(demoProvider,file);await vault.storeFakeToken('TEST-FAKE-original');const prior=fs.readFileSync(file);let staged='';
+  fs.promises.open=(async(...args:Parameters<typeof nativeOpen>)=>{
+   if(String(args[0]).startsWith(file+'.new-')){staged=String(args[0]);fs.writeFileSync(staged,'SYNTHETIC UNRELATED CONTENT',{flag:'wx'});}
+   return nativeOpen(...args);
+  }) as typeof nativeOpen;
+  await assert.rejects(vault.storeFakeToken('TEST-FAKE-replacement'),{code:'EEXIST'});assert.ok(staged);assert.equal(fs.readFileSync(staged,'utf8'),'SYNTHETIC UNRELATED CONTENT');assert.deepEqual(fs.readFileSync(file),prior);
+ }finally{fs.promises.open=nativeOpen;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

@@ -53,14 +53,46 @@ export class ProtectedSecretFile {
     if(!Buffer.isBuffer(cipher)||!cipher.length||cipher.length>MAX_CIPHERTEXT_BYTES||cipher.includes(Buffer.from(plaintext,'utf8')))
       throw new Error('Credential encryption returned unsafe ciphertext');
     await this.storageDirectory(true);
+    const directory=path.dirname(this.file),parent=await fs.promises.lstat(directory);
+    if(!parent.isDirectory()||parent.isSymbolicLink())throw new Error('Unsafe credential storage directory');
+    const checkParent=async()=>{
+      const named=await fs.promises.lstat(directory);
+      if(!named.isDirectory()||named.isSymbolicLink()||named.dev!==parent.dev||named.ino!==parent.ino)throw new Error('Unsafe credential storage directory changed');
+    };
     if(!sameCredentialFile(before,await this.inspectFile()))throw new Error('Unsafe credential storage file changed');
     const tmp=this.file+`.new-${crypto.randomBytes(8).toString('hex')}`;
+    let identity:fs.Stats|undefined;
     try {
-      const handle=await fs.promises.open(tmp,'wx',0o600);
-      try{await handle.writeFile(cipher);await handle.sync();}finally{await handle.close();}
+      await checkParent();
+      const handle=await fs.promises.open(tmp,'wx+',0o600);
+      try{
+        identity=await handle.stat();
+        if(!identity.isFile()||identity.nlink!==1)throw new Error('Unsafe staged credential');
+        await handle.writeFile(cipher);await handle.sync();
+        const written=await handle.stat();
+        if(!written.isFile()||written.nlink!==1||written.size!==cipher.length)throw new Error('Unsafe staged credential');
+        const readback=Buffer.alloc(cipher.length);let offset=0;
+        while(offset<readback.length){const {bytesRead}=await handle.read(readback,offset,readback.length-offset,offset);if(!bytesRead)throw new Error('Unsafe staged credential');offset+=bytesRead;}
+        const after=await handle.stat();
+        if(!readback.equals(cipher)||!sameCredentialFile(written,after))throw new Error('Staged ciphertext changed');
+        await checkParent();
+        if(!sameCredentialFile(after,await fs.promises.lstat(tmp)))throw new Error('Unsafe staged credential');
+        identity=after;
+      }finally{await handle.close();}
       if(!sameCredentialFile(before,await this.inspectFile()))throw new Error('Unsafe credential storage file changed');
+      await checkParent();
+      if(!sameCredentialFile(identity,await fs.promises.lstat(tmp)))throw new Error('Unsafe staged credential');
       await fs.promises.rename(tmp,this.file);
-    }finally{await fs.promises.rm(tmp,{force:true});}
+    }catch(error){
+      if(identity){
+        try{
+          await checkParent();const named=await fs.promises.lstat(tmp);
+          if(!named.isFile()||named.isSymbolicLink()||named.nlink!==1||named.dev!==identity.dev||named.ino!==identity.ino)throw new Error('Unsafe staged credential cleanup identity');
+          await fs.promises.rm(tmp);
+        }catch(cleanup){if((cleanup as NodeJS.ErrnoException).code!=='ENOENT')throw new AggregateError([error,cleanup],'Credential staging failed; unverified file retained for recovery');}
+      }
+      throw error;
+    }
   }
   async exists():Promise<boolean>{return (await this.inspectFile())!==null;}
   async readFakeToken():Promise<string>{
