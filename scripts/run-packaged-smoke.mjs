@@ -216,14 +216,38 @@ export function misnamePackedEntrypoint(bytes,entry){
  return out;
 }
 const entryHash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
-function writeOwnedFixture(file,bytes){
- const stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new Error('Unsafe copied ASAR fixture');
+function requireOwnedDescriptor(file,fd,expected=null){
+ const opened=fs.fstatSync(fd),named=fs.lstatSync(file);
+ if(!opened.isFile()||opened.nlink!==1||!named.isFile()||named.isSymbolicLink()||named.nlink!==1||named.dev!==opened.dev||named.ino!==opened.ino||named.size!==opened.size||named.mtimeMs!==opened.mtimeMs||named.ctimeMs!==opened.ctimeMs||expected&&(opened.dev!==expected.dev||opened.ino!==expected.ino||opened.size!==expected.size))throw new Error('Unsafe or changed owned fixture identity');
+ return opened;
+}
+function readDescriptor(fd,size){
+ const bytes=Buffer.alloc(size);let offset=0;
+ while(offset<size){const n=fs.readSync(fd,bytes,offset,size-offset,offset);if(!n)throw new Error('Short owned fixture read');offset+=n;}
+ return bytes;
+}
+function readOwnedFile(file,limit,expected=null){
+ if(!file||!path.isAbsolute(file)||!Number.isSafeInteger(limit)||limit<0)throw new Error('Invalid owned fixture location');
+ const fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
+ try{
+  const opened=requireOwnedDescriptor(file,fd,expected);
+  if(opened.size>limit)throw new Error('Owned fixture exceeds read limit');
+  const bytes=readDescriptor(fd,opened.size),after=requireOwnedDescriptor(file,fd,opened);
+  if(opened.mtimeMs!==after.mtimeMs||opened.ctimeMs!==after.ctimeMs)throw new Error('Owned fixture changed during read');
+  return {bytes,identity:opened};
+ }finally{fs.closeSync(fd);}
+}
+function writeOwnedFixture(file,bytes,identity,prior=null,onMutation=()=>{}){
+ if(!identity||identity.size!==bytes.length)throw new Error('Invalid owned fixture write');
  const fd=fs.openSync(file,fs.constants.O_RDWR|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
  try{
-  const opened=fs.fstatSync(fd);if(!opened.isFile()||opened.nlink!==1||opened.dev!==stat.dev||opened.ino!==stat.ino||opened.size!==bytes.length)throw new Error('Copied ASAR identity changed');
-  let offset=0;while(offset<bytes.length){const n=fs.writeSync(fd,bytes,offset,bytes.length-offset,offset);if(!n)throw new Error('Short fixture write');offset+=n;}
-  fs.fsyncSync(fd);const named=fs.lstatSync(file);if(!named.isFile()||named.isSymbolicLink()||named.nlink!==1||named.dev!==opened.dev||named.ino!==opened.ino)throw new Error('Copied ASAR identity changed');
-  const check=Buffer.alloc(bytes.length);let read=0;while(read<check.length){const n=fs.readSync(fd,check,read,check.length-read,read);if(!n)throw new Error('Short fixture readback');read+=n;}if(!check.equals(bytes))throw new Error('Copied ASAR readback failed');
+  const opened=requireOwnedDescriptor(file,fd,identity);
+  if(prior&&!readDescriptor(fd,opened.size).equals(prior))throw new Error('Copied ASAR changed before mutation');
+  requireOwnedDescriptor(file,fd,identity);
+  onMutation();let offset=0;while(offset<bytes.length){const n=fs.writeSync(fd,bytes,offset,bytes.length-offset,offset);if(!n)throw new Error('Short fixture write');offset+=n;}
+  fs.fsyncSync(fd);requireOwnedDescriptor(file,fd,identity);
+  const check=readDescriptor(fd,bytes.length);requireOwnedDescriptor(file,fd,identity);
+  if(!check.equals(bytes))throw new Error('Copied ASAR readback failed');
  }finally{fs.closeSync(fd);}
 }
 /** Read and dismiss only a named loader-error modal owned by the exact fixture PID.
@@ -334,13 +358,15 @@ function classifyEntrypointDenial(entry,result,events,statePreserved,sentinelFre
 }
 async function runDamagedEntrypoints(copiedBinary,copiedAsar,originalBytes,env,profile,logPath,state,before,sentinels){
  const results=[];
+ const owned=readOwnedFile(copiedAsar,64*1024*1024);
+ if(!owned.bytes.equals(originalBytes))throw new Error('Copied ASAR differs from original before fault');
  for(const entry of ['preload.cjs','main.cjs']){
   const changed=misnamePackedEntrypoint(originalBytes,entry);
   const prior=fs.readFileSync(logPath,'utf8');
-  let row={entry,verdict:'FAIL',classification:'FIXTURE_OR_LAUNCH_UNPROVEN',mutatedSha256:entryHash(changed),faultInjected:false};
+  let row={entry,verdict:'FAIL',classification:'FIXTURE_OR_LAUNCH_UNPROVEN',mutatedSha256:entryHash(changed),faultInjected:false},mutationStarted=false;
   try{
-   writeOwnedFixture(copiedAsar,changed);
-   const injected=fs.readFileSync(copiedAsar).equals(changed);if(!injected)throw new Error('Entrypoint fault not injected');
+   writeOwnedFixture(copiedAsar,changed,owned.identity,originalBytes,()=>{mutationStarted=true;});
+   const injected=readOwnedFile(copiedAsar,changed.length,owned.identity).bytes.equals(changed);if(!injected)throw new Error('Entrypoint fault not injected');
    row.faultInjected=true;
    const args=['--tm-smoke','--user-data-dir='+profile];
    const attempt=entry==='main.cjs'?await spawnWithLoaderObservation(copiedBinary,args,env):spawnSync(copiedBinary,args,{encoding:'utf8',timeout:30000,killSignal:'SIGKILL',maxBuffer:2*1024*1024,windowsHide:true,env});
@@ -353,10 +379,10 @@ async function runDamagedEntrypoints(copiedBinary,copiedAsar,originalBytes,env,p
    const safe=sentinels.every(value=>!log.includes(value))&&sentinels.slice(0,2).every(value=>!output.includes(value)&&!(attempt.dialog?.text||'').includes(value));
    row=classifyEntrypointDenial(entry,attempt,events,prefixPreserved&&state()===before,safe);
    if(entry==='main.cjs')row.dialogObservation=attempt.dialog?.state??'NOT_ATTEMPTED';
-   row.faultInjected=injected&&fs.readFileSync(copiedAsar).equals(changed);row.mutatedSha256=entryHash(changed);
+   row.faultInjected=injected&&readOwnedFile(copiedAsar,changed.length,owned.identity).bytes.equals(changed);row.mutatedSha256=entryHash(changed);
   }catch{/* Record only the fixed unproven classification; never echo arbitrary exception data. */}
-  finally{writeOwnedFixture(copiedAsar,originalBytes);}
-  results.push({...row,copyRestored:fs.readFileSync(copiedAsar).equals(originalBytes)});
+  finally{if(mutationStarted)writeOwnedFixture(copiedAsar,originalBytes,owned.identity);}
+  results.push({...row,copyRestored:readOwnedFile(copiedAsar,originalBytes.length,owned.identity).bytes.equals(originalBytes)});
  }
  return {schema:'tm-native-damaged-entrypoints-v1',synthetic:true,originalAsarSha256:entryHash(originalBytes),results};
 }
@@ -593,6 +619,22 @@ if(process.argv.includes('--self-test')){
   if(dialogProof.verdict!=='PASS'||dialogProof.loaderDiagnostic.surface!=='OWNED_NATIVE_ERROR_DIALOG'||namedLoaderDialogText('TM_LOADER_DIALOG_DISMISSED\nWindows protected your PC\nmain.cjs')||classifyEntrypointDenial('main.cjs',{status:1,dialog:{state:'UNAVAILABLE',text:dialogText}},[],true,true).verdict!=='FAIL')throw new Error('Loader dialog observer contract self-test failed');
   if(!validateDamagedEntrypoints(damaged)||validateDamagedEntrypoints({...damaged,results:[damaged.results[0]]})||validateDamagedEntrypoints({...damaged,results:damaged.results.map(x=>({...x,copyRestored:false}))})||validateDamagedEntrypoints({...damaged,results:[damaged.results[0],{...damaged.results[1],loaderNamed:false}]}))throw new Error('Damaged entrypoint proof contract self-test failed');
   for(const result of [{status:null,signal:'SIGKILL'},{status:1,stderr:'unknown failure'},{status:1,stderr:'Cannot find module main.cjs',error:{code:'ETIMEDOUT'}}])if(classifyEntrypointDenial('main.cjs',result,[],true,true).verdict!=='FAIL')throw new Error('Unproven loader denial accepted');
+  const ownershipRoot=fs.mkdtempSync(path.join(os.tmpdir(),'tm-owned-fixture-contract-'));
+  try{
+   const file=path.join(ownershipRoot,'copy.asar'),moved=path.join(ownershipRoot,'moved.asar'),linked=path.join(ownershipRoot,'linked.asar');
+   const original=Buffer.from('original'),changed=Buffer.from('modified');fs.writeFileSync(file,original);
+   const owned=readOwnedFile(file,original.length);
+   writeOwnedFixture(file,changed,owned.identity,original);
+   if(!readOwnedFile(file,changed.length,owned.identity).bytes.equals(changed))throw new Error('Owned mutation self-test failed');
+   writeOwnedFixture(file,original,owned.identity,changed);
+   const rejects=(action)=>{let refused=false;try{action();}catch{refused=true;}if(!refused)throw new Error('Unsafe owned fixture accepted');};
+   rejects(()=>readOwnedFile(file,original.length-1));
+   let authorized=false;rejects(()=>writeOwnedFixture(file,changed,owned.identity,changed,()=>{authorized=true;}));if(authorized||!fs.readFileSync(file).equals(original))throw new Error('Changed prior bytes authorized mutation');
+   fs.linkSync(file,linked);rejects(()=>readOwnedFile(linked,original.length));rejects(()=>writeOwnedFixture(file,changed,owned.identity,original));fs.unlinkSync(linked);
+   fs.renameSync(file,moved);fs.writeFileSync(file,original);
+   rejects(()=>writeOwnedFixture(file,changed,owned.identity,original));rejects(()=>readOwnedFile(file,original.length,owned.identity));
+   if(!fs.readFileSync(file).equals(original)||!fs.readFileSync(moved).equals(original))throw new Error('Substituted fixture was modified');
+  }finally{fs.rmSync(ownershipRoot,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
   const backupProof=Object.fromEntries(['png','jpeg','distinctLogo','issuedPdf','exactInventory','verifiedSecretExclusion','freshRestore','activeRestore','assetHashes','logicalRows','tamperRejected'].map(key=>[key,true]));
   if(!validateBackupCoverage(backupProof)||validateBackupCoverage({...backupProof,assetHashes:false}))throw new Error('Backup coverage receipt contract self-test failed');
   const ready={elapsedMs:15000,title:'Electrical T&M',heading:'Local foundation cockpit',rootWidth:100,rootHeight:100,health:true};
@@ -603,8 +645,7 @@ if(process.argv.includes('--self-test')){
 }else if(import.meta.url===pathToFileURL(path.resolve(process.argv[1]||'')).href){
   if(process.argv.includes('--check-damaged-entrypoints')){
    const file=process.argv[process.argv.indexOf('--check-damaged-entrypoints')+1];
-   if(!file||!path.isAbsolute(file)||fs.statSync(file).size>1024*1024)throw new Error('Invalid native smoke receipt location');
-   const smoke=JSON.parse(fs.readFileSync(file,'utf8'));
+   let smoke;try{smoke=JSON.parse(readOwnedFile(file,1024*1024).bytes.toString('utf8'));}catch{throw new Error('Unsafe or invalid native smoke receipt');}
    const report=smoke.lifecycle?.diagnosticDenials?.damagedEntrypoints;
    const verdict=validateDamagedEntrypoints(report)?'PASS':'FAIL';
    console.log(JSON.stringify({schema:'tm-native-entrypoint-admission-v1',verdict,receiptSha256:entryHash(Buffer.from(JSON.stringify(report??null))),note:'Admission of actual recorded launch results, not a separate launch or formal acceptance.'},null,2));
