@@ -122,3 +122,13 @@ test('primary renderer failure still initiates fatal shutdown when safe diagnost
  let calls=0;const gate=createRendererFailureGate({record:()=>{throw new Error('Synthetic diagnostic write failure');},fail:()=>{calls++;}});
  gate.fail('renderer.process');assert.equal(calls,1);assert.throws(()=>gate.assertHealthy(),/Renderer unavailable/);
 });
+
+
+test('renderer target rejects contaminated packaged and non-loopback development URLs before load',async()=>{
+ const {selectRendererUrl}=await import('../../apps/desktop/src/main/bootstrap');
+ assert.equal(selectRendererUrl(true,undefined),'tmapp://app/index.html');
+ assert.equal(selectRendererUrl(false,'http://127.0.0.1:5173'),'http://127.0.0.1:5173/');
+ assert.equal(selectRendererUrl(false,'http://localhost:51234/'),'http://localhost:51234/');
+ assert.throws(()=>selectRendererUrl(true,'http://127.0.0.1:5173/'),/Packaged renderer/);
+ for(const url of ['file:///tmp/fake.html','https://localhost:5173/','http://example.invalid:5173/','http://localhost:5173/other','http://user@localhost:5173/','http://localhost:5173/?x=1','http://localhost:5173/#x','http://localhost/'])assert.throws(()=>selectRendererUrl(false,url),/Invalid development renderer/);
+});

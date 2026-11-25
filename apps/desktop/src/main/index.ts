@@ -2,13 +2,11 @@
  * Native packaged tests must be repeated on this exact source revision. */
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, nativeTheme } from 'electron';
 import os from 'node:os';
-import {randomUUID} from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {LocalStore} from '../../../../packages/persistence-sqlite/src/connection';
-import {CHANNELS,assertEnvelope,assertNoPayload,createRequestReplayGuard,requestCorrelationId,type IpcResult} from '../../../../packages/contracts/src';
-import {classifyIpcError} from '../../../../packages/contracts/src/ipc/error-envelope';
+import {CHANNELS,assertEnvelope,assertNoPayload} from '../../../../packages/contracts/src';
 import {importImageFromPickedFile} from '../../../../packages/asset-vault/src/import-file';
 import {verifyManagedImage} from '../../../../packages/asset-vault/src/verify-image';
 import {saveSyntheticInvoicePdf,capturePdfExportTarget} from '../../../../packages/pdf/src/invoices/render-invoice';
@@ -16,8 +14,8 @@ import {createBackup} from '../../../../packages/backup/src/create-backup';
 import {restoreBackup,verifyBackup} from '../../../../packages/backup/src/restore-backup';
 import {BackupDestinationPreference} from '../../../../packages/backup/src/backup-destination';
 import {ProtectedSecretFile} from './os/keychain';
-import {isTrustedSender} from './ipc/sender-guard';
-import {registerFoundationHandlers,type ValidatedRegistrar} from './ipc/register';
+import {isTrustedSender,type SenderEventLike} from './ipc/sender-guard';
+import {createIpcBoundary,registerFoundationHandlers,type ValidatedRegistrar} from './ipc/register';
 import {registerBackupHandlers} from './ipc/handlers/backups';
 import {registerBrandingHandlers} from './ipc/handlers/settings';
 import {createNativeFileDialogs} from './os/file-dialogs';
@@ -27,7 +25,7 @@ import {storeImmutablePdf} from '../../../../packages/pdf/src/common/stored-pdf'
 import {LocalOperationQueue} from '../../../../packages/application/src/use-cases/backup-restore';
 import {createCockpitWindow} from './window';
 import {establishSingleInstance} from './os/single-instance';
-import {createStartupRecorder,resolveLifecycleProof,createShutdownCoordinator,createRendererFailureGate} from './bootstrap';
+import {createStartupRecorder,resolveLifecycleProof,createShutdownCoordinator,createRendererFailureGate,selectRendererUrl} from './bootstrap';
 
 protocol.registerSchemesAsPrivileged([{scheme:'tmapp',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 // Internal construction profile is intentionally separate from the owner's previously
@@ -62,6 +60,9 @@ app.on('before-quit',event=>shutdown.beforeQuit(()=>event.preventDefault()));
 const backupPreference=new BackupDestinationPreference(paths.settings,P2_TEST_PROFILE);
 const DEV_URL=typeof MAIN_WINDOW_VITE_DEV_SERVER_URL==='string'?MAIN_WINDOW_VITE_DEV_SERVER_URL:undefined;
 async function run(){
+  recorder.record('renderer.target','begin');
+  try{currentUrl=selectRendererUrl(app.isPackaged,DEV_URL);}catch(error){recorder.record('renderer.target','fail');throw error;}
+  recorder.record('renderer.target','pass');
   recorder.record('sqlite.open','begin');
   fs.mkdirSync(DATA_ROOT,{recursive:true,mode:0o700});
   const migrationsDir=paths.migrations;
@@ -84,31 +85,14 @@ async function run(){
   win.webContents.on('preload-error',()=>rendererFailure.fail('renderer.preload'));
   win.webContents.on('render-process-gone',()=>rendererFailure.fail('renderer.process'));
   recorder.record('renderer.load','begin');
-  currentUrl=DEV_URL?new URL(DEV_URL).toString():'tmapp://app/index.html';
-  // All privileged channels use one versioned, replay-checked and sanitized boundary.
-  const claimRequest=createRequestReplayGuard();
-  const safeHandle=(channel:string,handler:(event:Electron.IpcMainInvokeEvent,request:unknown)=>Promise<unknown>)=>{
-    ipcMain.handle(channel,async(event,request):Promise<IpcResult<unknown>>=>{
-      let requestId:string=requestCorrelationId(request)??randomUUID();
-      try{
-        if(!isTrustedSender(event as any,mainWindow.webContents as any,currentUrl))throw new Error('SECURITY: sender rejected');
-        assertEnvelope(request);
-        requestId=request.requestId;
-        claimRequest(requestId);
-        return {ok:true,requestId,data:await handler(event,request)};
-      }catch(error){
-        const publicError=classifyIpcError(error);
-        recorder.record('ipc.'+publicError.code.toLowerCase(),'info');
-        return {ok:false,requestId,error:{...publicError,retryable:publicError.code==='UNAVAILABLE',correlationId:requestId}};
-      }
-    });
-  };
+  // All privileged channels use the same versioned, replay-checked and sanitized boundary.
+  const safeHandle=createIpcBoundary(ipcMain,{primary:mainWindow.webContents,url:currentUrl,record:event=>recorder.record(event,'info')});
   registerFoundationHandlers({handle:(channel,handler)=>{
-    safeHandle(channel,(event,request)=>operationQueue.run(()=>handler(event as any,request)));
+    safeHandle(channel,(event,request)=>operationQueue.run(()=>handler(event,request)));
   }},{primary:mainWindow.webContents,url:currentUrl,getStore:()=>store});
   // Every privileged command must revalidate sender; never expose arbitrary filesystem paths.
-  const guard=(e:Electron.IpcMainInvokeEvent,r:unknown):unknown=>{
-    if(!isTrustedSender(e as any,mainWindow.webContents as any,currentUrl))throw new Error('SECURITY: sender rejected');
+  const guard=(e:SenderEventLike,r:unknown):unknown=>{
+    if(!isTrustedSender(e,mainWindow.webContents,currentUrl))throw new Error('SECURITY: sender rejected');
     assertEnvelope(r);return (r as {payload:unknown}).payload;
   };
   const nativeDialogs=createNativeFileDialogs({open:options=>dialog.showOpenDialog(mainWindow,options),save:options=>dialog.showSaveDialog(mainWindow,options),confirm:options=>dialog.showMessageBox(mainWindow,options)});
@@ -146,7 +130,7 @@ async function run(){
   safeHandle(CHANNELS.fakeSecretRemove,(e,r)=>operationQueue.run(async()=>{
     assertNoPayload(guard(e,r));await secret.remove();return {removed:true};
   }));
-  if(DEV_URL)await mainWindow.loadURL(DEV_URL);else await mainWindow.loadURL(currentUrl);
+  await mainWindow.loadURL(currentUrl);
   rendererFailure.assertHealthy();
   recorder.record('renderer.load','pass');
   if(isPackagedSmoke&&process.argv.includes('--tm-dev-hmr-proof')){

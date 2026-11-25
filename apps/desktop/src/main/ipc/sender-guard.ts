@@ -1,4 +1,4 @@
-export type FrameLike={url:string;top?:FrameLike};
+export type FrameLike={url:string;top?:FrameLike|null};
 export type WebContentsLike={id:number;isDestroyed?:()=>boolean};
 export type SenderEventLike={sender:WebContentsLike;senderFrame:FrameLike|null};
 /** Guard both sender webContents identity and exact top-frame URL, never broad startsWith. */

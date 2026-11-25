@@ -104,3 +104,13 @@ export function createRendererFailureGate(deps:{record:(event:RendererFailureEve
   deps.fail();
  },assertHealthy(){if(failed)throw new Error('Renderer unavailable');}};
 }
+
+/** Select the one renderer origin before any load. */
+export function selectRendererUrl(packaged:boolean,devUrl:string|undefined):string{
+ if(packaged&&devUrl!==undefined)throw new Error('Packaged renderer must not use a development URL');
+ if(devUrl===undefined)return 'tmapp://app/index.html';
+ let parsed:URL;
+ try{parsed=new URL(devUrl);}catch{throw new Error('Invalid development renderer URL');}
+ if(parsed.protocol!=='http:'||!['127.0.0.1','localhost','[::1]'].includes(parsed.hostname)||!parsed.port||parsed.username||parsed.password||parsed.pathname!=='/'||parsed.search||parsed.hash)throw new Error('Invalid development renderer URL');
+ return parsed.href;
+}

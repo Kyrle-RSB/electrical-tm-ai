@@ -21,3 +21,5 @@ Local startup events are saved as **redacted stage IDs only** in the current int
 For synthetic lifecycle proof runs, the runner-created POSIX temp directory must belong to the current user and grant no group/other access. Do not relax its permissions; create a fresh runner-owned test profile instead. A detected redirected PDF destination or changed staged export is a refusal, not authorization to overwrite the original. Preserve any staged recovery file until the destination and previous export have been checked.
 
 If a backup changes after verification, select and verify it again rather than bypassing confirmation. A detected unsafe PDF cleanup retains the staged file and preserves the original failure; inspect both before removing any retained temporary export.
+
+A packaged application with an unexpected development URL fails before opening its renderer. Do not work around this by starting a Vite server or changing trust settings. Use a verified internal candidate and preserve safe startup diagnostics for investigation.

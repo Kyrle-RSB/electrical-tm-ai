@@ -104,3 +104,23 @@ test('synthetic file census rejects a substituted named object before hashing',a
   fs.linkSync(file,path.join(root,'alias.bin'));assert.throws(()=>hashSyntheticCensusFile(file,fs.lstatSync(file)),/identity changed/);
  }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+
+test('actual outer IPC boundary refuses extra raw arguments and preserves a safe denial if diagnostics fail',async()=>{
+ const {createIpcBoundary}=await import('../../apps/desktop/src/main/ipc/register');
+ const {CHANNELS}=await import('../../packages/contracts/src/ipc/channel-map');
+ const {randomUUID}=await import('node:crypto');
+ const primary={id:11},url='tmapp://app/index.html';const frame:{url:string;top?:unknown}={url};frame.top=frame;
+ const trusted={sender:primary,senderFrame:frame as import('../../apps/desktop/src/main/ipc/sender-guard').FrameLike};
+ type Handler=(event:typeof trusted,...args:unknown[])=>Promise<import('../../packages/contracts/src').IpcResult<unknown>>;
+ const handlers=new Map<string,Handler>();let calls=0,logThrows=false;
+ const register=createIpcBoundary({handle:(channel,h)=>handlers.set(channel,h)},{primary,url,record:()=>{if(logThrows)throw new Error('Synthetic private diagnostic path');}});
+ register(CHANNELS.projectAdd,async()=>{calls++;return {written:true};});
+ const handler=handlers.get(CHANNELS.projectAdd)!;
+ const request={requestId:randomUUID(),version:1,payload:{code:'SYN-RAW',customer:'Synthetic',siteAddress:'Site'}};
+ const denied=await handler(trusted,request,'unexpected raw argument');assert.equal(denied.ok,false);if(!denied.ok)assert.equal(denied.error.code,'VALIDATION');assert.equal(calls,0);
+ const ok=await handler(trusted,request);assert.equal(ok.ok,true);assert.equal(calls,1);
+ const replay=await handler(trusted,request);assert.equal(replay.ok,false);if(!replay.ok)assert.equal(replay.error.code,'SECURITY');assert.equal(calls,1);
+ logThrows=true;const noLog=await handler({...trusted,sender:{id:12}},request);assert.equal(noLog.ok,false);if(!noLog.ok)assert.equal(noLog.error.code,'SECURITY');assert.equal(calls,1);
+ assert.throws(()=>register('unregistered.synthetic',async()=>null),/allowlist/);assert.equal(handlers.has('unregistered.synthetic'),false);
+});
