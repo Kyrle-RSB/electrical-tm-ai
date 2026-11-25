@@ -267,7 +267,7 @@ test('restore confirmation is bound to the originally verified archive even if a
 
 test('double rename failure preserves verified stage and original rescue, disables rebind and blocks fresh startup',async()=>{
  const {registerBackupHandlers}=await import('../../apps/desktop/src/main/ipc/handlers/backups');
- const {BackupDestinationPreference}=await import('../../packages/backup/src/backup-destination');
+ const {BackupDestinationPreference,canonicalBackupPath}=await import('../../packages/backup/src/backup-destination');
  const {prepareApplicationPaths}=await import('../../apps/desktop/src/main/os/paths');
  const {CHANNELS}=await import('../../packages/contracts/src');
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-restore-double-fail-'))),profile=path.join(root,'profile'),live=path.join(profile,'local-data'),dbPath=path.join(live,'db','app.sqlite');
@@ -281,10 +281,12 @@ test('double rename failure preserves verified stage and original rescue, disabl
   registerBackupHandlers((channel,validate,operation)=>{handlers.set(channel,async()=>operation('synthetic',validate(undefined)));},{
    dialogs:{chooseFolder:async()=>saved.backupPath,confirmRestore:async()=>true},preference:pref,dataRoot:live,migrationsDir:migrations,getStore:()=>db!,setStore:v=>{db=v;},reopen:()=>{reopens++;return new LocalStore(dbPath,migrations);},onFatalRecovery:()=>{fatal=true;}
   });
+  // Match the same physical path spelling as restoreBackup, including Windows realpath normalization.
+  const target=await canonicalBackupPath(live);
   fs.promises.rename=(async(from,to)=>{
-   if(String(from)===live&&path.basename(String(to)).startsWith('.tm-rollback-'))rescue=String(to);
-   if(String(to)===live&&path.basename(String(from)).startsWith('.tm-restore-')){stage=String(from);failures++;throw Object.assign(new Error('Synthetic activation failure'),{code:'EIO'});}
-   if(String(to)===live&&path.basename(String(from)).startsWith('.tm-rollback-')){failures++;throw Object.assign(new Error('Synthetic rollback failure'),{code:'EIO'});}
+   if(String(from)===target&&path.basename(String(to)).startsWith('.tm-rollback-'))rescue=String(to);
+   if(String(to)===target&&path.basename(String(from)).startsWith('.tm-restore-')){stage=String(from);failures++;throw Object.assign(new Error('Synthetic activation failure'),{code:'EIO'});}
+   if(String(to)===target&&path.basename(String(from)).startsWith('.tm-rollback-')){failures++;throw Object.assign(new Error('Synthetic rollback failure'),{code:'EIO'});}
    return rename(from,to);
   }) as typeof rename;
   await assert.rejects(handlers.get(CHANNELS.backupRestore)!());
@@ -301,7 +303,7 @@ test('double rename failure preserves verified stage and original rescue, disabl
 
 test('activation failure with successful rollback reopens only the original business and retains its bytes',async()=>{
  const {registerBackupHandlers}=await import('../../apps/desktop/src/main/ipc/handlers/backups');
- const {BackupDestinationPreference}=await import('../../packages/backup/src/backup-destination');
+ const {BackupDestinationPreference,canonicalBackupPath}=await import('../../packages/backup/src/backup-destination');
  const {CHANNELS}=await import('../../packages/contracts/src');
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-restore-activation-fail-'))),profile=path.join(root,'profile'),live=path.join(profile,'local-data'),dbPath=path.join(live,'db','app.sqlite');
  const rename=fs.promises.rename;let db:LocalStore|undefined;
@@ -312,7 +314,9 @@ test('activation failure with successful rollback reopens only the original busi
   let fatal=false,reopens=0,failures=0;
   const pref=new BackupDestinationPreference(path.join(profile,'settings','backup.json'),profile),handlers=new Map<string,()=>Promise<unknown>>();
   registerBackupHandlers((channel,validate,operation)=>{handlers.set(channel,async()=>operation('synthetic',validate(undefined)));},{dialogs:{chooseFolder:async()=>saved.backupPath,confirmRestore:async()=>true},preference:pref,dataRoot:live,migrationsDir:migrations,getStore:()=>db!,setStore:v=>{db=v;},reopen:()=>{reopens++;return new LocalStore(dbPath,migrations);},onFatalRecovery:()=>{fatal=true;}});
-  fs.promises.rename=(async(from,to)=>{if(String(to)===live&&path.basename(String(from)).startsWith('.tm-restore-')){failures++;throw Object.assign(new Error('Synthetic activation failure'),{code:'EIO'});}return rename(from,to);}) as typeof rename;
+  // Match the same physical path spelling as restoreBackup, including Windows realpath normalization.
+  const target=await canonicalBackupPath(live);
+  fs.promises.rename=(async(from,to)=>{if(String(to)===target&&path.basename(String(from)).startsWith('.tm-restore-')){failures++;throw Object.assign(new Error('Synthetic activation failure'),{code:'EIO'});}return rename(from,to);}) as typeof rename;
   await assert.rejects(handlers.get(CHANNELS.backupRestore)!(),/Synthetic activation failure/);
   assert.equal(failures,1);assert.equal(fatal,false);assert.equal(reopens,1);assert.deepEqual(db.listProjects().map(p=>p.project_code),['FIRST','LATEST']);assert.equal(fs.readFileSync(path.join(live,'artifacts','retained.txt'),'utf8'),'ORIGINAL CURRENT BYTES');
   assert.deepEqual(fs.readdirSync(profile),['local-data']);
