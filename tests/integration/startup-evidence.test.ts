@@ -213,7 +213,7 @@ test('lifecycle proof opens existing marker and receipt read-only and never crea
    return open(...args);
   }) as typeof open;
   fs.openSync=recordOpen;
-  assert.throws(()=>resolveLifecycleProof(env),/Invalid prior lifecycle receipt/);assert.equal(fs.existsSync(receipt),false);
+  assert.throws(()=>resolveLifecycleProof(env),/Invalid prior lifecycle receipt/);assert.deepEqual(fs.readdirSync(root),['.tm-lifecycle.json']);
   fs.openSync=open;fs.writeFileSync(receipt,JSON.stringify({schema:'tm-lifecycle-v1',nonce,stage:'seed',synthetic:true}),{flag:'wx',mode:0o600});const previousReceipt=fs.readFileSync(receipt);
   fs.openSync=recordOpen;
   assert.equal(resolveLifecycleProof(env)?.stage,'reopen');
