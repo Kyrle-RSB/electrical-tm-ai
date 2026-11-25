@@ -29,7 +29,7 @@ export function BackupLocation(){
   <div className="actions"><button disabled={busy} onClick={()=>perform('choose')}>Choose backup folder</button>
    <button disabled={busy||!folder} onClick={()=>perform('create')}>Back up now</button>
    <button disabled={busy||!folder} onClick={()=>perform('list')}>Verify saved backups</button></div>
-  {backups&&backups.length>0&&<ul aria-label="Saved backup verification results">{backups.map(b=><li key={b.id} className="path-text">{b.id}: {b.status==='verified'?`Verified at scan, ${b.fileCount} files (${b.createdUtc})`:'Rejected: do not rely on this archive'}</li>)}</ul>
+  {backups&&backups.length>0&&<ul aria-label="Saved backup verification results">{backups.map(b=><li key={b.id} className="path-text">{b.id}: {b.status==='verified'?`Verified at scan, ${b.fileCount} files (${b.createdUtc})`:'Rejected: do not rely on this archive'}</li>)}</ul>}
   <p role="status" aria-live="polite" className="project-status">{status}</p>
  </section>;
 }
