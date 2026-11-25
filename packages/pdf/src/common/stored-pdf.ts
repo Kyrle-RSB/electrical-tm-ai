@@ -56,12 +56,14 @@ export async function storeImmutablePdf(artifactsRoot:string,pdf:Buffer):Promise
    try{
     const opened=await handle.stat();
     if(!opened.isFile()||opened.dev!==stat.dev||opened.ino!==stat.ino||opened.size!==stat.size||opened.nlink!==1||opened.mtimeMs!==stat.mtimeMs||opened.ctimeMs!==stat.ctimeMs)throw new Error('Immutable PDF changed during inspection');
+    await checkParent();
     const previous=Buffer.alloc(pdf.length);
     let offset=0;
     while(offset<previous.length){const {bytesRead}=await handle.read(previous,offset,previous.length-offset,offset);if(!bytesRead)throw new Error('Immutable PDF changed during inspection');offset+=bytesRead;}
     await checkParent();
     const after=await handle.stat(),named=await fs.promises.lstat(file);
     if(!after.isFile()||after.size!==pdf.length||after.nlink!==1||after.mtimeMs!==opened.mtimeMs||after.ctimeMs!==opened.ctimeMs||!named.isFile()||named.isSymbolicLink()||named.nlink!==1||named.dev!==opened.dev||named.ino!==opened.ino||named.size!==opened.size||named.mtimeMs!==opened.mtimeMs||named.ctimeMs!==opened.ctimeMs||!previous.equals(pdf))throw new Error('Immutable PDF content hash collision or tampering');
+    await checkParent();
    }finally{await handle.close();}
  }
  return {sha256,relativePath:relativePath.split(path.sep).join('/')};

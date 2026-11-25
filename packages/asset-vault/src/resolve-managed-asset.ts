@@ -54,7 +54,18 @@ export async function writeManagedImage(file:string,bytes:Buffer,checkParent:()=
 }
 export const MAX_IMAGE_BYTES=12*1024*1024;
 /** Bound the descriptor read; a concurrent append cannot trigger unbounded allocation. */
-export async function readRegularImage(file:string):Promise<Buffer>{
+export async function readRegularImage(file:string,checkOwnedParent?:()=>Promise<void>):Promise<Buffer>{
+ // A native picker can return a path through a legitimate platform alias. Bind
+ // the physical parent, while retaining the selected filename and no-follow open.
+ const parent=path.dirname(path.resolve(file)),physical=await fs.promises.realpath(parent);
+ const parentIdentity=await fs.promises.lstat(physical);
+ if(!parentIdentity.isDirectory()||parentIdentity.isSymbolicLink())throw new Error('Unsafe image directory');
+ const checkParent=async()=>{
+  await checkOwnedParent?.();
+  const named=await fs.promises.lstat(physical);
+  if(!named.isDirectory()||named.isSymbolicLink()||named.dev!==parentIdentity.dev||named.ino!==parentIdentity.ino||await fs.promises.realpath(parent)!==physical)throw new Error('Unsafe image directory changed');
+ };
+ await checkParent();
  const before=await fs.promises.lstat(file);
  if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1||before.size>MAX_IMAGE_BYTES)
   throw new Error('Image must be a regular permitted file');
@@ -63,12 +74,15 @@ export async function readRegularImage(file:string):Promise<Buffer>{
   const opened=await handle.stat();
   if(!opened.isFile()||opened.nlink!==1||opened.size>MAX_IMAGE_BYTES||opened.size!==before.size||opened.dev!==before.dev||opened.ino!==before.ino||opened.mtimeMs!==before.mtimeMs||opened.ctimeMs!==before.ctimeMs)
    throw new Error('Image changed during secure import');
+  await checkParent();
   const bytes=Buffer.alloc(opened.size);
   let offset=0;
   while(offset<bytes.length){const {bytesRead}=await handle.read(bytes,offset,bytes.length-offset,offset);if(bytesRead===0)throw new Error('Image changed during secure import');offset+=bytesRead;}
+  await checkParent();
   const after=await handle.stat();
   const named=await fs.promises.lstat(file);
   if(!after.isFile()||after.nlink!==1||after.size!==opened.size||after.mtimeMs!==opened.mtimeMs||after.ctimeMs!==opened.ctimeMs||!named.isFile()||named.isSymbolicLink()||named.nlink!==1||named.dev!==opened.dev||named.ino!==opened.ino||named.size!==opened.size||named.mtimeMs!==opened.mtimeMs||named.ctimeMs!==opened.ctimeMs)throw new Error('Image changed during secure import');
+  await checkParent();
   return bytes;
  }finally{await handle.close();}
 }

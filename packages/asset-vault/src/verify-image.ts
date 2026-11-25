@@ -6,7 +6,7 @@ export async function verifyManagedImage(root:string,relativePath:string,expecte
  const file=resolveManagedImage(root,relativePath);
  const checkParent=await assertManagedImageDirectory(root);
  await checkParent();
- const bytes=await readRegularImage(file);
+ const bytes=await readRegularImage(file,checkParent);
  await checkParent();
  if(sha256Bytes(bytes)!==expectedSha256.toLowerCase())throw new Error('Managed image hash mismatch');
  const mime=validateImageBytes(bytes);

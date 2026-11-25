@@ -61,16 +61,20 @@ async function resolveExportTarget(target:string,protectedRoots:readonly string[
   return resolved;
 }
 export type PdfExportIdentity={dev:number;ino:number;size:number;mtimeMs:number;ctimeMs:number;sha256:string};
-async function inspectExportIdentity(target:string):Promise<PdfExportIdentity|null>{
+async function inspectExportIdentity(target:string,checkParent:()=>Promise<void>):Promise<PdfExportIdentity|null>{
+ await checkParent();
  let before:fs.Stats;
- try{before=await fs.promises.lstat(target);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error;}
+ try{before=await fs.promises.lstat(target);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){await checkParent();return null;}throw error;}
  if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1||before.size>25*1024*1024)throw new Error('Unsafe PDF destination type');
  const handle=await fs.promises.open(target,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
  try{
   const stat=await handle.stat();if(!stat.isFile()||stat.dev!==before.dev||stat.ino!==before.ino||stat.size!==before.size||stat.nlink!==1||stat.mtimeMs!==before.mtimeMs||stat.ctimeMs!==before.ctimeMs)throw new Error('PDF destination changed during inspection');
+  await checkParent();
   const bytes=Buffer.alloc(stat.size);let offset=0;
   while(offset<bytes.length){const {bytesRead}=await handle.read(bytes,offset,bytes.length-offset,offset);if(!bytesRead)throw new Error('PDF destination changed during inspection');offset+=bytesRead;}
+  await checkParent();
   const after=await handle.stat(),named=await fs.promises.lstat(target);if(!after.isFile()||after.size!==stat.size||after.mtimeMs!==stat.mtimeMs||after.ctimeMs!==stat.ctimeMs||after.nlink!==1||!named.isFile()||named.isSymbolicLink()||named.nlink!==1||named.dev!==stat.dev||named.ino!==stat.ino||named.size!==stat.size||named.mtimeMs!==stat.mtimeMs||named.ctimeMs!==stat.ctimeMs)throw new Error('PDF destination changed during inspection');
+  await checkParent();
   return {dev:stat.dev,ino:stat.ino,size:stat.size,mtimeMs:stat.mtimeMs,ctimeMs:stat.ctimeMs,sha256:createHash('sha256').update(bytes).digest('hex')};
  }finally{await handle.close();}
 }
@@ -80,9 +84,12 @@ export async function capturePdfExportTarget(target:string,protectedRoots:readon
  const resolved=await resolveExportTarget(target,protectedRoots),parent=path.dirname(resolved);
  const initial=await fs.promises.lstat(parent);
  if(!initial.isDirectory()||initial.isSymbolicLink())throw new Error('PDF destination directory changed');
- const existing=await inspectExportIdentity(resolved);
- const named=await fs.promises.lstat(parent);
- if(!named.isDirectory()||named.isSymbolicLink()||named.dev!==initial.dev||named.ino!==initial.ino||await resolveExportTarget(target,protectedRoots)!==resolved)throw new Error('PDF destination directory changed');
+ const checkParent=async()=>{
+  const named=await fs.promises.lstat(parent);
+  if(!named.isDirectory()||named.isSymbolicLink()||named.dev!==initial.dev||named.ino!==initial.ino||await resolveExportTarget(target,protectedRoots)!==resolved)throw new Error('PDF destination directory changed');
+ };
+ const existing=await inspectExportIdentity(resolved,checkParent);
+ await checkParent();
  return {target:resolved,parent:{dev:initial.dev,ino:initial.ino},existing};
 }
 function sameIdentity(a:PdfExportIdentity|null,b:PdfExportIdentity|null){
@@ -109,7 +116,7 @@ export async function saveSyntheticInvoicePdf(
     if(!named.isDirectory()||named.isSymbolicLink()||named.dev!==parentIdentity.dev||named.ino!==parentIdentity.ino)throw new Error('PDF destination directory changed');
   };
   await checkParent();
-  const identity=await inspectExportIdentity(target),exists=identity!==null;
+  const identity=await inspectExportIdentity(target,checkParent),exists=identity!==null;
   if(opts.expectedSelection&&!sameIdentity(opts.expectedSelection.existing,identity))throw new Error('PDF destination changed after selection');
   if(exists&&!opts.allowReplace)throw Object.assign(new Error('PDF filename already exists. Choose another filename or confirm replacement.'),{code:'EEXIST'});
   const pdf=makeSyntheticInvoicePdf(params);
@@ -131,13 +138,13 @@ export async function saveSyntheticInvoicePdf(
         if(!created.isFile()||created.isSymbolicLink()||created.nlink!==1||created.dev!==stagedIdentity.dev||created.ino!==stagedIdentity.ino)throw new Error('PDF staged file changed');
         await handle.writeFile(pdf);await handle.sync();
       }finally{await handle.close();}
-      if(!sameIdentity(identity,await inspectExportIdentity(target)))throw new Error('PDF destination changed before replacement');
+      if(!sameIdentity(identity,await inspectExportIdentity(target,checkParent)))throw new Error('PDF destination changed before replacement');
       await checkParent();
-      const staged=await inspectExportIdentity(temp);
+      const staged=await inspectExportIdentity(temp,checkParent);
       if(!staged||staged.dev!==stagedIdentity?.dev||staged.ino!==stagedIdentity?.ino||staged.size!==pdf.length||staged.sha256!==createHash('sha256').update(pdf).digest('hex'))throw new Error('PDF staged file changed');
-      if(!sameIdentity(identity,await inspectExportIdentity(target)))throw new Error('PDF destination changed before replacement');
+      if(!sameIdentity(identity,await inspectExportIdentity(target,checkParent)))throw new Error('PDF destination changed before replacement');
       await checkParent();
-      if(!sameIdentity(staged,await inspectExportIdentity(temp)))throw new Error('PDF staged file changed');
+      if(!sameIdentity(staged,await inspectExportIdentity(temp,checkParent)))throw new Error('PDF staged file changed');
       await checkParent();
       // Final observed metadata comparisons without yielding between pathname checks
       // and submitting rename. These are not a portable atomic compare-and-swap.

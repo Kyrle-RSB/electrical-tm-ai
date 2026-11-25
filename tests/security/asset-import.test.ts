@@ -142,3 +142,21 @@ test('vault redirection at exclusive open never writes receipt bytes outside the
   for(const name of fs.readdirSync(outside))assert.equal(fs.statSync(path.join(outside,name)).size,0,'receipt bytes escaped the vault');
  }finally{fs.promises.open=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('managed image verification refuses parent substitution before reading any bytes',async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-image-read-parent-'))),selected=path.join(root,'picked.png'),vault=path.join(root,'vault'),images=path.join(vault,'images'),parked=path.join(vault,'parked');
+ const lstat=fs.promises.lstat,open=fs.promises.open;let swapped=false,reads=0;
+ try{
+  fs.copyFileSync('tests/fixtures/synthetic-receipt.png',selected);
+  const receipt=await importImageFromPickedFile(selected,vault),file=resolveManagedImage(vault,receipt.relativePath);
+  const original=fs.readFileSync(file);
+  fs.promises.lstat=(async(...args:Parameters<typeof lstat>)=>{
+   if(!swapped&&String(args[0])===file){fs.renameSync(images,parked);fs.mkdirSync(images);fs.copyFileSync(path.join(parked,path.basename(file)),file);swapped=true;}
+   return lstat(...args);
+  }) as typeof lstat;
+  fs.promises.open=(async(...args:Parameters<typeof open>)=>{const h=await open(...args);if(String(args[0])===file){const read=h.read.bind(h);h.read=(async(buffer:Buffer,offset:number,length:number,position:number)=>{reads++;return read(buffer,offset,length,position);}) as typeof h.read;}return h;}) as typeof open;
+  await assert.rejects(verifyManagedImage(vault,receipt.relativePath,receipt.sha256),/directory changed/);
+  assert.equal(swapped,true);assert.equal(reads,0,'redirected managed file was read before refusal');
+  assert.deepEqual(fs.readFileSync(file),original);assert.deepEqual(fs.readFileSync(path.join(parked,path.basename(file))),original);
+ }finally{fs.promises.lstat=lstat;fs.promises.open=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

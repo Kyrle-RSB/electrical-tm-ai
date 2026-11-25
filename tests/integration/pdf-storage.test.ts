@@ -266,3 +266,21 @@ test('replacement stage corrupted during final destination verification is refus
   assert.equal(changed,true,'late stage corruption fixture did not execute');assert.ok(outcome.error instanceof Error);assert.match(outcome.error.message,/staged file changed/);assert.deepEqual(fs.readFileSync(file),original);assert.deepEqual(fs.readdirSync(root),['existing.pdf']);
  }finally{fs.promises.open=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+for(const mode of ['immutable','selection','replace'] as const)test('PDF inspection refuses substituted directory before reading bytes: '+mode,async()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-pdf-read-parent-'))),folder=mode==='immutable'?path.join(root,'issued'):path.join(root,'external'),parked=path.join(root,'parked');
+ const lstat=fs.promises.lstat,open=fs.promises.open;let swapped=false,reads=0;
+ try{
+  const original=makeSyntheticInvoicePdf(fixture);let file:string;
+  if(mode==='immutable'){const issued=await storeImmutablePdf(root,original);file=path.join(root,issued.relativePath);}else{fs.mkdirSync(folder);file=path.join(folder,'existing.pdf');await saveSyntheticInvoicePdf(file,fixture);}
+  fs.promises.lstat=(async(...args:Parameters<typeof lstat>)=>{
+   if(!swapped&&path.basename(String(args[0]))===path.basename(file)&&sameDirectory(path.dirname(String(args[0])),folder)){
+    fs.renameSync(folder,parked);fs.mkdirSync(folder);fs.copyFileSync(path.join(parked,path.basename(file)),file);swapped=true;
+   }return lstat(...args);
+  }) as typeof lstat;
+  fs.promises.open=(async(...args:Parameters<typeof open>)=>{const h=await open(...args);if(path.basename(String(args[0]))===path.basename(file)&&sameDirectory(path.dirname(String(args[0])),folder)){const read=h.read.bind(h);h.read=(async(buffer:Buffer,offset:number,length:number,position:number)=>{reads++;return read(buffer,offset,length,position);}) as typeof h.read;}return h;}) as typeof open;
+  const action=mode==='immutable'?()=>storeImmutablePdf(root,original):mode==='selection'?()=>capturePdfExportTarget(file,[]):()=>saveSyntheticInvoicePdf(file,{...fixture,amount:'99.00'},{allowReplace:true});
+  await assert.rejects(action,/directory changed/);assert.equal(swapped,true);assert.equal(reads,0,'redirected PDF was read before refusal');
+  assert.deepEqual(fs.readFileSync(file),original);assert.deepEqual(fs.readFileSync(path.join(parked,path.basename(file))),original);
+ }finally{fs.promises.lstat=lstat;fs.promises.open=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
