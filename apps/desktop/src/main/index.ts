@@ -12,7 +12,8 @@ import {importImageFromPickedFile} from '../../../../packages/asset-vault/src/im
 import {verifyManagedImage} from '../../../../packages/asset-vault/src/verify-image';
 import {saveSyntheticInvoicePdf,capturePdfExportTarget} from '../../../../packages/pdf/src/invoices/render-invoice';
 import {createBackup} from '../../../../packages/backup/src/create-backup';
-import {restoreBackup,verifyBackup} from '../../../../packages/backup/src/restore-backup';
+import {restoreBackup,verifyBackup,listVerifiedBackups} from '../../../../packages/backup/src/restore-backup';
+import {backupManifestIdentity} from '../../../../packages/backup/src/backup-manifest';
 import {BackupDestinationPreference} from '../../../../packages/backup/src/backup-destination';
 import {ProtectedSecretFile} from './os/keychain';
 import {isTrustedSender,type SenderEventLike} from './ipc/sender-guard';
@@ -372,10 +373,14 @@ async function run(){
       const manifest=await verifyBackup(result.backupPath,migrationsDir);
       if(manifest.files.length!==expected.size+1||!manifest.files.some(f=>f.path==='db/app.sqlite')||![...expected].every(([name,digest])=>manifest.files.some(f=>f.path===name&&f.sha256===digest)))throw new Error('Backup exact inventory mismatch');
       if(!await secret.exists()||await secret.readFakeToken()!=='TEST-FAKE-EXAMPLE'||manifest.files.some(f=>f.path.startsWith('secrets/'))||!manifest.excluded.includes('OS-protected secrets'))throw new Error('Backup secret exclusion failed');
+      const backupId=path.basename(result.backupPath),listed=await listVerifiedBackups(backupDestination,migrationsDir);
+      if(listed.backups.length!==1||listed.backups[0].id!==backupId||listed.backups[0].status!=='verified'||listed.backups[0].manifestIdentity!==backupManifestIdentity(manifest)||listed.backups[0].fileCount!==manifest.files.length)throw new Error('Backup list verification mismatch');
       const archivedPdf=path.join(result.backupPath,'artifacts','smoke-invoice.pdf');
       fs.appendFileSync(archivedPdf,'synthetic-tamper');
       let tamperRejected=false;
       try{await verifyBackup(result.backupPath,migrationsDir);}catch{tamperRejected=true;}
+      const rejectedList=await listVerifiedBackups(backupDestination,migrationsDir);
+      if(rejectedList.backups.length!==1||rejectedList.backups[0].id!==backupId||rejectedList.backups[0].status!=='rejected')throw new Error('Tampered backup listed as verified');
       if(!tamperRejected||!fs.readFileSync(artifactPath).equals(original))throw new Error('Tamper was not safely rejected');
       fs.writeFileSync(archivedPdf,original);
       await verifyBackup(result.backupPath,migrationsDir);
@@ -395,7 +400,7 @@ async function run(){
       await verifyRestored(DATA_ROOT,store);
       if(!store.listProjects().some(p=>p.id===id)||store.listProjects().some(p=>p.project_code==='SMOKE-LATER')||await secret.readFakeToken()!=='TEST-FAKE-EXAMPLE')throw new Error('Native backup restore lost project or credential isolation');
       await secret.remove();if(await secret.exists())throw new Error('Synthetic credential cleanup failed');
-      backupCoverage={png:true,jpeg:true,distinctLogo:true,issuedPdf:true,exactInventory:true,verifiedSecretExclusion:true,freshRestore:true,activeRestore:true,assetHashes:true,logicalRows:true,tamperRejected};
+      backupCoverage={png:true,jpeg:true,distinctLogo:true,issuedPdf:true,exactInventory:true,verifiedSecretExclusion:true,freshRestore:true,activeRestore:true,assetHashes:true,logicalRows:true,tamperRejected,verifiedList:true,rejectedList:true};
       checks.push(currentCheck);
       succeeded=true;
     }catch(_error){

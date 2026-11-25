@@ -1,14 +1,17 @@
 import {useEffect,useState} from 'react';
+import type {BackupListEntry} from '../../../../../../packages/contracts/src/ipc/settings.contract';
 /** A backup is not a proof of recovery until the separate restore test passes. */
 export function BackupLocation(){
  const [folder,setFolder]=useState<string|null>(null);
  const [status,setStatus]=useState('Checking backup location...');
  const [busy,setBusy]=useState(false);
+ const [backups,setBackups]=useState<BackupListEntry[]|null>(null);
  useEffect(()=>{let active=true;window.tmBridge.getBackupFolder().then(v=>{
    if(active){setFolder(v.folder);setStatus(v.folder?'Backup location selected.':'Choose a backup folder before creating a backup.');}
  }).catch(err=>{if(active)setStatus('Backup setting unavailable: '+String(err));});return()=>{active=false};},[]);
- const perform=async(type:'choose'|'create')=>{
-  setBusy(true);setStatus('Working...');try{
+ const perform=async(type:'choose'|'create'|'list')=>{
+  setBusy(true);setBackups(null);setStatus('Working...');try{
+   if(type==='list'){const r=await window.tmBridge.listVerifiedBackups();setBackups(r.backups);setStatus(r.backups.length?'Backup verification finished. Review results below.':'No completed application backups found.');return;}
    const response=type==='choose'?await window.tmBridge.chooseBackupFolder():await window.tmBridge.backUpToSelectedFolder();
    if(response===null){setStatus('Cancelled. No backup changes made.');return;}
    if(type==='choose'){
@@ -24,7 +27,9 @@ export function BackupLocation(){
   <p>Keep backups on a separate drive or folder. A successful backup needs a verified restore before relying on it.</p>
   <p className="path-text">{folder||'No folder configured'}</p>
   <div className="actions"><button disabled={busy} onClick={()=>perform('choose')}>Choose backup folder</button>
-   <button disabled={busy||!folder} onClick={()=>perform('create')}>Back up now</button></div>
+   <button disabled={busy||!folder} onClick={()=>perform('create')}>Back up now</button>
+   <button disabled={busy||!folder} onClick={()=>perform('list')}>Verify saved backups</button></div>
+  {backups&&backups.length>0&&<ul aria-label="Saved backup verification results">{backups.map(b=><li key={b.id} className="path-text">{b.id}: {b.status==='verified'?`Verified at scan, ${b.fileCount} files (${b.createdUtc})`:'Rejected: do not rely on this archive'}</li>)}</ul>
   <p role="status" aria-live="polite" className="project-status">{status}</p>
  </section>;
 }

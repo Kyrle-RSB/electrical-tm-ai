@@ -33,3 +33,12 @@ export interface BusinessLogoStorePort extends MutationPort {
  setBusinessLogo(asset:ManagedBusinessLogo):void;
  removeBusinessLogo():void;
 }
+
+import type {BackupListResult,BackupManifest} from '../../../contracts/src/ipc/settings.contract';
+/** Filesystem choices are supplied only by the trusted main process. */
+export interface BackupPort {
+ create(folder:string):Promise<{backupPath:string;manifest:BackupManifest}>;
+ list(folder:string):Promise<BackupListResult>;
+ verify(folder:string):Promise<BackupManifest>;
+ restore(folder:string,expectedIdentity:string):Promise<{rollbackPath:string|null}>;
+}

@@ -5,17 +5,19 @@ import os from 'node:os';
 import {DatabaseSync} from 'node:sqlite';
 import { hashFile, traverseRegularFiles, readBoundedBackupFile, copyRegularBackupFile } from './create-backup';
 import {assertReferencedEvidence,validateManifest,backupManifestIdentity,type Manifest} from './backup-manifest';
+import type {BackupListResult} from '../../contracts/src/ipc/settings.contract';
 import { LocalStore } from '../../persistence-sqlite/src/connection';
 import {canonicalBackupPath,backupPathsOverlap,bindDirectory} from './backup-destination';
 export async function verifyBackup(backupPath:string,migrationsDir?:string):Promise<Manifest>{
+  const checkArchive=await bindDirectory(backupPath);if(!checkArchive)throw new Error('Backup unavailable');
   // Check the archive tree before opening its manifest or any listed content.
   const onDisk=await traverseRegularFiles(backupPath);
   if(!onDisk.includes('manifest.json'))throw new Error('Backup missing manifest');
-  const p=path.join(backupPath,'manifest.json');
+  await checkArchive();const p=path.join(backupPath,'manifest.json');
   const m=validateManifest(JSON.parse((await readBoundedBackupFile(p,8*1024*1024)).toString('utf8')));
   const listed=new Set(m.files.map(entry=>entry.path));
   for(const entry of m.files){
-    const actual=path.join(backupPath,entry.path);
+    await checkArchive();const actual=path.join(backupPath,entry.path);
     if((await fs.promises.lstat(actual)).isSymbolicLink())throw new Error('Backup contains symlink');
     if(await hashFile(actual,entry.bytes)!==entry.sha256)throw new Error(`Backup integrity failure: ${entry.path}`);
   }
@@ -23,8 +25,9 @@ export async function verifyBackup(backupPath:string,migrationsDir?:string):Prom
   if(!listed.has('db/app.sqlite'))throw new Error('Backup missing SQLite database');
   // SQLite may create transient WAL/SHM files on open; inspect a disposable copy, not the archive itself.
   const tempDir=await fs.promises.mkdtemp(path.join(os.tmpdir(),'tm-backup-verify-'));
+  const checkTemp=await bindDirectory(tempDir);if(!checkTemp)throw new Error('Backup verification scratch unavailable');
   try{
-    const copyPath=path.join(tempDir,'snapshot.sqlite');
+    await checkArchive();await checkTemp();const copyPath=path.join(tempDir,'snapshot.sqlite');
     await copyRegularBackupFile(path.join(backupPath,'db','app.sqlite'),copyPath);
     const dbEntry=m.files.find(entry=>entry.path==='db/app.sqlite')!;
     if(await hashFile(copyPath,dbEntry.bytes)!==dbEntry.sha256)throw new Error('Backup SQLite copy changed');
@@ -45,8 +48,34 @@ export async function verifyBackup(backupPath:string,migrationsDir?:string):Prom
       const preflight=new LocalStore(copyPath,migrationsDir);
       preflight.close();
     }
-  }finally{await fs.promises.rm(tempDir,{recursive:true,force:true});}
+  }finally{await checkTemp();await fs.promises.rm(tempDir,{recursive:true,force:true});}
+  await checkArchive();
+  if(backupManifestIdentity(validateManifest(JSON.parse((await readBoundedBackupFile(p,8*1024*1024)).toString('utf8'))))!==backupManifestIdentity(m))throw new Error('Backup manifest changed during verification');
   return m;
+}
+/** Scan only immediate completed application-named archives in a trusted selected folder.
+ * A list is an observed verification result, not authorization to restore or authenticate history. */
+export async function listVerifiedBackups(folder:string,migrationsDir:string):Promise<BackupListResult>{
+ const checkFolder=await bindDirectory(folder);if(!checkFolder)throw new Error('Backup location unavailable');
+ const candidates:string[]=[];let scanned=0;
+ const dir=await fs.promises.opendir(folder);
+ for await(const entry of dir){
+  if(++scanned>10000)throw new Error('Backup folder exceeds scan limit; select a smaller folder');
+  if(/^tm-backup-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[a-f0-9]{6}$/.test(entry.name)){
+   candidates.push(entry.name);if(candidates.length>100)throw new Error('Backup folder exceeds archive scan limit; select a smaller folder');
+  }
+ }
+ await checkFolder();const backups:BackupListResult['backups']=[];
+ for(const id of candidates.sort().reverse()){
+  await checkFolder();
+  try{
+   const selected=path.join(folder,id),checkArchive=await bindDirectory(selected);
+   if(!checkArchive)throw new Error('Backup unavailable');
+   const manifest=await verifyBackup(selected,migrationsDir);await checkArchive();await checkFolder();
+   backups.push({id,status:'verified',createdUtc:new Date(manifest.createdUtc).toISOString(),fileCount:manifest.files.length,manifestIdentity:backupManifestIdentity(manifest)});
+  }catch{await checkFolder();backups.push({id,status:'rejected'});}
+ }
+ await checkFolder();return {backups};
 }
 /** Close live SQLite connection before calling. Returns rollback directory to retain until user confirms. */
 export async function restoreBackup(backupPath:string,activeRoot:string,migrationsDir?:string,expectedIdentity?:string):Promise<{rollbackPath:string|null}> {

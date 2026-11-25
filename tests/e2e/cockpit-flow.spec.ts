@@ -188,7 +188,7 @@ export const PACKAGED_SECURITY_METHODS=Object.freeze([
  'ping','createProject','updateProject','listProjects','listProjectsDetailed','updateProjectDetails','setProjectStatus',
  'getBusinessProfile','updateBusinessProfile','getBusinessLogo','chooseBusinessLogo','removeBusinessLogo',
  'importReceiptImage','saveSyntheticPdf','chooseBackupFolderAndBackUp','getBackupFolder','chooseBackupFolder',
- 'backUpToSelectedFolder','chooseBackupAndRestore','storeFakeSecretProof','checkFakeSecretProof','removeFakeSecretProof'
+ 'backUpToSelectedFolder','listVerifiedBackups','chooseBackupAndRestore','storeFakeSecretProof','checkFakeSecretProof','removeFakeSecretProof'
 ]);
 const SECURITY_CSP="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'";
 /** Exact expression sent to the packaged renderer; independently executable in a JS-only fixture. */
@@ -285,7 +285,7 @@ export async function runPackagedSecurityFlow(primary:SecurityWindow,foreign:Sec
  const navigationAttempted=navigationAttempts()===beforeAttempts+1;
  const navigationDenied=navigationAttempted&&primary.webContents.getURL()===beforeUrl&&beforeUrl==='tmapp://app/index.html';
  const stateUnchanged=effectsAfterInvokes&&snapshot()===baseline;
- return {schema:'tm-renderer-security-v1',synthetic:true,foreignResults,malformedResults,stateUnchanged,actualPrefs,isolation,expectedCsp:SECURITY_CSP,security,navigationAttempted,navigationDenied};
+ return {schema:'tm-renderer-security-v2',synthetic:true,foreignResults,malformedResults,stateUnchanged,actualPrefs,isolation,expectedCsp:SECURITY_CSP,security,navigationAttempted,navigationDenied};
 }
 
 /** Real development renderer CSS hot-update proof; runner changes only an ignored synthetic fixture. */
@@ -410,5 +410,5 @@ export async function collectRawIpcProof(win:RawProofWindow,snapshot:()=>string,
  const firstUnchanged=snapshot()===baseline;
  await win.loadURL(RAW_DENIED_URL);
  const wrongTop=await read(win.webContents.mainFrame,RAW_DENIED_URL);
- return {schema:'tm-native-raw-ipc-v1',synthetic:true,source:'packaged-binary',trusted,children,wrongTop,stateUnchanged:firstUnchanged&&snapshot()===baseline};
+ return {schema:'tm-native-raw-ipc-v2',synthetic:true,source:'packaged-binary',trusted,children,wrongTop,stateUnchanged:firstUnchanged&&snapshot()===baseline};
 }

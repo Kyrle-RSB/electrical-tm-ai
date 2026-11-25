@@ -1,4 +1,4 @@
-import type {BusinessLogoStatus} from '../../../../packages/contracts/src/ipc/settings.contract';
+import type {BackupListResult,BusinessLogoStatus} from '../../../../packages/contracts/src/ipc/settings.contract';
 import {CHANNELS,type AllowedChannel} from '../../../../packages/contracts/src/ipc/channel-map';
 import type {ProjectInput,ProjectEditInput,ProjectDetailsInput,ProjectStatusInput,ProjectData,DetailedProject} from '../../../../packages/contracts/src/ipc/projects.contract';
 import type {BusinessInput} from '../../../../packages/contracts/src/ipc/request-envelope';
@@ -23,6 +23,7 @@ export function createBridge(invoke:BridgeTransport){return Object.freeze({
  getBackupFolder:()=>invoke<{folder:string|null}>(CHANNELS.backupGetLocation),
  chooseBackupFolder:()=>invoke<{folder:string}|null>(CHANNELS.backupChooseLocation),
  backUpToSelectedFolder:()=>invoke<{backupPath:string;manifest:unknown}>(CHANNELS.backupCreateStored),
+ listVerifiedBackups:()=>invoke<BackupListResult>(CHANNELS.backupListVerified),
  chooseBackupAndRestore:()=>invoke<unknown>(CHANNELS.backupRestore),
  storeFakeSecretProof:()=>invoke<unknown>(CHANNELS.fakeSecretStore,'TEST-FAKE-EXAMPLE'),
  checkFakeSecretProof:()=>invoke<unknown>(CHANNELS.fakeSecretCheck),

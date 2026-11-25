@@ -59,7 +59,7 @@ test('preload bridge is frozen and invokes only the fixed channel map',async()=>
  await bridge.listProjects();await bridge.listProjectsDetailed();await bridge.updateProjectDetails({id,...v.details});await bridge.setProjectStatus({id,status:'archived'});
  await bridge.getBusinessProfile();await bridge.updateBusinessProfile({legalName:'Synthetic',tradeName:'',phone:'',email:'',mailingAddress:'',taxId:'',contractorLicense:''});
  await bridge.getBusinessLogo();await bridge.chooseBusinessLogo();await bridge.removeBusinessLogo();
- await bridge.importReceiptImage();await bridge.saveSyntheticPdf();await bridge.chooseBackupFolderAndBackUp();await bridge.getBackupFolder();await bridge.chooseBackupFolder();await bridge.backUpToSelectedFolder();await bridge.chooseBackupAndRestore();await bridge.storeFakeSecretProof();await bridge.checkFakeSecretProof();await bridge.removeFakeSecretProof();
+ await bridge.importReceiptImage();await bridge.saveSyntheticPdf();await bridge.chooseBackupFolderAndBackUp();await bridge.getBackupFolder();await bridge.chooseBackupFolder();await bridge.backUpToSelectedFolder();await bridge.listVerifiedBackups();await bridge.chooseBackupAndRestore();await bridge.storeFakeSecretProof();await bridge.checkFakeSecretProof();await bridge.removeFakeSecretProof();
  assert.deepEqual(seen,[...ALL_CHANNELS]);
 });
 

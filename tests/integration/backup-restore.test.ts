@@ -454,3 +454,35 @@ test('backup database subdirectory redirection cannot write SQLite bytes outside
   await assert.rejects(createBackup(store,live,external));assert.equal(redirected,true,'database directory redirection did not execute');assert.deepEqual(fs.readdirSync(outside),[]);assert.deepEqual(store.listProjects(),[]);
  }finally{fs.promises.mkdir=mkdir;store.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('configured backup list verifies archive identities without accepting renderer paths or modifying originals',async()=>{
+ const {registerBackupHandlers}=await import('../../apps/desktop/src/main/ipc/handlers/backups');
+ const {BackupDestinationPreference}=await import('../../packages/backup/src/backup-destination');
+ const {backupManifestIdentity}=await import('../../packages/backup/src/backup-manifest');
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-backup-list-'))),profile=path.join(root,'profile'),live=path.join(profile,'data'),external=path.join(root,'external');
+ const db=new LocalStore(path.join(live,'db','app.sqlite'),migrations);db.initializeFictionalCompany();
+ try{
+  const first=await createBackup(db,live,external),second=await createBackup(db,live,external);
+  const goodId=path.basename(first.backupPath),badId=path.basename(second.backupPath),linkedId='tm-backup-2026-11-25T00-00-00-000Z-abcdef';
+  fs.appendFileSync(path.join(second.backupPath,'db','app.sqlite'),'synthetic tamper');
+  fs.symlinkSync(first.backupPath,path.join(external,linkedId),process.platform==='win32'?'junction':'dir');
+  fs.mkdirSync(path.join(external,'.'+goodId+'.incomplete'));fs.writeFileSync(path.join(external,'unrelated.txt'),'unrelated');
+  const pref=new BackupDestinationPreference(path.join(profile,'settings','backup.json'),profile);
+  const handlers=new Map<string,(payload?:unknown)=>Promise<unknown>>();
+  registerBackupHandlers((channel,validate,operation)=>{handlers.set(channel,async(payload)=>operation('synthetic',validate(payload)));},{dialogs:{chooseFolder:async()=>{throw new Error('Unexpected picker');},confirmRestore:async()=>{throw new Error('Unexpected restore consent');}},preference:pref,dataRoot:live,migrationsDir:migrations,getStore:()=>db,setStore:()=>{throw new Error('Unexpected store replacement');},reopen:()=>{throw new Error('Unexpected reopen');},onFatalRecovery:()=>{throw new Error('Unexpected fatal recovery');}});
+  const list=handlers.get('backup.listVerified');assert.equal(typeof list,'function','F08 configured backup list route is missing');
+  await assert.rejects(list!(),/Select a backup folder/);
+  await pref.set(external);
+  const hash=(file:string)=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  const census=()=>fs.readdirSync(external).sort().map(name=>{const p=path.join(external,name);return [name,fs.lstatSync(p).isSymbolicLink()?'link':fs.lstatSync(p).isFile()?hash(p):fs.readdirSync(p).sort()];});
+  const before=census(),goodHash=hash(path.join(first.backupPath,'db','app.sqlite')),badHash=hash(path.join(second.backupPath,'db','app.sqlite'));
+  await assert.rejects(list!({folder:live}),/No payload allowed/);
+  const result=await list!() as {backups:Array<{id:string;status:string;manifestIdentity?:string;fileCount?:number}>};
+  assert.deepEqual(result.backups.map(b=>b.id).sort(),[goodId,badId,linkedId].sort());
+  assert.deepEqual(result.backups.find(b=>b.id===goodId),{id:goodId,status:'verified',createdUtc:first.manifest.createdUtc,fileCount:first.manifest.files.length,manifestIdentity:backupManifestIdentity(first.manifest)});
+  for(const id of [badId,linkedId])assert.deepEqual(result.backups.find(b=>b.id===id),{id,status:'rejected'});
+  assert.deepEqual(census(),before);assert.equal(hash(path.join(first.backupPath,'db','app.sqlite')),goodHash);assert.equal(hash(path.join(second.backupPath,'db','app.sqlite')),badHash);assert.deepEqual(db.listProjects(),[]);
+  const prefs=path.join(profile,'settings','backup.json');fs.writeFileSync(prefs,JSON.stringify({version:1,folder:live}));
+  await assert.rejects(list!(),/separate/);
+ }finally{db.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

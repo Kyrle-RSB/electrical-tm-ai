@@ -72,11 +72,18 @@ export class BackupDestinationPreference {
   if(x?.version!==1||typeof x.folder!=='string'||!path.isAbsolute(x.folder))throw new Error('Backup location settings are damaged; select a new folder');
   return x.folder;
  }
- async validate(folder:string):Promise<string>{
+ async validateReadLocation(folder:string):Promise<string>{
   if(!path.isAbsolute(folder))throw new Error('Backup folder must be an absolute path');
   const normalized=await fs.promises.realpath(folder);
   const root=await canonicalBackupPath(this.dataRoot);
   if(backupPathsOverlap(normalized,root))throw new Error('Choose a backup location separate from application data');
+  const check=await bindDirectory(folder);if(!check)throw new Error('Backup location unavailable');
+  await check();if(await fs.promises.realpath(folder)!==normalized)throw new Error('Unsafe backup location directory changed');
+  return normalized;
+ }
+ async validate(folder:string):Promise<string>{
+  if(!path.isAbsolute(folder))throw new Error('Backup folder must be an absolute path');
+  const normalized=await this.validateReadLocation(await fs.promises.realpath(folder));
   const check=await bindDirectory(normalized);if(!check)throw new Error('Backup location must be a directory');
   const probe=path.join(normalized,`.tm-folder-check-${crypto.randomBytes(8).toString('hex')}`);
   let identity:fs.Stats|undefined;

@@ -18,6 +18,7 @@ export const CHANNELS = {
   backupGetLocation:'backup.getLocation',
   backupChooseLocation:'backup.chooseLocation',
   backupCreateStored:'backup.createInSelectedFolder',
+  backupListVerified:'backup.listVerified',
   backupRestore: 'backup.restore',
   fakeSecretStore: 'secrets.probeStoreFake',
   fakeSecretCheck: 'secrets.probeCheckFake',
