@@ -29,16 +29,30 @@ export function createStartupRecorder(userDataRoot:string){
  ensureOwnedDirectory(path.dirname(file));
  const directories=[userDataRoot,path.dirname(file)].map(directory=>({directory,identity:fs.lstatSync(directory)}));
  const checkDirectories=()=>{for(const {directory,identity} of directories){const named=fs.lstatSync(directory);if(!named.isDirectory()||named.isSymbolicLink()||named.dev!==identity.dev||named.ino!==identity.ino)throw new Error('Unsafe diagnostic directory changed');}};
- checkDirectories();
- if(fs.existsSync(file)){const stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new Error('Unsafe diagnostic file');}
+ const inspect=():fs.Stats|null=>{
+  try{const stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new Error('Unsafe diagnostic file');return stat;}
+  catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error;}
+ };
+ const sameIdentity=(a:fs.Stats,b:fs.Stats)=>a.dev===b.dev&&a.ino===b.ino;
+ checkDirectories();let identity=inspect();checkDirectories();
  return {
   file,
   record(event:string,state:StartupEvent['state']){
    if(!SAFE_EVENT.test(event))throw new Error('Invalid diagnostic event identifier');
    const line:StartupEvent={atUtc:new Date().toISOString(),event,state};
-   checkDirectories();
-   const fd=fs.openSync(file,fs.constants.O_WRONLY|fs.constants.O_APPEND|fs.constants.O_CREAT|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0),0o600);
-   try{ownedDescriptor(file,fd);checkDirectories();fs.appendFileSync(fd,JSON.stringify(line)+'\n',{encoding:'utf8'});}finally{fs.closeSync(fd);}
+   checkDirectories();const before=inspect();
+   if(identity===null?before!==null:before===null||!sameIdentity(identity,before))throw new Error('Unsafe diagnostic file changed');
+   // Never append to a newly substituted regular file, or claim an unrelated
+   // first-create collision as our own. Retain the opened identity across calls.
+   const flags=fs.constants.O_WRONLY|fs.constants.O_APPEND|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0)|(before===null?fs.constants.O_CREAT|fs.constants.O_EXCL:0);
+   const fd=fs.openSync(file,flags,0o600);
+   try{
+    const opened=ownedDescriptor(file,fd);checkDirectories();
+    if(before!==null&&(!sameIdentity(before,opened)||before.size!==opened.size||before.mtimeMs!==opened.mtimeMs||before.ctimeMs!==opened.ctimeMs))throw new Error('Unsafe diagnostic file changed');
+    identity=opened;
+    fs.appendFileSync(fd,JSON.stringify(line)+'\n',{encoding:'utf8'});
+    ownedDescriptor(file,fd);checkDirectories();
+   }finally{fs.closeSync(fd);}
   }
  };
 }

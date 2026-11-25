@@ -166,3 +166,58 @@ test('synthetic lifecycle admission refuses linked files inside its persistent d
   assert.throws(()=>resolveLifecycleProof(env),/Invalid lifecycle profile object/);assert.equal(fs.readFileSync(external,'utf8'),'SYNTHETIC EXTERNAL');
  }finally{fs.rmSync(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});fs.rmSync(outside,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('startup diagnostic append refuses regular-file substitution during open',()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-diagnostic-file-swap-'))),profile=path.join(root,'profile'),parked=path.join(root,'original.jsonl'),other=path.join(root,'other.jsonl');
+ const open=fs.openSync;let injected=false;
+ try{
+  const log=createStartupRecorder(profile);log.record('startup.begin','begin');const prior=fs.readFileSync(log.file);
+  const unrelated=Buffer.from('SYNTHETIC UNRELATED CONTENT');fs.writeFileSync(other,unrelated);
+  fs.openSync=((...args:Parameters<typeof open>)=>{
+   if(!injected&&String(args[0])===log.file){fs.renameSync(log.file,parked);fs.renameSync(other,log.file);injected=true;}
+   return open(...args);
+  }) as typeof open;
+  assert.throws(()=>log.record('startup.finish','pass'),/Unsafe|changed/);assert.equal(injected,true);
+  assert.deepEqual(fs.readFileSync(parked),prior);assert.deepEqual(fs.readFileSync(log.file),unrelated);
+ }finally{fs.openSync=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('first diagnostic append refuses an exclusive-create collision and retains unrelated bytes',()=>{
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'forkb-diagnostic-collision-'))),open=fs.openSync;let injected=false;
+ try{
+  const log=createStartupRecorder(path.join(root,'profile'));const unrelated=Buffer.from('SYNTHETIC COLLISION');
+  fs.openSync=((...args:Parameters<typeof open>)=>{
+   if(!injected&&String(args[0])===log.file){injected=true;fs.writeFileSync(log.file,unrelated,{flag:'wx',mode:0o600});}
+   return open(...args);
+  }) as typeof open;
+  assert.throws(()=>log.record('startup.begin','begin'),/EEXIST|Unsafe|changed/);assert.equal(injected,true);assert.deepEqual(fs.readFileSync(log.file),unrelated);
+ }finally{fs.openSync=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
+
+test('lifecycle proof opens existing marker and receipt read-only and never creates missing files',async()=>{
+ const {resolveLifecycleProof}=await import('../../apps/desktop/src/main/bootstrap');
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'tm-native-lifecycle-'))),nonce='0123456789abcdef0123456789abcdef';
+ const marker=path.join(root,'.tm-lifecycle.json'),receipt=path.join(root,'lifecycle-seed.json'),env={TM_LIFECYCLE_PROFILE:root,TM_LIFECYCLE_STAGE:'reopen',TM_LIFECYCLE_NONCE:nonce};
+ const open=fs.openSync,observed:string[]=[];
+ try{
+  fs.openSync=((...args:Parameters<typeof open>)=>{
+   if(String(args[0])===marker||String(args[0])===receipt){const flags=args[1];assert.equal(typeof flags,'number');assert.equal(Number(flags)&(fs.constants.O_CREAT|fs.constants.O_TRUNC|fs.constants.O_WRONLY|fs.constants.O_RDWR|fs.constants.O_APPEND),0);observed.push(String(args[0]));}
+   return open(...args);
+  }) as typeof open;
+  assert.throws(()=>resolveLifecycleProof(env),/Invalid lifecycle marker/);assert.deepEqual(fs.readdirSync(root),[]);
+  fs.openSync=open;fs.writeFileSync(marker,JSON.stringify({schema:'tm-lifecycle-v1',nonce}),{flag:'wx',mode:0o600});
+  const prior=fs.readFileSync(marker);
+  // Reinstall the observer without intercepting synthetic fixture construction.
+  const recordOpen=((...args:Parameters<typeof open>)=>{
+   if(String(args[0])===marker||String(args[0])===receipt){const flags=args[1];assert.equal(typeof flags,'number');assert.equal(Number(flags)&(fs.constants.O_CREAT|fs.constants.O_TRUNC|fs.constants.O_WRONLY|fs.constants.O_RDWR|fs.constants.O_APPEND),0);observed.push(String(args[0]));}
+   return open(...args);
+  }) as typeof open;
+  fs.openSync=recordOpen;
+  assert.throws(()=>resolveLifecycleProof(env),/Invalid prior lifecycle receipt/);assert.equal(fs.existsSync(receipt),false);
+  fs.openSync=open;fs.writeFileSync(receipt,JSON.stringify({schema:'tm-lifecycle-v1',nonce,stage:'seed',synthetic:true}),{flag:'wx',mode:0o600});const previousReceipt=fs.readFileSync(receipt);
+  fs.openSync=recordOpen;
+  assert.equal(resolveLifecycleProof(env)?.stage,'reopen');
+  assert.deepEqual(observed,[marker,marker,receipt,marker,receipt]);
+  fs.openSync=open;assert.deepEqual(fs.readFileSync(marker),prior);assert.deepEqual(fs.readFileSync(receipt),previousReceipt);
+ }finally{fs.openSync=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
