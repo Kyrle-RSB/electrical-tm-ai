@@ -427,9 +427,24 @@ test('backup refuses an unreferenced attachment changed in the stage before mani
  const store=new LocalStore(path.join(live,'db','app.sqlite'),migrations);store.initializeFictionalCompany();fs.mkdirSync(path.join(live,'artifacts'));const source=path.join(live,'artifacts','orphan.pdf');fs.writeFileSync(source,original);
  const readdir=fs.promises.readdir;let corrupted=false;
  try{
-  fs.promises.readdir=(async(...args:Parameters<typeof readdir>)=>{const p=String(args[0]);if(!corrupted&&path.basename(p).endsWith('.incomplete')){const f=path.join(p,'artifacts','orphan.pdf');if(fs.existsSync(f)){const b=fs.readFileSync(f);b[0]^=1;fs.writeFileSync(f,b);corrupted=true;}}return readdir(...args);}) as typeof readdir;
+  fs.promises.readdir=(async(...args:Parameters<typeof readdir>)=>{
+   const p=String(args[0]);
+   if(!corrupted&&path.dirname(p)===external&&/^\.tm-backup-[0-9TZ-]+-[a-f0-9]{6}\.incomplete$/.test(path.basename(p))){
+    const f=path.join(p,'artifacts','orphan.pdf');
+    // Mutate only the known synthetic stage, through its checked descriptor.
+    // No existence-check/pathname write pair, and no following a substituted link.
+    const fd=fs.openSync(f,fs.constants.O_RDWR|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
+    try{
+     const opened=fs.fstatSync(fd),named=fs.lstatSync(f);
+     assert.ok(opened.isFile()&&named.isFile()&&!named.isSymbolicLink()&&opened.nlink===1&&named.nlink===1&&opened.dev===named.dev&&opened.ino===named.ino&&opened.size===original.length&&named.size===opened.size&&fs.realpathSync(f)===f,'unsafe synthetic corruption target');
+     const byte=Buffer.alloc(1);assert.equal(fs.readSync(fd,byte,0,1,0),1);assert.equal(byte[0],original[0]);byte[0]^=1;
+     assert.equal(fs.writeSync(fd,byte,0,1,0),1);fs.fsyncSync(fd);corrupted=true;
+    }finally{fs.closeSync(fd);}
+   }
+   return readdir(...args);
+  }) as typeof readdir;
   const result=await createBackup(store,live,external).then(()=>null,e=>e);
-  assert.equal(corrupted,true,'stage corruption fixture did not execute');assert.ok(result instanceof Error,'corrupted stage was published');assert.deepEqual(fs.readFileSync(source),original);assert.deepEqual(fs.readdirSync(external),[]);
+  assert.equal(corrupted,true,'stage corruption fixture did not execute');assert.ok(result instanceof Error,'corrupted stage was published');assert.match(result.message,/Backup staged content differs from source/);assert.deepEqual(fs.readFileSync(source),original);assert.deepEqual(fs.readdirSync(external),[]);
  }finally{fs.promises.readdir=readdir;store.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
 
