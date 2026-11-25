@@ -44,6 +44,7 @@ function validateRegression(log){
  }
  requireCheck(Number.isSafeInteger(counts.tests)&&counts.tests>0&&counts.pass===counts.tests&&['fail','cancelled','skipped','todo'].every(k=>counts[k]===0),'Incomplete or nonpassing regression summary');
 }
+const stepPassed=(r,id)=>r.steps.some(x=>x.id===id&&x.status==='PASS');
 function validateReport(r,names,file){
  requireCheck(['2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17'].includes(r.contractVersion),'Unknown native contract');
  requireCheck(r.kind==='fork-b-native-proof'&&r.formalAcceptanceVerdict==='UNASSESSED'&&hex(r.testedSourceFingerprint,64),'Invalid evidence identity or formal acceptance claim');
@@ -58,8 +59,8 @@ function validateReport(r,names,file){
  requireCheck(Object.keys(host).length===Object.keys(r.host??{}).length&&Object.entries(host).every(([k,v])=>r.host[k]===v)&&host.sourceFingerprint===r.testedSourceFingerprint&&(host.platform==='darwin'&&host.architecture==='arm64'||host.platform==='win32'&&host.architecture==='x64')&&/^v24\.\d+\.\d+$/.test(host.node)&&host.pnpmPinned==='pnpm@12.21.0','Host receipt mismatch');
  requireCheck(r.manualTests==='NOT_EXECUTED_BY_AUTOMATION'&&r.independentReview==='NOT_EXECUTED_BY_AUTOMATION','Automation cannot claim manual review');
  const manual=JSON.parse(file('manual-evidence-template.json').toString());requireCheck(manual.hostFingerprint===r.testedSourceFingerprint&&Array.isArray(manual.scenarios)&&manual.scenarios.length===0&&manual.reviewer===null,'Unexpected manual evidence assertion');
- if(pass){
-  validateRegression(file('logs/local-tests.log').toString());
+ if(pass||r.contractVersion==='17'&&stepPassed(r,'local-tests'))validateRegression(file('logs/local-tests.log').toString());
+ if(pass||r.contractVersion==='17'&&stepPassed(r,'packaged-build')){
   const artifacts=r.artifactHashes;
   requireCheck(Array.isArray(artifacts)&&artifacts.length>0&&new Set(artifacts.map(x=>x.name)).size===artifacts.length&&artifacts.every(x=>safePath(x.name)&&x.name.startsWith('apps/desktop/out/make/')&&Number.isSafeInteger(x.bytes)&&x.bytes>0&&hex(x.sha256,64))&&artifacts.some(x=>host.platform==='darwin'?x.name.includes('/darwin/arm64/'):x.name.includes('/win32/x64/')),'Missing or invalid native artifact identity');
  }
@@ -75,6 +76,11 @@ function selfTest(){
  const names=new Set(['host.json','result.json','source-provenance.json','manual-evidence-template.json','SHARE_SAFELY.md',...r.steps.map(x=>x.log)]);
  const file=name=>Buffer.from(name==='host.json'?JSON.stringify(host):name==='manual-evidence-template.json'?JSON.stringify({hostFingerprint:host.sourceFingerprint,scenarios:[],reviewer:null}):summary);
  validateReport(r,names,file);reject(()=>validateReport({...r,contractVersion:'999'},names,file));reject(()=>validateReport({...r,steps:r.steps.map((x,i)=>i===1?{...x,exitCode:1}:x)},names,file));reject(()=>validateReport(r,new Set([...names].filter(x=>x!=='logs/local-tests.log')),file));reject(()=>validateReport({...r,artifactHashes:[]},names,file));reject(()=>validateReport({...r,host:{...host,architecture:'x64'}},names,file));reject(()=>validateReport({...r,independentReview:'PASS'},names,file));
+ const partial={...r,contractVersion:'17',verdict:'NATIVE_AUTOMATED_SUBSET_FAIL',steps:expectedFor('17').slice(0,8).map(id=>({id,status:id==='native-packaged-smoke'?'FAIL':'PASS',exitCode:id==='native-packaged-smoke'?1:0,signal:null,note:null,log:'logs/'+id+'.log'}))};
+ const partialNames=new Set([...names,...partial.steps.map(x=>x.log)]);
+ validateReport(partial,partialNames,file);
+ reject(()=>validateReport(partial,partialNames,name=>name==='logs/local-tests.log'?Buffer.from(summary.replace('pass 10','pass 9')):file(name)));
+ reject(()=>validateReport({...partial,artifactHashes:[]},partialNames,file));
  console.log('PASS: synthetic audit admission tests (not native execution evidence)');
 }
 if(process.argv.includes('--self-test')){selfTest();process.exit(0);}
@@ -96,13 +102,19 @@ try{
    const canonical=sha(JSON.stringify(provenance.files.map(({path,mode,blob})=>({path,mode,blob}))));
    if(canonical!==provenance.manifestSha256||r.sourceProvenance.commit!==provenance.commit||r.sourceProvenance.tree!==provenance.tree||r.sourceProvenance.manifestSha256!==canonical)fail('Git manifest identity mismatch');
   }else if(provenance.status!=='ARCHIVE_ONLY_NO_GIT_PROOF')fail('Unknown source provenance');
-  if(r.verdict==='NATIVE_AUTOMATED_SUBSET_PASS'){
+  const fullPass=r.verdict==='NATIVE_AUTOMATED_SUBSET_PASS';
+  const current=r.contractVersion==='17';
+  // A late failure must not exempt completed positive claims from their own receipt checks.
+  // Historical red archives retain their original integrity-only semantics.
+  if(current&&stepPassed(r,'install')&&!file('logs/install.log').toString().includes('Cold-cache proof: newly created empty'))fail('Cold cache receipt missing');
+  if(current&&stepPassed(r,'native-dev-hmr'))parseDevelopmentHmrRunnerLog(file('logs/native-dev-hmr.log').toString());
+  if(fullPass||current&&stepPassed(r,'native-packaged-smoke')){
    const smoke=JSON.parse(file('logs/native-packaged-smoke.log').toString());
    if(['4','5','6','7','8','9','10','11','12','13','14','15','16','17'].includes(r.contractVersion)&&!validateCockpitFlowReceipt(smoke.cockpitFlow))fail('Packaged cockpit flow evidence missing');
    if(['5','6','7','8','9','10','11','12','13','14','15','16','17'].includes(r.contractVersion)&&!validateAdversarialLifecycle(smoke.lifecycle))fail('Adversarial native lifecycle evidence missing');
    if(['6','7','8','9','10','11','12','13','14','15','16','17'].includes(r.contractVersion)&&!validateRendererSecurityReceipt(smoke.rendererSecurity,['16','17'].includes(r.contractVersion)?2:1))fail('Native renderer security evidence missing');
    if(['7','8','9','10','11','12','13','14','15','16','17'].includes(r.contractVersion)&&!validateDiagnosticDenials(smoke.lifecycle?.diagnosticDenials))fail('Native diagnostic denial evidence missing');
-   if(['8','9','10','11','12','13','14','15','16','17'].includes(r.contractVersion))parseDevelopmentHmrRunnerLog(file('logs/native-dev-hmr.log').toString());
+   if(fullPass&&['8','9','10','11','12','13','14','15','16','17'].includes(r.contractVersion))parseDevelopmentHmrRunnerLog(file('logs/native-dev-hmr.log').toString());
    if(['9','10','11','12','13','14','15','16','17'].includes(r.contractVersion)&&(!validatePortIsolation(smoke.portIsolation)||smoke.rawIpc?.exitCode!==0||smoke.rawIpc?.spawnFailed!==false||!validateRawIpcProof(smoke.rawIpc?.receipt,['16','17'].includes(r.contractVersion)?2:1)||!validateInvalidRendererDenial(smoke.lifecycle?.diagnosticDenials)))fail('Actual raw IPC, port isolation or invalid renderer evidence missing');
    if(['10','11','12','13','14','15','16','17'].includes(r.contractVersion)&&(!validateStartupReadiness(smoke.startupReadiness)||!validateInterruptedRestoreDenial(smoke.lifecycle?.interruptedRestore)))fail('Actual readiness or interrupted restore denial missing');
    if(['11','12','13','14','15','16','17'].includes(r.contractVersion)){
@@ -110,13 +122,21 @@ try{
     for(const layout of smoke.cockpitFlow.layouts){const shot=layout.screenshot,p='screenshots/'+shot.name;if(!man.files.some(x=>x.path===p&&x.sha256===shot.sha256)||!validateCockpitPng(file(p),shot))fail('Screenshot receipt mismatch '+p);}
    }
    if(['12','13','14','15','16','17'].includes(r.contractVersion)&&(!validateAbnormalLifecycle(smoke.lifecycle)||!validateBackupCoverage(smoke.backupCoverage,r.contractVersion==='17'?3:r.contractVersion==='16'?2:1)||!file('logs/install.log').toString().includes('Cold-cache proof: newly created empty')))fail('Extended lifecycle, backup or cold cache receipt missing');
-   if(['13','14','15','16','17'].includes(r.contractVersion)){
+   if((fullPass||current&&stepPassed(r,'native-entrypoint-denials'))&&['13','14','15','16','17'].includes(r.contractVersion)){
     const damaged=smoke.lifecycle?.diagnosticDenials?.damagedEntrypoints,admission=JSON.parse(file('logs/native-entrypoint-denials.log').toString());
     if(['14','15','16','17'].includes(r.contractVersion)&&!['PROCESS_STREAM','OWNED_NATIVE_ERROR_DIALOG'].includes(damaged?.results?.[1]?.loaderDiagnostic?.surface))fail('Named native loader diagnostic surface missing');
     if(!validateDamagedEntrypoints(damaged,['15','16','17'].includes(r.contractVersion))||admission.schema!=='tm-native-entrypoint-admission-v1'||admission.verdict!=='PASS'||admission.receiptSha256!==sha(JSON.stringify(damaged)))fail('Actual damaged entrypoint denial missing');
    }
+   if(current&&r.steps.some(x=>x.id==='native-entrypoint-denials'&&x.status==='FAIL')){
+    // A collector crash can lack an admission receipt; a structured denial must agree with its source.
+    let admission;try{admission=JSON.parse(file('logs/native-entrypoint-denials.log').toString());}catch{/* No structured admission claim. */}
+    if(admission!==undefined){
+     const damaged=smoke.lifecycle?.diagnosticDenials?.damagedEntrypoints;
+     if(admission.schema!=='tm-native-entrypoint-admission-v1'||admission.verdict!=='FAIL'||admission.receiptSha256!==sha(JSON.stringify(damaged??null))||validateDamagedEntrypoints(damaged,true))fail('Contradictory failed entrypoint admission');
+    }
+   }
    if(smoke.verdict!=='PASS'||JSON.stringify(smoke.checks)!==JSON.stringify(NATIVE_REQUIRED_CHECKS)||smoke.lifecycle?.verdict!=='PASS'||smoke.lifecycle?.shutdowns!==3||!validateLifecycleReceipts(smoke.lifecycle?.receipts,smoke.lifecycle?.receipts?.[0]?.nonce??'')||smoke.lifecycle?.runs?.length!==3||smoke.lifecycle.runs.some(x=>x.exitCode!==0||x.failed))fail('Full process lifecycle proof missing');
   }
  }
- console.log(JSON.stringify({integrity:'PASS',filesVerified:man.files.length,nativeSubsetVerdict:r.verdict,formalAcceptance:'UNASSESSED',sourceFingerprint:r.testedSourceFingerprint},null,2));
+ console.log(JSON.stringify({integrity:'PASS',filesVerified:man.files.length,nativeSubsetVerdict:r.verdict,formalAcceptance:'UNASSESSED',sourceFingerprint:r.testedSourceFingerprint,...(r.contractVersion==='17'?{completedStepReceipts:r.sourceAfterVerified===true?'CHECKED_WHERE_STRUCTURED':'SOURCE_DRIFT_UNADMITTED'}:{})},null,2));
 }catch(e){fail(e.message)}
