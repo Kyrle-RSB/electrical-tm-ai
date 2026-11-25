@@ -22,8 +22,12 @@ jobs:
           node-version-file: '.nvmrc'
       - name: Execute complete native evidence collector
         run: node scripts/capture-native-proof.mjs --execute
-      - name: Upload redacted native proof, including failures
+      - name: Admit native evidence only after known-signature screening
+        id: evidence-admission
         if: always()
+        run: node scripts/audit-source-secrets.mjs --native-evidence
+      - name: Upload redacted native proof, including failures
+        if: always() && steps.evidence-admission.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: fork-b-macos-arm64-evidence

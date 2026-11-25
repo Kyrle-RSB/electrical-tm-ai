@@ -29,11 +29,15 @@ jobs:
       - run: node scripts/capture-native-proof.mjs --git-provenance-self-test
       - run: node scripts/run-packaged-smoke.mjs --self-test
       - run: node scripts/audit-native-proof.mjs --self-test
-      - run: node scripts/audit-source-secrets.mjs
+      - run: node scripts/audit-source-secrets.mjs --self-test
       - run: node scripts/verify-licenses.mjs --self-test
       - run: node scripts/audit-requirements.mjs
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - name: Admit source failure evidence only after known-signature screening
+        id: failure-evidence-admission
         if: failure()
+        run: node scripts/audit-source-secrets.mjs --source-failure-evidence
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure() && steps.failure-evidence-admission.outcome == 'success'
         with:
           name: failed-source-logs
           path: dist-probe/
