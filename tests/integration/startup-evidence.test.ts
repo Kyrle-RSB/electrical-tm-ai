@@ -201,7 +201,7 @@ test('lifecycle proof opens existing marker and receipt read-only and never crea
  const open=fs.openSync,observed:string[]=[];
  try{
   fs.openSync=((...args:Parameters<typeof open>)=>{
-   if(String(args[0])===marker||String(args[0])===receipt){const flags=args[1];assert.equal(typeof flags,'number');assert.equal(Number(flags)&(fs.constants.O_CREAT|fs.constants.O_TRUNC|fs.constants.O_WRONLY|fs.constants.O_RDWR|fs.constants.O_APPEND),0);observed.push(String(args[0]));}
+   if(String(args[0])===marker||String(args[0])===receipt){const flags=args[1];assert.equal(typeof flags,'number');assert.equal(args[2],0o600);assert.equal(Number(flags)&(fs.constants.O_CREAT|fs.constants.O_TRUNC|fs.constants.O_WRONLY|fs.constants.O_RDWR|fs.constants.O_APPEND),0);observed.push(String(args[0]));}
    return open(...args);
   }) as typeof open;
   assert.throws(()=>resolveLifecycleProof(env),/Invalid lifecycle marker/);assert.deepEqual(fs.readdirSync(root),[]);
@@ -209,7 +209,7 @@ test('lifecycle proof opens existing marker and receipt read-only and never crea
   const prior=fs.readFileSync(marker);
   // Reinstall the observer without intercepting synthetic fixture construction.
   const recordOpen=((...args:Parameters<typeof open>)=>{
-   if(String(args[0])===marker||String(args[0])===receipt){const flags=args[1];assert.equal(typeof flags,'number');assert.equal(Number(flags)&(fs.constants.O_CREAT|fs.constants.O_TRUNC|fs.constants.O_WRONLY|fs.constants.O_RDWR|fs.constants.O_APPEND),0);observed.push(String(args[0]));}
+   if(String(args[0])===marker||String(args[0])===receipt){const flags=args[1];assert.equal(typeof flags,'number');assert.equal(args[2],0o600);assert.equal(Number(flags)&(fs.constants.O_CREAT|fs.constants.O_TRUNC|fs.constants.O_WRONLY|fs.constants.O_RDWR|fs.constants.O_APPEND),0);observed.push(String(args[0]));}
    return open(...args);
   }) as typeof open;
   fs.openSync=recordOpen;

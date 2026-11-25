@@ -14,7 +14,9 @@ function readProofJson(file:string,maxBytes:number,label:string,checkProfile:()=
  let fd:number|undefined;
  try{
   checkProfile();
-  fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
+  // Read-only: mode cannot create or change permissions on an existing file.
+  // Explicit owner-only mode also prevents a permissive default if creation is ever introduced.
+  fd=fs.openSync(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0),0o600);
   const opened=ownedDescriptor(file,fd,maxBytes);checkProfile();
   const bytes=Buffer.alloc(opened.size);
   let offset=0;while(offset<bytes.length){const n=fs.readSync(fd,bytes,offset,bytes.length-offset,offset);if(n===0)throw new Error('Changed proof file');offset+=n;}
