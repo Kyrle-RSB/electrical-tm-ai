@@ -218,7 +218,7 @@ async function run(){
     // A native packaged smoke runs ONLY with its own temporary synthetic profile.
     // This test is not a substitute for a clean-machine or independent human review.
     const checks:string[]=[];
-    let currentCheck='packaging';
+    let currentCheck='packaging',cockpitStage='not-started';
     let succeeded=false;
     let cockpitFlow:Awaited<ReturnType<typeof runPackagedCockpitFlow>>|null=null;
     let packagedHealth=false,packagedOrigin:string|null=null;
@@ -255,11 +255,13 @@ async function run(){
       if(!report||!path.isAbsolute(report))throw new Error('Missing synthetic capture destination');
       const dir=fs.realpathSync(path.dirname(report)),tmp=fs.realpathSync(os.tmpdir()),relative=path.relative(tmp,dir);
       const stat=fs.lstatSync(dir);if(!/^tm-native-smoke-run-[a-zA-Z0-9]+$/.test(relative)||!stat.isDirectory()||stat.isSymbolicLink()||(process.platform!=='win32'&&((stat.mode&0o077)!==0||stat.uid!==process.getuid?.())))throw new Error('Invalid synthetic capture destination');
+      cockpitStage='capture-directory';
       cockpitFlow=await runPackagedCockpitFlow(win,nativeTheme,(name,bytes)=>{
         if(!/^cockpit-(1440x900|1280x800)-(light|dark)\.png$/.test(name))throw new Error('Invalid synthetic capture name');
         const current=fs.lstatSync(dir);if(current.isSymbolicLink()||!current.isDirectory()||current.dev!==stat.dev||current.ino!==stat.ino)throw new Error('Changed synthetic capture destination');
         fs.writeFileSync(path.join(dir,name),bytes,{flag:'wx',mode:0o600});
-      });
+      },stage=>{cockpitStage=stage;});
+      cockpitStage='persisted-reasons';
       const uiProject=store.listProjectsDetailed().find(p=>p.project_code==='COCKPIT-UI-001');
       if(!uiProject)throw new Error('Missing synthetic UI project');
       const reasons=store.db.prepare("SELECT action,reason FROM audit_events WHERE entity_id=? AND action LIKE 'project.status.%' ORDER BY rowid").all(uiProject.id);
@@ -365,7 +367,7 @@ async function run(){
       recorder.record('packaged.smoke.'+currentCheck,'fail');
     }
     const report={schema:'tm-native-smoke-v3',passed:checks,failed:succeeded?null:currentCheck,
-      source:'packaged-binary',synthetic:true,cockpitFlow,rendererSecurity,packagedOrigin,packagedHealth,startupReadiness};
+      source:'packaged-binary',synthetic:true,cockpitFlow,cockpitStage,rendererSecurity,packagedOrigin,packagedHealth,startupReadiness};
     // Windows GUI executables do not guarantee that stdout is attached to a terminal.
     // The native runner supplies a new, unpredictable, temp-only evidence path.
     const receiptPath=process.env.TM_SMOKE_REPORT_PATH;

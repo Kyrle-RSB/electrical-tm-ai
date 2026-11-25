@@ -429,7 +429,7 @@ if(process.argv.includes('--self-test')){
     console.log(JSON.stringify({schema:'tm-native-smoke-runner-v3',platform:process.platform,arch:process.arch,
       binarySha256,exitCode:result.status,signal:result.signal,verdict:success?'PASS':'FAIL',
       checks:receipt?.passed||[],failedCheck:receipt?.failed||(!verified?'missing-or-invalid-report':lifecycle?.verdict==='FAIL'?'full-process-lifecycle':!validateRawIpcProof(rawIpc?.receipt)?'raw-ipc':null),
-      lifecycle,cockpitFlow:receipt?.cockpitFlow??null,rendererSecurity:receipt?.rendererSecurity??null,portIsolation,rawIpc,startupReadiness:receipt?.startupReadiness??null,
+      lifecycle,cockpitFlow:receipt?.cockpitFlow??null,cockpitStage:receipt?.cockpitStage??null,rendererSecurity:receipt?.rendererSecurity??null,portIsolation,rawIpc,startupReadiness:receipt?.startupReadiness??null,
       note:'PACKAGED, ISOLATED, SYNTHETIC test only. Other Phase 2 acceptance/reviews remain open.',
       diagnosticTail:success?null:sanitize(((result.stdout||'')+'\n'+(result.stderr||'')).slice(-1200)),
       error:result.error?sanitize(result.error.message):null},null,2));
