@@ -125,8 +125,11 @@ if(process.argv.includes('--bootstrap')){
  const version=mustOutput(pn(['--version']),'pnpm version');if(version!==pinned)throw new Error('Unexpected pnpm version');
  const linker=mustOutput(pn(['config','get','node-linker']),'effective linker');checkLinker(linker);
  const lock=checkLock(root,process.env.GITHUB_ACTIONS==='true');
- const expected=read(path.join(root,'.nvmrc')).trim();if(process.versions.node!==expected)throw new Error('Node version does not match .nvmrc');
- bootstrap={node:process.versions.node,pnpm:version,nodeLinker:linker,lock};
+ // CI must run the exact .nvmrc pin. A developer machine may run any Node at or above
+ // the pinned major (package.json engines); the receipt records whether it was exact.
+ const expected=read(path.join(root,'.nvmrc')).trim(),nodeExact=process.versions.node===expected;
+ if(!nodeExact&&(process.env.GITHUB_ACTIONS==='true'||Number(process.versions.node.split('.')[0])<Number(expected.split('.')[0])))throw new Error('Node version does not match .nvmrc');
+ bootstrap={node:process.versions.node,nodePinned:expected,nodeExact,pnpm:version,nodeLinker:linker,lock};
 }
 const errors=[...trace.errors,...absent.map(p=>`Required path missing: ${p}`)];
 if(process.argv.includes('--require-complete')&&trace.pending.length)errors.push('Original approved task implementation paths remain unresolved');

@@ -11,6 +11,7 @@ canonical.delete('apps/desktop/src/renderer/index.html');canonical.add('apps/des
 // Existing supporting test/config/evidence paths in the native-verified baseline;
 // these are not additions to the approved application-module catalog.
 const supplemental=new Set([
+ 'AGENTS.md','CLAUDE.md','docs/architecture/adr/0010-source-lint.md',
  '.github/workflows/codeql.yml','.nvmrc','apps/desktop/tsconfig.json',
  'docs/phase-1/evidence/README.md','docs/phase-1/evidence/REPAIR_SESSION_2026-11-23.md',
  'docs/public-repo/REPOSITORY_STANDARDS.md','packages/persistence-sqlite/src/migrations/0005-evidence-integrity.sql',
@@ -28,6 +29,8 @@ const ignored=new Set(['node_modules','dist-probe','.vite','.git','out','coverag
 const discovered=[];
 function visit(folder){for(const entry of fs.readdirSync(folder,{withFileTypes:true})){
  const abs=path.join(folder,entry.name),rel=path.relative(root,abs).split(path.sep).join('/');
+ // A linked Git worktree has a .git file, not a directory; neither is source.
+ if(entry.name==='.git'&&folder===root)continue;
  if(entry.isDirectory()){if(!ignored.has(entry.name))visit(abs);}
  else if(entry.isFile())discovered.push(rel);
 }}
