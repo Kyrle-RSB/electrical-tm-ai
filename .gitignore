@@ -21,3 +21,6 @@ vendor-secrets/
 
 # Local verification packets, never commit or publish
 .local-evidence/
+
+# Electron Forge Vite build output
+apps/desktop/.vite/
