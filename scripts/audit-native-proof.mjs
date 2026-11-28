@@ -36,7 +36,7 @@ function validateManifest(man,actual,file){
  for(const x of man.files)requireCheck(sha(file(x.path))===x.sha256,'Mismatched '+x.path);
  return names;
 }
-const expectedFor=v=>['install','local-tests','desktop-typecheck','source-quality','smoke-contract','module-audit','packaged-build','native-packaged-smoke',...(['8','9','10','11','12','13','14','15','16','17'].includes(v)?['native-dev-hmr']:[]),...(['13','14','15','16','17'].includes(v)?['native-entrypoint-denials']:[])];
+const expectedFor=v=>['install','local-tests','desktop-typecheck','source-quality','smoke-contract','module-audit','packaged-build','native-packaged-smoke',...(['8','9','10','11','12','13','14','15','16','17','18'].includes(v)?['native-dev-hmr']:[]),...(['13','14','15','16','17','18'].includes(v)?['native-entrypoint-denials']:[])];
 function validateRegression(log){
  const counts={};for(const line of log.split(/\r?\n/)){
   const m=/^(?:ℹ|#) (tests|pass|fail|cancelled|skipped|todo) (\d+)$/.exec(line.trim());if(!m)continue;
@@ -46,21 +46,21 @@ function validateRegression(log){
 }
 const stepPassed=(r,id)=>r.steps.some(x=>x.id===id&&x.status==='PASS');
 function validateReport(r,names,file){
- requireCheck(['2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17'].includes(r.contractVersion),'Unknown native contract');
+ requireCheck(['2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18'].includes(r.contractVersion),'Unknown native contract');
  requireCheck(r.kind==='fork-b-native-proof'&&r.formalAcceptanceVerdict==='UNASSESSED'&&hex(r.testedSourceFingerprint,64),'Invalid evidence identity or formal acceptance claim');
  requireCheck(['NATIVE_AUTOMATED_SUBSET_PASS','NATIVE_AUTOMATED_SUBSET_FAIL'].includes(r.verdict),'Invalid native subset result');
  const expected=expectedFor(r.contractVersion),pass=r.verdict==='NATIVE_AUTOMATED_SUBSET_PASS';
  requireCheck(Array.isArray(r.steps)&&r.steps.length>0&&r.steps.length<=expected.length,'Invalid executed steps');
  for(const [i,x] of r.steps.entries())requireCheck(x.id===expected[i]&&['PASS','FAIL'].includes(x.status)&&x.log==='logs/'+x.id+'.log'&&names.has(x.log)&&(x.status!=='PASS'||x.exitCode===0&&x.signal===null&&x.note===null)&&(i===r.steps.length-1||x.status==='PASS'),'Missing or contradictory step '+i);
  requireCheck(!pass||r.steps.length===expected.length&&r.steps.every(x=>x.status==='PASS'),'Unsupported PASS conclusion');
- if(!['12','13','14','15','16','17'].includes(r.contractVersion))return;
+ if(!['12','13','14','15','16','17','18'].includes(r.contractVersion))return;
  for(const name of ['host.json','result.json','source-provenance.json','manual-evidence-template.json','SHARE_SAFELY.md'])requireCheck(names.has(name),'Missing required receipt '+name);
  const host=JSON.parse(file('host.json').toString());
  requireCheck(Object.keys(host).length===Object.keys(r.host??{}).length&&Object.entries(host).every(([k,v])=>r.host[k]===v)&&host.sourceFingerprint===r.testedSourceFingerprint&&(host.platform==='darwin'&&host.architecture==='arm64'||host.platform==='win32'&&host.architecture==='x64')&&/^v24\.\d+\.\d+$/.test(host.node)&&host.pnpmPinned==='pnpm@12.21.0','Host receipt mismatch');
  requireCheck(r.manualTests==='NOT_EXECUTED_BY_AUTOMATION'&&r.independentReview==='NOT_EXECUTED_BY_AUTOMATION','Automation cannot claim manual review');
  const manual=JSON.parse(file('manual-evidence-template.json').toString());requireCheck(manual.hostFingerprint===r.testedSourceFingerprint&&Array.isArray(manual.scenarios)&&manual.scenarios.length===0&&manual.reviewer===null,'Unexpected manual evidence assertion');
- if(pass||r.contractVersion==='17'&&stepPassed(r,'local-tests'))validateRegression(file('logs/local-tests.log').toString());
- if(pass||r.contractVersion==='17'&&stepPassed(r,'packaged-build')){
+ if(pass||r.contractVersion==='18'&&stepPassed(r,'local-tests'))validateRegression(file('logs/local-tests.log').toString());
+ if(pass||r.contractVersion==='18'&&stepPassed(r,'packaged-build')){
   const artifacts=r.artifactHashes;
   requireCheck(Array.isArray(artifacts)&&artifacts.length>0&&new Set(artifacts.map(x=>x.name)).size===artifacts.length&&artifacts.every(x=>safePath(x.name)&&x.name.startsWith('apps/desktop/out/make/')&&Number.isSafeInteger(x.bytes)&&x.bytes>0&&hex(x.sha256,64))&&artifacts.some(x=>host.platform==='darwin'?x.name.includes('/darwin/arm64/'):x.name.includes('/win32/x64/')),'Missing or invalid native artifact identity');
  }
@@ -76,7 +76,7 @@ function selfTest(){
  const names=new Set(['host.json','result.json','source-provenance.json','manual-evidence-template.json','SHARE_SAFELY.md',...r.steps.map(x=>x.log)]);
  const file=name=>Buffer.from(name==='host.json'?JSON.stringify(host):name==='manual-evidence-template.json'?JSON.stringify({hostFingerprint:host.sourceFingerprint,scenarios:[],reviewer:null}):summary);
  validateReport(r,names,file);reject(()=>validateReport({...r,contractVersion:'999'},names,file));reject(()=>validateReport({...r,steps:r.steps.map((x,i)=>i===1?{...x,exitCode:1}:x)},names,file));reject(()=>validateReport(r,new Set([...names].filter(x=>x!=='logs/local-tests.log')),file));reject(()=>validateReport({...r,artifactHashes:[]},names,file));reject(()=>validateReport({...r,host:{...host,architecture:'x64'}},names,file));reject(()=>validateReport({...r,independentReview:'PASS'},names,file));
- const partial={...r,contractVersion:'17',verdict:'NATIVE_AUTOMATED_SUBSET_FAIL',steps:expectedFor('17').slice(0,8).map(id=>({id,status:id==='native-packaged-smoke'?'FAIL':'PASS',exitCode:id==='native-packaged-smoke'?1:0,signal:null,note:null,log:'logs/'+id+'.log'}))};
+ const partial={...r,contractVersion:'18',verdict:'NATIVE_AUTOMATED_SUBSET_FAIL',steps:expectedFor('18').slice(0,8).map(id=>({id,status:id==='native-packaged-smoke'?'FAIL':'PASS',exitCode:id==='native-packaged-smoke'?1:0,signal:null,note:null,log:'logs/'+id+'.log'}))};
  const partialNames=new Set([...names,...partial.steps.map(x=>x.log)]);
  validateReport(partial,partialNames,file);
  reject(()=>validateReport(partial,partialNames,name=>name==='logs/local-tests.log'?Buffer.from(summary.replace('pass 10','pass 9')):file(name)));
@@ -92,7 +92,7 @@ try{
  const names=validateManifest(man,inventory(dir),file);
  const r=JSON.parse(file('result.json').toString());
  validateReport(r,names,file);
- if(['3','4','5','6','7','8','9','10','11','12','13','14','15','16','17'].includes(r.contractVersion)){
+ if(['3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18'].includes(r.contractVersion)){
   const provenance=JSON.parse(file('source-provenance.json').toString());
   if(r.sourceProvenance?.status!==provenance.status)fail('Source provenance status mismatch');
   if(r.verdict==='NATIVE_AUTOMATED_SUBSET_PASS'&&r.sourceAfterVerified!==true)fail('Source drift was not excluded');
@@ -103,29 +103,29 @@ try{
    if(canonical!==provenance.manifestSha256||r.sourceProvenance.commit!==provenance.commit||r.sourceProvenance.tree!==provenance.tree||r.sourceProvenance.manifestSha256!==canonical)fail('Git manifest identity mismatch');
   }else if(provenance.status!=='ARCHIVE_ONLY_NO_GIT_PROOF')fail('Unknown source provenance');
   const fullPass=r.verdict==='NATIVE_AUTOMATED_SUBSET_PASS';
-  const current=r.contractVersion==='17';
+  const current=r.contractVersion==='18';
   // A late failure must not exempt completed positive claims from their own receipt checks.
   // Historical red archives retain their original integrity-only semantics.
   if(current&&stepPassed(r,'install')&&!file('logs/install.log').toString().includes('Cold-cache proof: newly created empty'))fail('Cold cache receipt missing');
-  if(current&&stepPassed(r,'native-dev-hmr'))parseDevelopmentHmrRunnerLog(file('logs/native-dev-hmr.log').toString());
+  if(current&&stepPassed(r,'native-dev-hmr'))parseDevelopmentHmrRunnerLog(file('logs/native-dev-hmr.log').toString(),r.contractVersion);
   if(fullPass||current&&stepPassed(r,'native-packaged-smoke')){
    const smoke=JSON.parse(file('logs/native-packaged-smoke.log').toString());
-   if(['4','5','6','7','8','9','10','11','12','13','14','15','16','17'].includes(r.contractVersion)&&!validateCockpitFlowReceipt(smoke.cockpitFlow))fail('Packaged cockpit flow evidence missing');
-   if(['5','6','7','8','9','10','11','12','13','14','15','16','17'].includes(r.contractVersion)&&!validateAdversarialLifecycle(smoke.lifecycle))fail('Adversarial native lifecycle evidence missing');
-   if(['6','7','8','9','10','11','12','13','14','15','16','17'].includes(r.contractVersion)&&!validateRendererSecurityReceipt(smoke.rendererSecurity,['16','17'].includes(r.contractVersion)?2:1))fail('Native renderer security evidence missing');
-   if(['7','8','9','10','11','12','13','14','15','16','17'].includes(r.contractVersion)&&!validateDiagnosticDenials(smoke.lifecycle?.diagnosticDenials))fail('Native diagnostic denial evidence missing');
-   if(fullPass&&['8','9','10','11','12','13','14','15','16','17'].includes(r.contractVersion))parseDevelopmentHmrRunnerLog(file('logs/native-dev-hmr.log').toString());
-   if(['9','10','11','12','13','14','15','16','17'].includes(r.contractVersion)&&(!validatePortIsolation(smoke.portIsolation)||smoke.rawIpc?.exitCode!==0||smoke.rawIpc?.spawnFailed!==false||!validateRawIpcProof(smoke.rawIpc?.receipt,['16','17'].includes(r.contractVersion)?2:1)||!validateInvalidRendererDenial(smoke.lifecycle?.diagnosticDenials)))fail('Actual raw IPC, port isolation or invalid renderer evidence missing');
-   if(['10','11','12','13','14','15','16','17'].includes(r.contractVersion)&&(!validateStartupReadiness(smoke.startupReadiness)||!validateInterruptedRestoreDenial(smoke.lifecycle?.interruptedRestore)))fail('Actual readiness or interrupted restore denial missing');
-   if(['11','12','13','14','15','16','17'].includes(r.contractVersion)){
-    if(!validateExtendedCockpitReceipt(smoke.cockpitFlow))fail('Extended cockpit evidence missing');
+   if(['4','5','6','7','8','9','10','11','12','13','14','15','16','17','18'].includes(r.contractVersion)&&!validateCockpitFlowReceipt(smoke.cockpitFlow))fail('Packaged cockpit flow evidence missing');
+   if(['5','6','7','8','9','10','11','12','13','14','15','16','17','18'].includes(r.contractVersion)&&!validateAdversarialLifecycle(smoke.lifecycle))fail('Adversarial native lifecycle evidence missing');
+   if(['6','7','8','9','10','11','12','13','14','15','16','17','18'].includes(r.contractVersion)&&!validateRendererSecurityReceipt(smoke.rendererSecurity,['16','17','18'].includes(r.contractVersion)?2:1))fail('Native renderer security evidence missing');
+   if(['7','8','9','10','11','12','13','14','15','16','17','18'].includes(r.contractVersion)&&!validateDiagnosticDenials(smoke.lifecycle?.diagnosticDenials))fail('Native diagnostic denial evidence missing');
+   if(fullPass&&['8','9','10','11','12','13','14','15','16','17','18'].includes(r.contractVersion))parseDevelopmentHmrRunnerLog(file('logs/native-dev-hmr.log').toString(),r.contractVersion);
+   if(['9','10','11','12','13','14','15','16','17','18'].includes(r.contractVersion)&&(!validatePortIsolation(smoke.portIsolation)||smoke.rawIpc?.exitCode!==0||smoke.rawIpc?.spawnFailed!==false||!validateRawIpcProof(smoke.rawIpc?.receipt,['16','17','18'].includes(r.contractVersion)?2:1)||!validateInvalidRendererDenial(smoke.lifecycle?.diagnosticDenials)))fail('Actual raw IPC, port isolation or invalid renderer evidence missing');
+   if(['10','11','12','13','14','15','16','17','18'].includes(r.contractVersion)&&(!validateStartupReadiness(smoke.startupReadiness,r.contractVersion)||!validateInterruptedRestoreDenial(smoke.lifecycle?.interruptedRestore)))fail('Actual readiness or interrupted restore denial missing');
+   if(['11','12','13','14','15','16','17','18'].includes(r.contractVersion)){
+    if(!validateExtendedCockpitReceipt(smoke.cockpitFlow,r.contractVersion))fail('Extended cockpit evidence missing');
     for(const layout of smoke.cockpitFlow.layouts){const shot=layout.screenshot,p='screenshots/'+shot.name;if(!man.files.some(x=>x.path===p&&x.sha256===shot.sha256)||!validateCockpitPng(file(p),shot))fail('Screenshot receipt mismatch '+p);}
    }
-   if(['12','13','14','15','16','17'].includes(r.contractVersion)&&(!validateAbnormalLifecycle(smoke.lifecycle)||!validateBackupCoverage(smoke.backupCoverage,r.contractVersion==='17'?3:r.contractVersion==='16'?2:1)||!file('logs/install.log').toString().includes('Cold-cache proof: newly created empty')))fail('Extended lifecycle, backup or cold cache receipt missing');
-   if((fullPass||current&&stepPassed(r,'native-entrypoint-denials'))&&['13','14','15','16','17'].includes(r.contractVersion)){
+   if(['12','13','14','15','16','17','18'].includes(r.contractVersion)&&(!validateAbnormalLifecycle(smoke.lifecycle)||!validateBackupCoverage(smoke.backupCoverage,['17','18'].includes(r.contractVersion)?3:r.contractVersion==='16'?2:1)||!file('logs/install.log').toString().includes('Cold-cache proof: newly created empty')))fail('Extended lifecycle, backup or cold cache receipt missing');
+   if((fullPass||current&&stepPassed(r,'native-entrypoint-denials'))&&['13','14','15','16','17','18'].includes(r.contractVersion)){
     const damaged=smoke.lifecycle?.diagnosticDenials?.damagedEntrypoints,admission=JSON.parse(file('logs/native-entrypoint-denials.log').toString());
-    if(['14','15','16','17'].includes(r.contractVersion)&&!['PROCESS_STREAM','OWNED_NATIVE_ERROR_DIALOG'].includes(damaged?.results?.[1]?.loaderDiagnostic?.surface))fail('Named native loader diagnostic surface missing');
-    if(!validateDamagedEntrypoints(damaged,['15','16','17'].includes(r.contractVersion))||admission.schema!=='tm-native-entrypoint-admission-v1'||admission.verdict!=='PASS'||admission.receiptSha256!==sha(JSON.stringify(damaged)))fail('Actual damaged entrypoint denial missing');
+    if(['14','15','16','17','18'].includes(r.contractVersion)&&!['PROCESS_STREAM','OWNED_NATIVE_ERROR_DIALOG'].includes(damaged?.results?.[1]?.loaderDiagnostic?.surface))fail('Named native loader diagnostic surface missing');
+    if(!validateDamagedEntrypoints(damaged,['15','16','17','18'].includes(r.contractVersion))||admission.schema!=='tm-native-entrypoint-admission-v1'||admission.verdict!=='PASS'||admission.receiptSha256!==sha(JSON.stringify(damaged)))fail('Actual damaged entrypoint denial missing');
    }
    if(current&&r.steps.some(x=>x.id==='native-entrypoint-denials'&&x.status==='FAIL')){
     // A collector crash can lack an admission receipt; a structured denial must agree with its source.
@@ -138,5 +138,5 @@ try{
    if(smoke.verdict!=='PASS'||JSON.stringify(smoke.checks)!==JSON.stringify(NATIVE_REQUIRED_CHECKS)||smoke.lifecycle?.verdict!=='PASS'||smoke.lifecycle?.shutdowns!==3||!validateLifecycleReceipts(smoke.lifecycle?.receipts,smoke.lifecycle?.receipts?.[0]?.nonce??'')||smoke.lifecycle?.runs?.length!==3||smoke.lifecycle.runs.some(x=>x.exitCode!==0||x.failed))fail('Full process lifecycle proof missing');
   }
  }
- console.log(JSON.stringify({integrity:'PASS',filesVerified:man.files.length,nativeSubsetVerdict:r.verdict,formalAcceptance:'UNASSESSED',sourceFingerprint:r.testedSourceFingerprint,...(r.contractVersion==='17'?{completedStepReceipts:r.sourceAfterVerified===true?'CHECKED_WHERE_STRUCTURED':'SOURCE_DRIFT_UNADMITTED'}:{})},null,2));
+ console.log(JSON.stringify({integrity:'PASS',filesVerified:man.files.length,nativeSubsetVerdict:r.verdict,formalAcceptance:'UNASSESSED',sourceFingerprint:r.testedSourceFingerprint,...(r.contractVersion==='18'?{completedStepReceipts:r.sourceAfterVerified===true?'CHECKED_WHERE_STRUCTURED':'SOURCE_DRIFT_UNADMITTED'}:{})},null,2));
 }catch(e){fail(e.message)}

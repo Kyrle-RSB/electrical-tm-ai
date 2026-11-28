@@ -259,7 +259,7 @@ async function run(){
     let succeeded=false;
     let cockpitFlow:Awaited<ReturnType<typeof runPackagedCockpitFlow>>|null=null;
     let packagedHealth=false,packagedOrigin:string|null=null;
-    let startupReadiness:{elapsedMs:number;title:string;rootWidth:number;rootHeight:number;heading:string;health:boolean}|null=null;
+    let startupReadiness:{elapsedMs:number;title:string;rootWidth:number;rootHeight:number;heading:string;navigation:string[];health:boolean}|null=null;
     let rendererSecurity:Awaited<ReturnType<typeof runPackagedSecurityFlow>>|null=null;
     try {
       if(!app.isPackaged||DEV_URL)throw new Error('Not an independent packaged runtime');
@@ -268,13 +268,15 @@ async function run(){
       const probe=await win.webContents.executeJavaScript(`(async()=>{
         const health=await window.tmBridge.ping();
         const root=document.querySelector('#root');const rect=root?.getBoundingClientRect();
-        const heading=root?.querySelector('h1');
+        // The shell opens a fresh profile on Today: read the visible screen's heading and the sidebar.
+        const heading=root?.querySelector('[data-screen]:not([hidden]) h1');
+        const navigation=[...(root?.querySelectorAll('nav[aria-label="Main"] button')??[])].map(b=>b.textContent?.trim()??'');
         return {title:document.title,rootWidth:rect?.width??0,rootHeight:rect?.height??0,
-          heading:heading?.textContent??'',health:health.status==='ok'&&health.foundation===true,
+          heading:heading?.textContent??'',navigation,health:health.status==='ok'&&health.foundation===true,
           rendered:!!root&&getComputedStyle(root).display!=='none'&&getComputedStyle(root).visibility==='visible'};
       })()`);
-      startupReadiness={elapsedMs:Math.ceil(process.uptime()*1000),title:probe.title,rootWidth:probe.rootWidth,rootHeight:probe.rootHeight,heading:probe.heading,health:probe.health};
-      if(!probe.rendered||!startupReadiness.title.includes('Electrical T&M')||startupReadiness.heading!=='Local foundation cockpit'||!startupReadiness.health||startupReadiness.rootWidth<=0||startupReadiness.rootHeight<=0||startupReadiness.elapsedMs>15000)throw new Error('Packaged renderer readiness oracle failed');
+      startupReadiness={elapsedMs:Math.ceil(process.uptime()*1000),title:probe.title,rootWidth:probe.rootWidth,rootHeight:probe.rootHeight,heading:probe.heading,navigation:Array.isArray(probe.navigation)?probe.navigation.map(String):[],health:probe.health};
+      if(!probe.rendered||!startupReadiness.title.includes('Electrical T&M')||startupReadiness.heading!=='Today'||startupReadiness.navigation.join('|')!=='Today|Jobs|Customers|Crew|Materials|Invoices|Reports|Settings'||!startupReadiness.health||startupReadiness.rootWidth<=0||startupReadiness.rootHeight<=0||startupReadiness.elapsedMs>15000)throw new Error('Packaged renderer readiness oracle failed');
       packagedHealth=true;packagedOrigin=win.webContents.getURL();
       if(packagedOrigin!=='tmapp://app/index.html')throw new Error('Unexpected packaged renderer origin');
       // Disposable project and full logical mutation census, never production data.

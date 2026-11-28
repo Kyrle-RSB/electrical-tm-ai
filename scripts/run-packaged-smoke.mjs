@@ -22,10 +22,17 @@ export function validateCockpitFlowReceipt(receipt){
  const expected=[[1440,900,'light'],[1440,900,'dark'],[1280,800,'light'],[1280,800,'dark']];
  return receipt.layouts.every((x,i)=>x.requestedWidth===expected[i][0]&&x.requestedHeight===expected[i][1]&&x.appearance===expected[i][2]&&x.zoomFactor===2&&x.overflow===false&&x.labels===true&&Number.isFinite(x.viewportWidth)&&x.viewportWidth>0&&Number.isFinite(x.viewportHeight)&&x.viewportHeight>0&&Array.isArray(x.contentSize)&&x.contentSize.length===2&&x.contentSize.every(n=>Number.isFinite(n)&&n>0));
 }
-/** Contract 11 extends, never replaces, the historical receipt checks. */
-export function validateExtendedCockpitReceipt(receipt){
+/** Contract 18 (the app shell, ADR-0013): the window opens on Today in the sidebar shell,
+ * so the readiness heading changed. Earlier contracts keep their own heading. */
+export const SHELL_CONTRACT_VERSION='18';
+export const SHELL_NAVIGATION=Object.freeze(['Today','Jobs','Customers','Crew','Materials','Invoices','Reports','Settings']);
+const isShellContract=version=>/^[0-9]+$/.test(String(version))&&Number(version)>=Number(SHELL_CONTRACT_VERSION);
+export const readinessHeadingFor=version=>isShellContract(version)?'Today':'Local foundation cockpit';
+/** Contract 11 extends, never replaces, the historical receipt checks; contract 18 adds
+ * the shell: sidebar navigation, the command palette and its focus return. */
+export function validateExtendedCockpitReceipt(receipt,version=SHELL_CONTRACT_VERSION){
  if(!validateCockpitFlowReceipt(receipt)||receipt.firstRunEmpty!==true||receipt.statusReasonsPersisted!==true||receipt.themeStatePreserved!==true)return false;
- const flags=['duplicateDenied','missingCustomerDenied','taxLengthDenied','cancelEdit','cancelStatus','longContent','disabledReason'];
+ const flags=['duplicateDenied','missingCustomerDenied','taxLengthDenied','cancelEdit','cancelStatus','longContent','disabledReason',...(isShellContract(version)?['shellOpensToday','shellNavigation','paletteNavigation','paletteFocusReturn']:[])];
  if(flags.some(flag=>receipt.interaction?.[flag]!==true))return false;
  return receipt.layouts.every(x=>{
   const shot=x.screenshot;
@@ -71,8 +78,9 @@ export function validatePortIsolation(proof){
  return proof?.schema==='tm-port-isolation-v1'&&proof.port===5173&&proof.ipv4?.address==='127.0.0.1'&&proof.ipv4?.port===5173&&proof.ipv4?.family==='IPv4'&&((proof.ipv6?.address==='::1'&&proof.ipv6?.port===5173&&proof.ipv6?.family==='IPv6'&&proof.ipv6Unavailable===null)||(proof.ipv6===null&&['EAFNOSUPPORT','EADDRNOTAVAIL','EPROTONOSUPPORT'].includes(proof.ipv6Unavailable)))&&proof.connections===0&&proof.trapError===false&&proof.packagedOrigin==='tmapp://app/index.html'&&proof.packagedHealth===true;
 }
 export function validateBackupCoverage(proof,version=3){return ['png','jpeg','distinctLogo','issuedPdf','exactInventory','verifiedSecretExclusion','freshRestore','activeRestore','assetHashes','logicalRows','tamperRejected',...(version===1?[]:['verifiedList','rejectedList']),...(version>=3?['uiRestore','uiCancelPreservedDrafts','uiDiscardedStaleDrafts','uiRestoredBusinessLogo','uiRestoreControlsLocked','uiRollbackPreserved']:[])].every(key=>proof?.[key]===true);}
-export function validateStartupReadiness(proof){
- return proof?.health===true&&typeof proof.title==='string'&&proof.title.includes('Electrical T&M')&&proof.heading==='Local foundation cockpit'&&Number.isFinite(proof.elapsedMs)&&proof.elapsedMs>0&&proof.elapsedMs<=15000&&Number.isFinite(proof.rootWidth)&&proof.rootWidth>0&&Number.isFinite(proof.rootHeight)&&proof.rootHeight>0;
+export function validateStartupReadiness(proof,version=SHELL_CONTRACT_VERSION){
+ const navigation=!isShellContract(version)||Array.isArray(proof?.navigation)&&proof.navigation.length===SHELL_NAVIGATION.length&&proof.navigation.every((label,i)=>label===SHELL_NAVIGATION[i]);
+ return proof?.health===true&&typeof proof.title==='string'&&proof.title.includes('Electrical T&M')&&proof.heading===readinessHeadingFor(version)&&navigation&&Number.isFinite(proof.elapsedMs)&&proof.elapsedMs>0&&proof.elapsedMs<=15000&&Number.isFinite(proof.rootWidth)&&proof.rootWidth>0&&Number.isFinite(proof.rootHeight)&&proof.rootHeight>0;
 }
 /** Simulate an interrupted directory switch only after a successful synthetic lifecycle. */
 function runInterruptedRestoreDenial(binary,env,profile){
@@ -510,16 +518,16 @@ async function runLifecycle(binary){
  finally{fs.rmSync(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 }
 const DEV_CSP=REQUIRED_CSP.replace("style-src 'self'","style-src 'self' 'unsafe-inline'").replace("connect-src 'none'","connect-src 'self' ws://localhost:* ws://127.0.0.1:*");
-export function validateDevelopmentHmrReceipt(receipt){
+export function validateDevelopmentHmrReceipt(receipt,version=SHELL_CONTRACT_VERSION){
  if(receipt?.schema!=='tm-dev-hmr-v1'||receipt.synthetic!==true||receipt.documentPreserved!==true||receipt.loopbackOrigin!==true||!/^[a-f0-9]{32}$/.test(receipt.nonce))return false;
  return ['before','after'].every((key,i)=>{
-  const row=receipt[key];return row?.value===(i?'updated-':'initial-')+receipt.nonce&&row.marker===receipt.nonce&&row.title==='Local foundation cockpit'&&row.csp===DEV_CSP&&row.health===true&&row.requireAbsent===true&&row.processAbsent===true;
+  const row=receipt[key];return row?.value===(i?'updated-':'initial-')+receipt.nonce&&row.marker===receipt.nonce&&row.title===readinessHeadingFor(version)&&row.csp===DEV_CSP&&row.health===true&&row.requireAbsent===true&&row.processAbsent===true;
  });
 }
 /** Preserve the raw native log; permit only Electron's exact one-time download notice. */
-export function parseDevelopmentHmrRunnerLog(log){
+export function parseDevelopmentHmrRunnerLog(log,version=SHELL_CONTRACT_VERSION){
  const report=JSON.parse(log.replace(/^Downloading Electron binary\.\.\.\r?\n/,''));
- if(report?.schema!=='tm-dev-hmr-runner-v1'||report.verdict!=='PASS'||report.synthetic!==true||report.viteVersion!=='8.3.8'||report.fixtureOnly!==true||report.exit?.exitCode!==0||report.exit?.spawnFailed!==false||!validateDevelopmentHmrReceipt(report.receipt))throw new Error('Actual development HMR proof missing');
+ if(report?.schema!=='tm-dev-hmr-runner-v1'||report.verdict!=='PASS'||report.synthetic!==true||report.viteVersion!=='8.3.8'||report.fixtureOnly!==true||report.exit?.exitCode!==0||report.exit?.spawnFailed!==false||!validateDevelopmentHmrReceipt(report.receipt,version))throw new Error('Actual development HMR proof missing');
  return report;
 }
 /** Use actual pinned Vite and Electron, actual main/preload/renderer source, and a synthetic
@@ -585,7 +593,9 @@ async function runDevelopmentHmr(root){
 if(process.argv.includes('--self-test')){
   const cockpitFlow={schema:'tm-cockpit-flow-v1',synthetic:true,interaction:{profileSaved:true,projectCreated:true,projectEdited:true,archiveReopen:true,stableIdentity:true,helpFocusReturn:true},layouts:[[1440,900,'light'],[1440,900,'dark'],[1280,800,'light'],[1280,800,'dark']].map(([width,height,appearance])=>({requestedWidth:width,requestedHeight:height,contentSize:[width,height],zoomFactor:2,appearance,viewportWidth:width/2,viewportHeight:height/2,overflow:false,labels:true}))};
   const rendererSecurity={schema:'tm-renderer-security-v2',synthetic:true,stateUnchanged:true,navigationAttempted:true,navigationDenied:true,actualPrefs:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,webviewTag:false},isolation:{requireAbsent:true,processAbsent:true,bridgeKeys:[...SECURITY_METHODS_V2],csp:REQUIRED_CSP},expectedCsp:REQUIRED_CSP,security:{inlineBlocked:true,evalBlocked:true,networkBlocked:true,frameBlocked:true,popupDenied:true,permissionDenied:true,violations:['script-src-elem','script-src','connect-src','frame-src']},foreignResults:SECURITY_METHODS_V2.map(method=>({method,code:'SECURITY'})),malformedResults:MALFORMED_CASES.map(id=>({id,code:'VALIDATION'}))};
-  const extended={...cockpitFlow,firstRunEmpty:true,statusReasonsPersisted:true,themeStatePreserved:true,interaction:{...cockpitFlow.interaction,duplicateDenied:true,missingCustomerDenied:true,taxLengthDenied:true,cancelEdit:true,cancelStatus:true,longContent:true,disabledReason:true},layouts:cockpitFlow.layouts.map(x=>({...x,contentSize:[x.requestedWidth,x.requestedHeight],textChecks:25,minTextRatio:4.5,minLargeRatio:3,focusRatio:3,focusVisible:true,screenshot:{name:`cockpit-${x.requestedWidth}x${x.requestedHeight}-${x.appearance}.png`,bytes:1024,sha256:'a'.repeat(64),width:x.requestedWidth,height:x.requestedHeight}}))};
+  const extended={...cockpitFlow,firstRunEmpty:true,statusReasonsPersisted:true,themeStatePreserved:true,interaction:{...cockpitFlow.interaction,duplicateDenied:true,missingCustomerDenied:true,taxLengthDenied:true,cancelEdit:true,cancelStatus:true,longContent:true,disabledReason:true,shellOpensToday:true,shellNavigation:true,paletteNavigation:true,paletteFocusReturn:true},layouts:cockpitFlow.layouts.map(x=>({...x,contentSize:[x.requestedWidth,x.requestedHeight],textChecks:25,minTextRatio:4.5,minLargeRatio:3,focusRatio:3,focusVisible:true,screenshot:{name:`cockpit-${x.requestedWidth}x${x.requestedHeight}-${x.appearance}.png`,bytes:1024,sha256:'a'.repeat(64),width:x.requestedWidth,height:x.requestedHeight}}))};
+  const historicalExtended={...extended,interaction:Object.fromEntries(Object.entries(extended.interaction).filter(([k])=>!['shellOpensToday','shellNavigation','paletteNavigation','paletteFocusReturn'].includes(k)))};
+  if(!validateExtendedCockpitReceipt(historicalExtended,'17')||validateExtendedCockpitReceipt(historicalExtended)||['shellOpensToday','shellNavigation','paletteNavigation','paletteFocusReturn'].some(k=>validateExtendedCockpitReceipt({...extended,interaction:{...extended.interaction,[k]:false}})))throw new Error('Shell cockpit receipt contract self-test failed');
   if(!validateExtendedCockpitReceipt(extended)||validateExtendedCockpitReceipt({...extended,statusReasonsPersisted:false})||validateExtendedCockpitReceipt({...extended,layouts:extended.layouts.map(x=>({...x,minTextRatio:4.49}))})||validateExtendedCockpitReceipt({...extended,layouts:extended.layouts.map(x=>({...x,screenshot:null}))})||validateExtendedCockpitReceipt({...extended,layouts:extended.layouts.map(x=>({...x,screenshot:{...x.screenshot,height:x.screenshot.height-100}}))}))throw new Error('Extended cockpit receipt contract self-test failed');
   const valid={schema:'tm-native-smoke-v3',source:'packaged-binary',synthetic:true,
     failed:null,passed:[...NATIVE_REQUIRED_CHECKS],cockpitFlow,rendererSecurity};
@@ -602,8 +612,10 @@ if(process.argv.includes('--self-test')){
   const diag=(event)=>({verdict:'PASS',exitCode:1,spawnFailed:false,safeEventFields:true,sentinelFree:true,namedFailure:true,shutdown:true,logicalStatePreserved:true,events:[{event,state:'fail'},{event:'shutdown',state:'pass'}]});
   const denials={schema:'tm-native-diagnostic-denials-v1',synthetic:true,originalUnchanged:true,missingResource:diag('sqlite.open'),rendererCrash:diag('renderer.process')};
   if(!validateDiagnosticDenials(denials)||validateDiagnosticDenials({...denials,originalUnchanged:false})||validateDiagnosticDenials({...denials,rendererCrash:{...denials.rendererCrash,sentinelFree:false}})||validateDiagnosticDenials({...denials,missingResource:{...denials.missingResource,events:[]}}))throw new Error('Diagnostic denial contract self-test failed');
-  const devRow=value=>({value,marker:nonce,title:'Local foundation cockpit',csp:DEV_CSP,health:true,requireAbsent:true,processAbsent:true});
+  const devRow=value=>({value,marker:nonce,title:'Today',csp:DEV_CSP,health:true,requireAbsent:true,processAbsent:true});
   const hmr={schema:'tm-dev-hmr-v1',synthetic:true,nonce,documentPreserved:true,loopbackOrigin:true,before:devRow('initial-'+nonce),after:devRow('updated-'+nonce)};
+  const legacyHmr={...hmr,before:{...hmr.before,title:'Local foundation cockpit'},after:{...hmr.after,title:'Local foundation cockpit'}};
+  if(!validateDevelopmentHmrReceipt(legacyHmr,'17')||validateDevelopmentHmrReceipt(legacyHmr)||validateDevelopmentHmrReceipt(hmr,'17'))throw new Error('Development HMR heading contract self-test failed');
   if(!validateDevelopmentHmrReceipt(hmr)||validateDevelopmentHmrReceipt({...hmr,documentPreserved:false})||validateDevelopmentHmrReceipt({...hmr,after:hmr.before})||validateDevelopmentHmrReceipt({...hmr,after:{...hmr.after,csp:REQUIRED_CSP}}))throw new Error('Development HMR receipt contract self-test failed');
   const hmrLog=JSON.stringify({schema:'tm-dev-hmr-runner-v1',verdict:'PASS',synthetic:true,viteVersion:'8.3.8',fixtureOnly:true,exit:{exitCode:0,spawnFailed:false},receipt:hmr});
   for(const log of [hmrLog,'Downloading Electron binary...\n'+hmrLog,'Downloading Electron binary...\r\n'+hmrLog])parseDevelopmentHmrRunnerLog(log);
@@ -668,7 +680,9 @@ if(process.argv.includes('--self-test')){
   }finally{fs.rmSync(ownershipRoot,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
   const backupProof=Object.fromEntries(['png','jpeg','distinctLogo','issuedPdf','exactInventory','verifiedSecretExclusion','freshRestore','activeRestore','assetHashes','logicalRows','tamperRejected','verifiedList','rejectedList','uiRestore','uiCancelPreservedDrafts','uiDiscardedStaleDrafts','uiRestoredBusinessLogo','uiRestoreControlsLocked','uiRollbackPreserved'].map(key=>[key,true]));
   if(!validateBackupCoverage(backupProof)||validateBackupCoverage({...backupProof,assetHashes:false})||validateBackupCoverage({...backupProof,verifiedList:false})||validateBackupCoverage({...backupProof,rejectedList:false})||!validateBackupCoverage({...backupProof,verifiedList:undefined,rejectedList:undefined},1)||!validateBackupCoverage({...backupProof,uiRestore:undefined},2)||['uiRestore','uiCancelPreservedDrafts','uiDiscardedStaleDrafts','uiRestoredBusinessLogo','uiRestoreControlsLocked','uiRollbackPreserved'].some(key=>validateBackupCoverage({...backupProof,[key]:false})||validateBackupCoverage({...backupProof,[key]:undefined})))throw new Error('Backup coverage receipt contract self-test failed');
-  const ready={elapsedMs:15000,title:'Electrical T&M',heading:'Local foundation cockpit',rootWidth:100,rootHeight:100,health:true};
+  const ready={elapsedMs:15000,title:'Today · Electrical T&M',heading:'Today',navigation:[...SHELL_NAVIGATION],rootWidth:100,rootHeight:100,health:true};
+  const legacyReady={elapsedMs:15000,title:'Electrical T&M',heading:'Local foundation cockpit',rootWidth:100,rootHeight:100,health:true};
+  if(!validateStartupReadiness(legacyReady,'17')||validateStartupReadiness(legacyReady)||validateStartupReadiness({...ready,heading:'Jobs'})||validateStartupReadiness({...ready,navigation:undefined})||validateStartupReadiness({...ready,navigation:SHELL_NAVIGATION.slice(1)})||validateStartupReadiness({...ready,navigation:[...SHELL_NAVIGATION].reverse()}))throw new Error('Shell readiness receipt contract self-test failed');
   if(!validateStartupReadiness(ready)||validateStartupReadiness({...ready,elapsedMs:15001})||validateStartupReadiness({...ready,rootWidth:0})||validateStartupReadiness({...ready,health:false}))throw new Error('Readiness receipt contract self-test failed');
   const interruption={verdict:'PASS',exitCode:1,spawnFailed:false,missingActive:true,rescueUnchanged:true,safeEvents:true,namedFailure:true,noOpen:true,originalRecovered:true,events:[{event:'paths.prepare',state:'fail'}]};
   if(!validateInterruptedRestoreDenial(interruption)||validateInterruptedRestoreDenial({...interruption,missingActive:false})||validateInterruptedRestoreDenial({...interruption,rescueUnchanged:false})||validateInterruptedRestoreDenial({...interruption,events:[...interruption.events,{event:'sqlite.open',state:'begin'}]}))throw new Error('Interrupted restore receipt contract self-test failed');

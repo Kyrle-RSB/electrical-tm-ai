@@ -3,7 +3,7 @@ import {Button} from './Button';
 /** A modal on the native <dialog>: the browser traps focus, makes the page behind it
  * inert, closes on Escape and returns focus to the control that opened it.
  * Focus starts on an element marked data-autofocus, else the first field, else the first footer button. */
-export function Dialog({open,onClose,title,description,children,footer,size='md'}:{open:boolean;onClose:()=>void;title:string;description?:ReactNode;children?:ReactNode;footer?:ReactNode;size?:'sm'|'md'|'lg'}){
+export function Dialog({open,onClose,title,description,children,footer,size='md',className=''}:{open:boolean;onClose:()=>void;title:string;description?:ReactNode;children?:ReactNode;footer?:ReactNode;size?:'sm'|'md'|'lg';className?:string}){
  const ref=useRef<HTMLDialogElement>(null);
  const id=useId();
  useEffect(()=>{
@@ -22,7 +22,7 @@ export function Dialog({open,onClose,title,description,children,footer,size='md'
   dialog.addEventListener('close',closed);
   return()=>dialog.removeEventListener('close',closed);
  },[onClose]);
- return <dialog ref={ref} className={`tm-dialog tm-dialog--${size}`} aria-labelledby={id+'-title'} aria-describedby={description?id+'-description':undefined}>
+ return <dialog ref={ref} className={`tm-dialog tm-dialog--${size} ${className}`.trim()} aria-labelledby={id+'-title'} aria-describedby={description?id+'-description':undefined}>
   {open&&<>
    <header className="tm-dialog__header">
     <h2 className="tm-dialog__title" id={id+'-title'}>{title}</h2>

@@ -1,14 +1,19 @@
-import {useEffect, useRef, useState} from 'react';
+import {useEffect,useMemo,useRef,useState} from 'react';
 import {BusinessBranding} from './features/settings/BusinessBranding';
 import {BackupLocation} from './features/settings/BackupLocation';
 import {ProjectsPanel,type ProjectRow} from './features/projects/ProjectsPanel';
-import {CockpitShell} from './shell/CockpitShell';
+import {AppShell,useRouterState} from './shell/AppShell';
+import {ComingSoonScreen,Screen} from './shell/Screen';
+import {createRouter} from './shell/router';
+import {ROUTES,routeDefinition} from './shell/routes';
 import {GlassCard} from './components/GlassCard';
 import {AppearanceSetting} from './features/settings/AppearanceSetting';
 import {ComponentsPage} from './features/design-system/ComponentsPage';
-import {Badge,Button,Stat,TextArea,TextField} from './components/ui';
+import {Button,Stat,TextArea,TextField,useToast} from './components/ui';
 export default function App(){
-  const [view,setView]=useState<'cockpit'|'components'>('cockpit');
+  const [router]=useState(()=>createRouter());
+  const nav=useRouterState(router);
+  const toast=useToast();
   const [message,setMessage]=useState('Foundation ready. Synthetic data only.');
   const [projects,setProjects]=useState<ProjectRow[]>([]);
   const [projectStatus,setProjectStatus]=useState('Loading saved fictional projects...');
@@ -68,33 +73,25 @@ export default function App(){
   };
   const activeCount=projects.filter(p=>p.status!=='archived').length;
   const archivedCount=projects.length-activeCount;
-  return <CockpitShell onOpenComponents={()=>setView('components')}>
-    <div hidden={view!=='components'}>{view==='components'&&<ComponentsPage onBack={()=>setView('cockpit')}/>}</div>
-    <div className="cockpit" hidden={view!=='cockpit'}>
-    <div className="intro-row"><div><h1>Local foundation cockpit</h1>
-      <p>One operator, one business. A real Electron foundation, not yet approved for customer billing.</p></div>
-      <Badge tone="info">Phase 2 · Development</Badge></div>
+  const paletteProjects=useMemo(()=>projects.map(p=>({id:p.id,code:p.project_code,customer:p.customer_name,name:p.project_name,archived:p.status==='archived'})),[projects]);
+  const checkHealth=()=>{void run('Health',()=>window.tmBridge.ping()).then(ok=>toast(ok
+    ?{title:'Desktop services are healthy',body:'Details are in Settings, Foundation tools.',tone:'success'}
+    :{title:'Health check did not pass',body:'Details are in Settings, Foundation tools.',tone:'danger'}));};
+  const back=nav.previous&&nav.previous!=='components'?nav.previous:'settings';
+  const feedback=<div aria-live="polite" className="feedback" role="status">{message}</div>;
+  return <AppShell router={router} state={nav} projects={paletteProjects} onCheckHealth={checkHealth}>
+    {/* Jobs and Settings stay mounted while hidden, so drafts survive a trip to another
+        screen and a restore locks every working control at once. */}
+    <fieldset className="operation-scope" aria-label="Local operations" disabled={restoring} aria-busy={restoring}>
+    <Screen id="jobs" active={nav.route==='jobs'} actions={<Button variant="primary" icon="plus" onClick={()=>router.navigate('jobs',{focus:{elementId:'new-project-code'}})}>New project</Button>}>
     <div className="stat-strip" aria-label="Project counts">
       <Stat label="Saved projects" value={projectsReady?String(projects.length):'...'}/>
       <Stat label="Active" value={projectsReady?String(activeCount):'...'} tone={activeCount>0?'success':'neutral'}/>
       <Stat label="Archived" value={projectsReady?String(archivedCount):'...'}/>
     </div>
-    <fieldset className="operation-scope" aria-label="Local operations" disabled={restoring} aria-busy={restoring}>
-    <GlassCard title="Foundation tools" description="Verify the desktop services, imports, document export, backups and protected fake-token workflow.">
-      <div className="actions">
-        <Button icon="check" onClick={()=>run('Health',()=>window.tmBridge.ping())}>Check health</Button>
-        <Button onClick={()=>run('Receipt import',()=>window.tmBridge.importReceiptImage())}>Import test photo</Button>
-        <Button icon="file" onClick={()=>run('Invoice PDF',()=>window.tmBridge.saveSyntheticPdf())}>Save synthetic PDF</Button>
-        <Button disabled={restoring||pending>0} loading={restoring} onClick={()=>void restore()}>Restore verified backup</Button>
-        <Button variant="ghost" onClick={()=>run('Secure fake token',()=>window.tmBridge.storeFakeSecretProof())}>Store FAKE token</Button>
-        <Button variant="ghost" onClick={()=>run('Check fake token',()=>window.tmBridge.checkFakeSecretProof())}>Check fake token</Button>
-        <Button variant="ghost" onClick={()=>run('Revoke fake token',()=>window.tmBridge.removeFakeSecretProof())}>Revoke fake token</Button>
-      </div>
-      <div aria-live="polite" className="feedback" role="status">{message}</div>
-    </GlassCard>
     <GlassCard title="Projects" description="Fictional jobs only. Each one keeps its code, customer and job-site address.">
-      <form className="form-grid" onSubmit={async(e)=>{e.preventDefault();if(createLock.current||!projectsReady||operations.current.restoring)return;createLock.current=true;setCreating(true);try{await run('Create project',async()=>{const result=await window.tmBridge.createProject({code,customer,siteAddress,details});await refresh();return result;});}finally{createLock.current=false;setCreating(false);}}}>
-        <TextField label="Project code" value={code} onChange={e=>setCode(e.target.value)} required maxLength={60}/>
+      <form className="form-grid" aria-label="New project" onSubmit={async(e)=>{e.preventDefault();if(createLock.current||!projectsReady||operations.current.restoring)return;createLock.current=true;setCreating(true);try{await run('Create project',async()=>{const result=await window.tmBridge.createProject({code,customer,siteAddress,details});await refresh();return result;});}finally{createLock.current=false;setCreating(false);}}}>
+        <TextField id="new-project-code" label="Project code" value={code} onChange={e=>setCode(e.target.value)} required maxLength={60}/>
         <TextField label="Customer" value={customer} onChange={e=>setCustomer(e.target.value)} required maxLength={200}/>
         <TextField label="Job-site address" value={siteAddress} onChange={e=>setAddress(e.target.value)} required maxLength={300}/>
         <TextField label="Project name" optional value={details.name} onChange={e=>setDetails({...details,name:e.target.value})} maxLength={200}/>
@@ -105,12 +102,30 @@ export default function App(){
           <Button type="button" variant="ghost" onClick={()=>run('List projects',async()=>{await refresh();return 'Updated';})}>Refresh</Button>
         </div>
       </form>
+      {nav.route==='jobs'&&feedback}
       <p className="project-status" role="status">{projectStatus}</p>
       <ProjectsPanel key={restoreGeneration} projects={projects} ready={projectsReady} onChanged={refresh} track={track}/>
     </GlassCard>
+    </Screen>
+    <Screen id="settings" active={nav.route==='settings'}>
     <div className="settings-grid"><BusinessBranding key={restoreGeneration} track={track}/>
       <div className="settings-stack"><AppearanceSetting/><BackupLocation track={track}/></div></div>
+    <GlassCard title="Foundation tools" description="Verify the desktop services, imports, document export, backups and protected fake-token workflow.">
+      <div className="actions">
+        <Button icon="check" onClick={()=>run('Health',()=>window.tmBridge.ping())}>Check health</Button>
+        <Button onClick={()=>run('Receipt import',()=>window.tmBridge.importReceiptImage())}>Import test photo</Button>
+        <Button icon="file" onClick={()=>run('Invoice PDF',()=>window.tmBridge.saveSyntheticPdf())}>Save synthetic PDF</Button>
+        <Button disabled={restoring||pending>0} loading={restoring} onClick={()=>void restore()}>Restore verified backup</Button>
+        <Button variant="ghost" onClick={()=>run('Secure fake token',()=>window.tmBridge.storeFakeSecretProof())}>Store FAKE token</Button>
+        <Button variant="ghost" onClick={()=>run('Check fake token',()=>window.tmBridge.checkFakeSecretProof())}>Check fake token</Button>
+        <Button variant="ghost" onClick={()=>run('Revoke fake token',()=>window.tmBridge.removeFakeSecretProof())}>Revoke fake token</Button>
+      </div>
+      {nav.route!=='jobs'&&feedback}
+    </GlassCard>
+    </Screen>
     </fieldset>
-    </div>
-  </CockpitShell>;
+    {ROUTES.filter(r=>r.coming&&r.id===nav.route).map(r=><ComingSoonScreen key={r.id} id={r.id} onNavigate={route=>router.navigate(route,{focus:'heading'})}/>)}
+    {nav.route==='components'&&<section className="screen screen--components" data-screen="components" aria-label="Components">
+      <ComponentsPage backLabel={'Back to '+routeDefinition(back).label} onBack={()=>router.navigate(back,{focus:'heading'})}/></section>}
+  </AppShell>;
 }

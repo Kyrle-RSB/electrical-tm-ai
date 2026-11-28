@@ -6,7 +6,7 @@ import {contrastRatio} from '../../theme/contrast';
 import {colorTokens,contrastPairs,durations,easings,radii,shadows,spaceSteps,statuses,textSizes,type ColorToken,type Status} from '../../theme/tokens';
 
 /** Every token and component on one page, for design review and screenshots.
- * All names and amounts here are fictional. Reached from Help. */
+ * All names and amounts here are fictional. Reached from Help and the command palette. */
 
 const colorGroups:{title:string;tokens:readonly ColorToken[]}[]=[
  {title:'Surfaces',tokens:['bg','surface','surface-subtle','surface-hover','surface-selected']},
@@ -46,7 +46,7 @@ function readTokens(names:readonly string[]):Record<string,string>{
  return Object.fromEntries(names.map(n=>[n,style.getPropertyValue(n).trim()]));
 }
 
-export function ComponentsPage({onBack}:{onBack:()=>void}){
+export function ComponentsPage({onBack,backLabel}:{onBack:()=>void;backLabel:string}){
  const {preference,appearance,setPreference}=useAppearance();
  const toast=useToast();
  const [values,setValues]=useState<Record<string,string>>({});
@@ -74,8 +74,8 @@ export function ComponentsPage({onBack}:{onBack:()=>void}){
  return <div className="ds-page">
   <div className="ds-header">
    <div className="ds-header__text">
-    <Button variant="ghost" size="sm" icon="arrowLeft" onClick={onBack}>Back to cockpit</Button>
-    <h1>Components</h1>
+    <Button variant="ghost" size="sm" icon="arrowLeft" onClick={onBack}>{backLabel}</Button>
+    <h1 tabIndex={-1}>Components</h1>
     <p className="muted">The Electrical T&amp;M design system: tokens from one file, Inter for type, high-voltage amber on calm greys. Everything here is fictional sample data.</p>
    </div>
    <div className="ds-header__theme"><span className="ds-header__label">Theme</span>
