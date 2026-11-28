@@ -16,7 +16,9 @@ This is an incremental implementation, **not a claim that Phase 2 or later phase
 - **Not executed on this source revision:** actual Mac or Windows packaged Electron, real OS keychain protection, clean novice install, full customer invoice, live Claude/Gmail, independent review.
 
 ## Decision continuity
-D01–D18, D14 burdened labor and unused half-day overhead remain approved. The Vite HTML exception is ratified in `docs/architecture/overview.md`. Verify the actual approved ADR and original owner receipt. The original 195-item Phase 1 gate and the Phase 2 sign-offs are NOT certified.
+D01–D18, D14 burdened labor and unused half-day overhead remain approved. The Vite HTML exception is ratified in `docs/architecture/overview.md` (ADR-P2-001, owner reaffirmed 2026-11-24).
+
+**Vite HTML path exception: settled 2026-11-28.** This is a technical choice, not an open owner question. Electron Forge's Vite renderer plugin serves and builds the renderer from an `index.html` at the renderer root (`apps/desktop`), next to `vite.renderer.config.ts`, so the file lives at `apps/desktop/index.html` instead of the catalogued `apps/desktop/src/renderer/index.html`. `scripts/audit-repo-structure.mjs` swaps exactly that one path in the catalog, so any other unexpected path still fails the audit, and the renderer config refuses to serve a page whose production CSP it cannot find exactly once. The owner's approval is recorded in `docs/architecture/overview.md` and ADR-0009; the original private owner receipt is not kept in this public repository and is not needed to keep the choice. No further action. Moving the file back would mean a custom Vite `root` and a new audit exception, for no gain. The original 195-item Phase 1 gate and the Phase 2 sign-offs are NOT certified.
 
 ## Phase 2 source construction increment
 
