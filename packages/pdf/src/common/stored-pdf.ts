@@ -60,7 +60,8 @@ export async function storeImmutablePdf(artifactsRoot:string,pdf:Buffer):Promise
     if(!opened.isFile()||opened.nlink!==1||opened.size!==pdf.length)throw new Error('Immutable PDF content hash collision or tampering');
     const stat=await fs.promises.lstat(file);
     await checkParent();
-    if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||opened.dev!==stat.dev||opened.ino!==stat.ino||opened.size!==stat.size||opened.mtimeMs!==stat.mtimeMs||opened.ctimeMs!==stat.ctimeMs)throw new Error('Immutable PDF changed during inspection');
+    if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1)throw new Error('Immutable PDF content hash collision or tampering');
+    if(opened.dev!==stat.dev||opened.ino!==stat.ino||opened.size!==stat.size||opened.mtimeMs!==stat.mtimeMs||opened.ctimeMs!==stat.ctimeMs)throw new Error('Immutable PDF changed during inspection');
     await checkParent();
     const previous=Buffer.alloc(pdf.length);
     let offset=0;

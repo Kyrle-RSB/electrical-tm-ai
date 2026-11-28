@@ -6,6 +6,7 @@ import {storeImmutablePdf} from '../../packages/pdf/src/common/stored-pdf';
 function sameDirectory(a:string,b:string):boolean{
  const left=fs.statSync(a),right=fs.statSync(b);return left.dev===right.dev&&left.ino===right.ino;
 }
+const readOnly=(flags:unknown)=>typeof flags==='number'&&(flags&(fs.constants.O_WRONLY|fs.constants.O_RDWR))===0;
 const fixture={company:'Demo Electric',customer:'Fake',project:'X',invoiceNumber:'TEST-001',taxId:'FAKE',contractorLicense:'FAKE',amount:'25.00'};
 test('issued PDF bytes stored immutably and repeated same-content export does not duplicate',async()=>{
  const folder=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-immutable-pdf-'));
@@ -141,19 +142,20 @@ test('confirmed replace refuses same-size staged byte tampering and preserves th
 test('redirected parent during replacement preserves original export and retains stage without unsafe cleanup',async()=>{
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-pdf-stage-redirect-'));
  const managed=path.join(root,'managed'),outside=path.join(root,'outside'),parked=path.join(root,'parked'),target=path.join(outside,'existing.pdf');
- const originalLstat=fs.promises.lstat;
+ const originalLstat=fs.promises.lstat,originalOpen=fs.promises.open;
  try{
   fs.mkdirSync(managed);fs.mkdirSync(outside);await saveSyntheticInvoicePdf(target,fixture);const original=fs.readFileSync(target);let redirected=false;
-  fs.promises.lstat=(async(...args:Parameters<typeof originalLstat>)=>{
-   if(!redirected&&path.basename(String(args[0]))==='existing.pdf'&&sameDirectory(path.dirname(String(args[0])),outside)&&fs.readdirSync(outside).some(name=>name.startsWith('existing.pdf.tmp-'))){
+  // Redirect just before the existing export is reopened for its pre-replacement check.
+  fs.promises.open=(async(...args:Parameters<typeof originalOpen>)=>{
+   if(!redirected&&readOnly(args[1])&&path.basename(String(args[0]))==='existing.pdf'&&sameDirectory(path.dirname(String(args[0])),outside)&&fs.readdirSync(outside).some(name=>name.startsWith('existing.pdf.tmp-'))){
     fs.renameSync(outside,parked);fs.symlinkSync(managed,outside,process.platform==='win32'?'junction':'dir');redirected=true;
    }
-   return originalLstat(...args);
-  }) as typeof originalLstat;
+   return originalOpen(...args);
+  }) as typeof originalOpen;
   let failure:unknown;try{await saveSyntheticInvoicePdf(target,{...fixture,amount:'99.00'},{allowReplace:true,protectedRoots:[managed]});}catch(error){failure=error;}
   assert.equal(redirected,true,'redirection fixture must fire');assert.ok(failure instanceof AggregateError);assert.equal(failure.errors.length,2);assert.match(failure.message,/staged file retained/);
   assert.deepEqual(fs.readFileSync(path.join(parked,'existing.pdf')),original);assert.deepEqual(fs.readdirSync(managed),[]);assert.ok(fs.readdirSync(parked).some(name=>name.startsWith('existing.pdf.tmp-')));
- }finally{fs.promises.lstat=originalLstat;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+ }finally{fs.promises.lstat=originalLstat;fs.promises.open=originalOpen;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
 
 for(const mode of ['new-export','immutable'] as const)test('partial exclusive PDF write leaves no poisoned '+mode+' filename',async()=>{
@@ -273,12 +275,13 @@ for(const mode of ['immutable','selection','replace'] as const)test('PDF inspect
  try{
   const original=makeSyntheticInvoicePdf(fixture);let file:string;
   if(mode==='immutable'){const issued=await storeImmutablePdf(root,original);file=path.join(root,issued.relativePath);}else{fs.mkdirSync(folder);file=path.join(folder,'existing.pdf');await saveSyntheticInvoicePdf(file,fixture);}
-  fs.promises.lstat=(async(...args:Parameters<typeof lstat>)=>{
-   if(!swapped&&path.basename(String(args[0]))===path.basename(file)&&sameDirectory(path.dirname(String(args[0])),folder)){
+  // Substitute the directory just before the read-only open of the existing file. Windows
+  // cannot rename a directory while a file in it is open, so this is the last point it can happen.
+  fs.promises.open=(async(...args:Parameters<typeof open>)=>{
+   if(!swapped&&readOnly(args[1])&&path.basename(String(args[0]))===path.basename(file)&&sameDirectory(path.dirname(String(args[0])),folder)){
     fs.renameSync(folder,parked);fs.mkdirSync(folder);fs.copyFileSync(path.join(parked,path.basename(file)),file);swapped=true;
-   }return lstat(...args);
-  }) as typeof lstat;
-  fs.promises.open=(async(...args:Parameters<typeof open>)=>{const h=await open(...args);if(path.basename(String(args[0]))===path.basename(file)&&sameDirectory(path.dirname(String(args[0])),folder)){const read=h.read.bind(h);h.read=(async(buffer:Buffer,offset:number,length:number,position:number)=>{reads++;return read(buffer,offset,length,position);}) as typeof h.read;}return h;}) as typeof open;
+   }
+   const h=await open(...args);if(path.basename(String(args[0]))===path.basename(file)&&sameDirectory(path.dirname(String(args[0])),folder)){const read=h.read.bind(h);h.read=(async(buffer:Buffer,offset:number,length:number,position:number)=>{reads++;return read(buffer,offset,length,position);}) as typeof h.read;}return h;}) as typeof open;
   const action=mode==='immutable'?()=>storeImmutablePdf(root,original):mode==='selection'?()=>capturePdfExportTarget(file,[]):()=>saveSyntheticInvoicePdf(file,{...fixture,amount:'99.00'},{allowReplace:true});
   await assert.rejects(action,/directory changed/);assert.equal(swapped,true);assert.equal(reads,0,'redirected PDF was read before refusal');
   assert.deepEqual(fs.readFileSync(file),original);assert.deepEqual(fs.readFileSync(path.join(parked,path.basename(file))),original);

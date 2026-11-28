@@ -150,11 +150,11 @@ test('managed image verification refuses parent substitution before reading any 
   fs.copyFileSync('tests/fixtures/synthetic-receipt.png',selected);
   const receipt=await importImageFromPickedFile(selected,vault),file=resolveManagedImage(vault,receipt.relativePath);
   const original=fs.readFileSync(file);
-  fs.promises.lstat=(async(...args:Parameters<typeof lstat>)=>{
+  // Substitute the directory just before the managed file is opened. Windows cannot rename
+  // a directory while a file in it is open, so this is the last point it can happen.
+  fs.promises.open=(async(...args:Parameters<typeof open>)=>{
    if(!swapped&&String(args[0])===file){fs.renameSync(images,parked);fs.mkdirSync(images);fs.copyFileSync(path.join(parked,path.basename(file)),file);swapped=true;}
-   return lstat(...args);
-  }) as typeof lstat;
-  fs.promises.open=(async(...args:Parameters<typeof open>)=>{const h=await open(...args);if(String(args[0])===file){const read=h.read.bind(h);h.read=(async(buffer:Buffer,offset:number,length:number,position:number)=>{reads++;return read(buffer,offset,length,position);}) as typeof h.read;}return h;}) as typeof open;
+   const h=await open(...args);if(String(args[0])===file){const read=h.read.bind(h);h.read=(async(buffer:Buffer,offset:number,length:number,position:number)=>{reads++;return read(buffer,offset,length,position);}) as typeof h.read;}return h;}) as typeof open;
   await assert.rejects(verifyManagedImage(vault,receipt.relativePath,receipt.sha256),/directory changed/);
   assert.equal(swapped,true);assert.equal(reads,0,'redirected managed file was read before refusal');
   assert.deepEqual(fs.readFileSync(file),original);assert.deepEqual(fs.readFileSync(path.join(parked,path.basename(file))),original);

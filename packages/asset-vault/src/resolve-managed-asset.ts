@@ -77,7 +77,8 @@ export async function readRegularImage(file:string,checkOwnedParent?:()=>Promise
    throw new Error('Image must be a regular permitted file');
   const before=await fs.promises.lstat(file);
   await checkParent();
-  if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1||opened.size!==before.size||opened.dev!==before.dev||opened.ino!==before.ino||opened.mtimeMs!==before.mtimeMs||opened.ctimeMs!==before.ctimeMs)
+  if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1)throw new Error('Image must be a regular permitted file');
+  if(opened.size!==before.size||opened.dev!==before.dev||opened.ino!==before.ino||opened.mtimeMs!==before.mtimeMs||opened.ctimeMs!==before.ctimeMs)
    throw new Error('Image changed during secure import');
   await checkParent();
   const bytes=Buffer.alloc(opened.size);

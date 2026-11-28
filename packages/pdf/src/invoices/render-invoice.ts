@@ -81,7 +81,8 @@ async function inspectExportIdentity(target:string,checkParent:()=>Promise<void>
   const stat=await handle.stat();if(!stat.isFile()||stat.nlink!==1||stat.size>25*1024*1024)throw new Error('Unsafe PDF destination type');
   const before=await fs.promises.lstat(target);
   await checkParent();
-  if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1||stat.dev!==before.dev||stat.ino!==before.ino||stat.size!==before.size||stat.mtimeMs!==before.mtimeMs||stat.ctimeMs!==before.ctimeMs)throw new Error('PDF destination changed during inspection');
+  if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1)throw new Error('Unsafe PDF destination type');
+  if(stat.dev!==before.dev||stat.ino!==before.ino||stat.size!==before.size||stat.mtimeMs!==before.mtimeMs||stat.ctimeMs!==before.ctimeMs)throw new Error('PDF destination changed during inspection');
   await checkParent();
   const bytes=Buffer.alloc(stat.size);let offset=0;
   while(offset<bytes.length){const {bytesRead}=await handle.read(bytes,offset,bytes.length-offset,offset);if(!bytesRead)throw new Error('PDF destination changed during inspection');offset+=bytesRead;}
