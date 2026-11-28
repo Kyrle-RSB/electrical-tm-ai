@@ -10,3 +10,22 @@ test('rate date snapshot and burdened cost do not retrospectively change',()=>{
  assert.throws(()=>snapshotLaborRate(rates,'w1','2025-01-01','1'));
  assert.throws(()=>snapshotLaborRate(rates,'w1','2026-02-31','1'),/Invalid work day/);
 });
+
+test('calendar validation avoids throwing on unrelated invalid rate dates and preserves effective snapshot',async()=>{
+ const {isCalendarDay}=await import('../../packages/domain/src/shared/clock');
+ assert.equal(isCalendarDay('2024-02-29'),true);assert.equal(isCalendarDay('2026-99-99'),false);
+ const versions=[...rates,{...rates[0],id:'invalid',effectiveDay:'2026-99-99'}];
+ assert.equal(snapshotLaborRate(versions,'w1','2026-11-02','1').rateId,'new');
+});
+
+test('labor snapshots reject missing burden, negative inputs, ambiguous versions and amounts outside signed SQLite range',()=>{
+ const base=rates[0];
+ const run=(candidate:typeof base,hours='1')=>snapshotLaborRate([candidate],base.workerId,'2026-11-02',hours);
+ assert.throws(()=>run({...base,fullyBurdenedCostHour:''}));
+ assert.throws(()=>run({...base,fullyBurdenedCostHour:'-1.00'}));
+ assert.throws(()=>run(base,'-1'));
+ assert.throws(()=>snapshotLaborRate([base,{...base,id:'duplicate'}],base.workerId,'2026-11-02','1'),/Ambiguous/);
+ assert.throws(()=>run({...base,billHour:'92233720368547758.08'}),/storage range/);
+ assert.throws(()=>run({...base,billHour:'92233720368547758.07'},'2'),/storage range/);
+ assert.throws(()=>run({...base,fullyBurdenedCostHour:'92233720368547758.07'},'2'),/storage range/);
+});

@@ -1,6 +1,6 @@
 # Fork B: Native Electron Foundation Verification (Mac, then Windows)
 
-**Phase 1 development proof only. Not a customer release or an installation guide for end users.** This updated procedure uses the owner's successfully launched macOS source as its input and must be rerun for this repaired build. A clean, independent install and verified signed release have **not** happened.
+**Phase 2 internal development verification only. Not a customer release.** Use the exact current candidate and independently retain its source/tree and artifact identity. Prior launches are historical proof. A clean, independent install and verified signed release have **not** happened.
 
 ## First, retain the source and existing test data safely
 
@@ -13,7 +13,7 @@
 
 Record macOS version, Mac architecture, Node version, pnpm version, installed package versions, test date and whether each step is observed. Record logs/screenshots with personal paths redacted.
 
-From the **new extracted `engineering-proof` folder**:
+From the **fresh source repository root**:
 
 ```bash
 node -v
@@ -24,7 +24,7 @@ npx --yes pnpm@12.21.0 proof:run
 npx --yes pnpm@12.21.0 --filter @electrical-tm/desktop start
 ```
 
-The run should show **14 tests passing** (previous source had 11), then a real Electron window. **Keep the Forge Terminal process running** while you test in development.
+The run must pass the complete current foundation test suite (see the commit-linked CI receipt), then a real Electron window. **Keep the Forge Terminal process running** while you test in development.
 
 Check that:
 
@@ -37,7 +37,7 @@ Check that:
 
 **If any item fails, stop and record its full error and the exact test step.** The Linux/Node checks do not substitute for macOS Electron integration results.
 
-## Native Mac packaging gate (not yet verified)
+## Native Mac packaging gate (repeat on the exact candidate revision)
 
 After the development tests succeed, quit the Electron app and make an unsigned **internal testing package**:
 
@@ -63,7 +63,7 @@ Run equivalent tests on a real Windows x64 environment. Check Windows secure sto
 
 ## Native execution bundle: current Phase 2 continuation (not a release certificate)
 
-For a clean source checkout with Node 24+ and the pinned pnpm version, run from the
+For a clean source checkout with the exact Node version in `.nvmrc` and the pinned pnpm version, run from the
 repository root on **macOS arm64** or **Windows x64**:
 
 ```sh
@@ -82,8 +82,14 @@ not forward console output to the launch process.
 
 Inspect `.local-evidence/native-*.tar.gz` for unexpected private details before
 sharing it. Running this bundle is not equivalent to finishing P2-AC01..AC30 or
-a novice installation, independent security review, or user acceptance. A failed
-native check must be repaired in source and rerun against the corrected revision.
+a novice installation, independent security review, or user acceptance. A failed native check must be investigated and repaired where it is an executable source or harness defect; an actual unavailable host observation remains an open witness with its failed result retained.
 
 The previous Phase 1 evidence belongs to older revisions and is not substituted
 for this exact source version.
+
+### November 24 continuation
+The earlier commit `761ecde1e7991c8a4afcefb50ae9bdead4a38722` passed Mac/Windows packaged automation. It is not evidence for later changed source. Run `node scripts/capture-native-proof.mjs --execute` on the exact candidate revision and inspect its result; the added native checks cover foreign-window IPC rejection, strict packaged CSP/inline-script rejection, SQLite reopen and automatic UI load, protected-secret re-read/revocation and backup tampering. The v3 evidence collector requires a three-process seed/reopen/revoke lifecycle; v4 additionally checks synthetic cockpit form interactions and zoom layouts. Physical OS denial and clean independent install remain separate witnessed requirements.
+
+### Damaged package observation
+
+The complete native collector requires actual launch of isolated disposable copies with the named main, preload and root renderer entries misnamed, and verifies restoration of the original ASAR bytes. Intact package smoke is separate. The missing-main path starts before application logging; observe a named Electron loader error and natural exit 1 without bypassing trust or using a forced process kill as evidence. A normal OS refusal, timeout or inaccessible modal is not a pass. The missing-preload and missing-root checks require named application diagnostics, exit 1, shutdown and unchanged synthetic records. Preserve all failure receipts. Human observers must use only a normally trusted controlled host and the approved synthetic fixture, record actual exit behavior and return privately redacted evidence bound to the exact source and artifact.

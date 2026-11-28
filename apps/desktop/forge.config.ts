@@ -5,6 +5,7 @@ const config:ForgeConfig={
     asar:true,
     name:'ElectricalTMCockpit',
     executableName:'electrical-tm',
+    icon:'assets/icon',
     extraResource:['../../packages/persistence-sqlite/src/migrations']
   },
   makers:[{name:'@electron-forge/maker-zip',platforms:['darwin','win32'],config:{}}],

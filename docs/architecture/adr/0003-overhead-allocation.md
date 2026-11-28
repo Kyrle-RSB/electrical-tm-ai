@@ -1,12 +1,18 @@
-# ADR 0003: Daily overhead half-day allocation (OWNER DECISION PENDING)
+# ADR 0003: Daily overhead half-day allocation
 
-The owner approved daily estimated overhead and calendar project participation units of 0.5 or 1.0 day. Owner DID NOT approve how remaining overhead is distributed when total entered participation is below a full workday.
+**Status:** Owner-approved capacity-aware baseline (November 23, 2026, D14); implementation tested; independent financial review and final Phase 2 acceptance remain open.
 
-Given $300 of daily overhead and a single half-day project:
+## Decision
 
-- **A, capacity-aware (recommended):** allocate $150 to the project and record $150 as unallocated overhead. Full-day capacity is the baseline denominator; total allocated can be less than daily overhead. Makes project margin visible without making a half-day project absorb office overhead incurred while idle.
-- **B, all-to-active-project:** allocate all $300 to the one half-day project. Every dollar of overhead on a date goes to active work, potentially producing volatile estimates on slow days.
+Daily estimated overhead uses full-day capacity as the denominator. A $300 day with only a half-day project allocates $150 to the project and keeps $150 unallocated. One full-day project receives $300; two distinct half-day projects receive $150 each. Zero work leaves the entire day unallocated. Do not charge idle overhead to the sole active project. Allocated plus unallocated cents always equals daily overhead.
 
-When total participation exceeds one day (e.g. two half-day jobs and one full-day job), both models allocate by relative half-day weights across the day's work unless a separate capacity policy is approved. Both require deterministic cent remainders and immutable historical snapshots once used for an issued estimate/report.
+The implementation uses exact integer cents and deterministic remainder allocation; tied project shares use stable project identity ordering. Invalid or duplicate project assignments are rejected. When total recorded participation exceeds one full day (two half-day slots), the current implementation fails closed. The owner has not approved a broader simultaneous-work allocation policy; do not extrapolate this capacity rule to overbooked days or silently invent a different denominator.
 
-**Blocking owner question:** Approve A, B, or specify a third rule. Do not implement one as approved business behavior. Until answered, keep the estimated-profit overhead finalization gate blocked.
+## Alternatives considered
+
+- Allocate all daily overhead to active work regardless of occupied capacity: rejected for the approved half-day example.
+- Proportionally allocate overbooked days: not approved. A future change requires a separate owner decision and tests, not a rewrite of historical issued estimates.
+
+## Evidence and scope
+
+See `packages/domain/src/overhead/allocation.ts`, `tests/unit/overhead-allocation.test.ts`, `tests/unit/estimated-profit.test.ts`, and `tests/integration/financial-evidence-locks.test.ts`. AC24 also requires durable fixture/query evidence, CI execution and qualified independent financial review. These primitives do not certify accounting or actual invoice totals. Preserve historical snapshots and explicit adjustment rules.

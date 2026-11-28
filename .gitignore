@@ -3,6 +3,7 @@ dist/
 dist-probe/
 .out/
 out/
+apps/desktop/.vite/
 coverage/
 .env
 .env.*

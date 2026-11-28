@@ -5,11 +5,14 @@ export function createCockpitWindow(preloadDirectory:string,hidden=false):Browse
  const win=new BrowserWindow({
    width:1120,height:760,minWidth:820,minHeight:560,
    backgroundColor:'#19232e',show:!hidden,
+   // Permit exact synthetic viewport captures even on the hosted macOS display.
+   ...(hidden&&process.platform==='darwin'?{enableLargerThanScreen:true}:{}),
    webPreferences:{preload:path.join(preloadDirectory,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,
      webSecurity:true,webviewTag:false}
  });
  win.webContents.setWindowOpenHandler(()=>({action:'deny'}));
  win.webContents.on('will-navigate',event=>event.preventDefault());
+ win.webContents.session.setPermissionCheckHandler(()=>false);
  win.webContents.session.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false));
  return win;
 }

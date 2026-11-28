@@ -6,3 +6,4 @@
 *.icns binary
 *.zip binary
 *.pdf binary
+*.sql text eol=lf

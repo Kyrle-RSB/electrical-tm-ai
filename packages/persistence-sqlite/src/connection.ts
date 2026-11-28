@@ -1,17 +1,21 @@
 import { DatabaseSync } from 'node:sqlite';
+import type {BusinessLogoStatus,ManagedBusinessLogo} from '../../contracts/src/ipc/settings.contract';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {ProjectRepository, type ProjectState} from './repos/project-repo';
-/** Shipped SQL migrations are append-only; the SHA-256 is historical source authority. */
-function loadMigrations(dir:string):Array<{version:number;sql:string;checksum:string}> {
+import {withImmediateTransaction} from './transactions/unit-of-work';
+import type {ProjectInput,DetailedProject} from '../../contracts/src/ipc/projects.contract';
+/** Shipped migrations remain append-only. New checksums use LF; accept exact historical CRLF equivalent without rewriting installed receipts. */
+function loadMigrations(dir:string):Array<{version:number;sql:string;checksum:string;legacyWindowsChecksum:string}> {
   const files=fs.readdirSync(dir).filter(file=>/^\d{4}-[a-z0-9-]+\.sql$/.test(file)).sort();
   if(!files.length)throw new Error('No database migrations were bundled');
   return files.map((file,index)=>{
     const version=Number(file.slice(0,4));
     if(version!==index+1)throw new Error('Database migration sequence contains gaps or duplicate versions');
-    const sql=fs.readFileSync(path.join(dir,file),'utf8');
-    return {version,sql,checksum:crypto.createHash('sha256').update(sql).digest('hex')};
+    const sql=fs.readFileSync(path.join(dir,file),'utf8').replace(/\r\n/g,'\n');
+    const digest=(text:string)=>crypto.createHash('sha256').update(text).digest('hex');
+    return {version,sql,checksum:digest(sql),legacyWindowsChecksum:digest(sql.replace(/\n/g,'\r\n'))};
   });
 }
 
@@ -25,6 +29,8 @@ export class LocalStore {
     this.projects=new ProjectRepository(this.db);
     try {
       this.db.exec('PRAGMA foreign_keys=ON');
+      // REPLACE implicitly deletes conflicting rows; immutable delete triggers must run.
+      this.db.exec('PRAGMA recursive_triggers=ON');
       this.db.exec('PRAGMA journal_mode=WAL');
       this.db.exec('PRAGMA busy_timeout=5000');
       this.migrate();
@@ -34,7 +40,7 @@ export class LocalStore {
     const migrations=loadMigrations(this.migrationsDir);
     this.db.exec('CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, checksum TEXT NOT NULL, installed_utc TEXT NOT NULL) STRICT;');
     const installed=this.db.prepare('SELECT version,checksum FROM schema_migrations ORDER BY version').all() as Array<{version:number;checksum:string}>;
-    if(installed.some(x=>!migrations.find(m=>m.version===x.version&&m.checksum===x.checksum)))
+    if(installed.some((x,index)=>x.version!==index+1||!migrations.find(m=>m.version===x.version&&(m.checksum===x.checksum||m.legacyWindowsChecksum===x.checksum))))
       throw new Error('Migration history mismatch: unknown or altered migration');
     const pending=migrations.filter(m=>!installed.some(x=>x.version===m.version));
     // Existing nonempty schemas get a crash-consistent rescue before any upgrade.
@@ -68,10 +74,10 @@ export class LocalStore {
   initializeFictionalCompany():void {
     this.db.prepare('INSERT OR IGNORE INTO business_profiles(id,legal_name) VALUES (?,?)').run('local','Synthetic Demo Electric Ltd.');
   }
-  createProject(input:{code:string;customer:string;siteAddress:string}):string{
+  createProject(input:ProjectInput):string{
     return this.projects.create(input);
   }
-  updateProject(id:string,input:{code:string;customer:string;siteAddress:string}):void{
+  updateProject(id:string,input:ProjectInput):void{
     this.projects.edit(id,input);
   }
   listProjects():Array<{id:string;project_code:string;customer_name:string;site_address:string}>{
@@ -92,8 +98,7 @@ export class LocalStore {
     return r as ReturnType<LocalStore['getBusinessProfile']>;
   }
   updateBusinessProfile(input:{legalName:string;tradeName:string;phone:string;email:string;mailingAddress:string;taxId:string;contractorLicense:string}):void{
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    withImmediateTransaction(this.db,()=>{
       this.db.prepare('UPDATE business_profiles SET legal_name=? WHERE id=?').run(input.legalName,'local');
       this.db.prepare(`INSERT INTO business_settings (business_id,trade_name,phone,email,mailing_address,currency,tax_identifier,electrical_license_id,updated_utc)
         VALUES ('local',?,?,?,?,'CAD',?,?,?) ON CONFLICT(business_id) DO UPDATE SET
@@ -101,17 +106,47 @@ export class LocalStore {
         tax_identifier=excluded.tax_identifier,electrical_license_id=excluded.electrical_license_id,updated_utc=excluded.updated_utc`)
         .run(input.tradeName,input.phone,input.email,input.mailingAddress,input.taxId,input.contractorLicense,new Date().toISOString());
       this.db.prepare('INSERT INTO audit_events(action,entity_id,occurred_utc) VALUES(?,?,?)').run('business.update','local',new Date().toISOString());
-      this.db.exec('COMMIT');
-    }catch(e){this.db.exec('ROLLBACK');throw e;}
+    });
+  }
+  getBusinessLogo():BusinessLogoStatus|null {
+    return (this.db.prepare("SELECT asset_id AS id,mime,sha256 FROM business_logo_assets WHERE business_id='local'").get() as BusinessLogoStatus|undefined)??null;
+  }
+  setBusinessLogo(asset:ManagedBusinessLogo):void {
+    if(!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(asset.id)||!/^[a-f0-9]{64}$/.test(asset.sha256)||!['image/png','image/jpeg'].includes(asset.mime)||asset.relativePath!==`images/${asset.id}.${asset.mime==='image/png'?'png':'jpg'}`)throw new Error('Invalid managed logo reference');
+    withImmediateTransaction(this.db,()=>{
+      this.db.prepare(`INSERT INTO business_logo_assets(business_id,asset_id,vault_locator,sha256,mime,updated_utc) VALUES('local',?,?,?,?,?) ON CONFLICT(business_id) DO UPDATE SET asset_id=excluded.asset_id,vault_locator=excluded.vault_locator,sha256=excluded.sha256,mime=excluded.mime,updated_utc=excluded.updated_utc`).run(asset.id,asset.relativePath,asset.sha256,asset.mime,new Date().toISOString());
+      this.db.prepare('INSERT INTO audit_events(action,entity_id,occurred_utc) VALUES(?,?,?)').run('business.logo.set','local',new Date().toISOString());
+    });
+  }
+  removeBusinessLogo():void {
+    withImmediateTransaction(this.db,()=>{
+      this.db.prepare("DELETE FROM business_logo_assets WHERE business_id='local'").run();
+      this.db.prepare('INSERT INTO audit_events(action,entity_id,occurred_utc) VALUES(?,?,?)').run('business.logo.remove','local',new Date().toISOString());
+    });
+    // Keep historical managed bytes: do not delete possible evidence used by future immutable document snapshots.
   }
   updateProjectDetails(id:string,details:{name:string;billingAddress:string;notes:string}):void{
     this.projects.details(id,details);
   }
-  setProjectStatus(id:string,status:ProjectState):void{
-    this.projects.status(id,status);
+  setProjectStatus(id:string,status:ProjectState,reason?:string):void{
+    this.projects.status(id,status,reason);
   }
-  listProjectsDetailed():Array<{id:string;project_code:string;customer_name:string;site_address:string;status:string;project_name:string;billing_address:string;notes:string}>{
+  listProjectsDetailed():DetailedProject[]{
     return this.projects.listDetailed();
+  }
+  getProject(id:string):DetailedProject|null{
+    return this.projects.get(id);
+  }
+  /** Durable rejection of successful database mutation IDs within this database history. */
+  mutateOnce<T>(operationId:string,channel:string,action:()=>T):T{
+    const id=operationId.toLowerCase();
+    if(!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id))throw new Error('Invalid mutation operation ID');
+    return withImmediateTransaction(this.db,()=>{
+      if(this.db.prepare('SELECT 1 FROM operation_receipts WHERE operation_id=?').get(id))throw new Error('SECURITY: duplicate mutation operation ID');
+      const result=action();
+      this.db.prepare('INSERT INTO operation_receipts(operation_id,channel,completed_utc) VALUES(?,?,?)').run(id,channel,new Date().toISOString());
+      return result;
+    });
   }
   close():void{this.db.close();}
 }

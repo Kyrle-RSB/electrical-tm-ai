@@ -3,43 +3,40 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import {DatabaseSync} from 'node:sqlite';
-import { hashFile, traverseRegularFiles, Manifest } from './create-backup';
+import { hashFile, traverseRegularFiles, readBoundedBackupFile, copyRegularBackupFile } from './create-backup';
+import {assertReferencedEvidence,validateManifest,backupManifestIdentity,type Manifest} from './backup-manifest';
+import type {BackupListResult} from '../../contracts/src/ipc/settings.contract';
 import { LocalStore } from '../../persistence-sqlite/src/connection';
-function isSafeRelative(p:string):boolean{
-  if(!p||p.includes('\\')||path.posix.isAbsolute(p))return false;
-  const normalized=path.posix.normalize(p);
-  return normalized===p&&!p.startsWith('../')&&!p.includes('/../')&&!p.startsWith('./')&&p!=='..';
-}
+import {canonicalBackupPath,backupPathsOverlap,bindDirectory} from './backup-destination';
 export async function verifyBackup(backupPath:string,migrationsDir?:string):Promise<Manifest>{
-  const p=path.join(backupPath,'manifest.json');
-  const m=JSON.parse(await fs.promises.readFile(p,'utf8')) as Manifest;
-  if(m.schema!=='tm-phase1-backup-v1'||!Array.isArray(m.files)||m.files.length===0||m.files.length>10000)throw new Error('Unsupported backup manifest');
-  if(typeof m.createdUtc!=='string'||!Array.isArray(m.excluded))throw new Error('Malformed backup metadata');
-  const listed=new Set<string>();
-  for(const entry of m.files){
-    if(!entry||typeof entry.path!=='string'||!isSafeRelative(entry.path)||listed.has(entry.path))throw new Error('Unsafe backup manifest path');
-    if(!/^(db\/app\.sqlite|vault\/.+|artifacts\/.+)$/.test(entry.path)||
-      !Number.isSafeInteger(entry.bytes)||entry.bytes<0||typeof entry.sha256!=='string'||!/^[0-9a-f]{64}$/.test(entry.sha256))
-      throw new Error('Malformed backup file entry');
-    listed.add(entry.path);
-    const actual=path.join(backupPath,entry.path);
-    if((await fs.promises.lstat(actual)).isSymbolicLink())throw new Error('Backup contains symlink');
-    const stat=await fs.promises.stat(actual);
-    if(!stat.isFile()||stat.size!==entry.bytes||await hashFile(actual)!==entry.sha256)throw new Error(`Backup integrity failure: ${entry.path}`);
-  }
+  const checkArchive=await bindDirectory(backupPath);if(!checkArchive)throw new Error('Backup unavailable');
+  // Check the archive tree before opening its manifest or any listed content.
   const onDisk=await traverseRegularFiles(backupPath);
+  if(!onDisk.includes('manifest.json'))throw new Error('Backup missing manifest');
+  await checkArchive();const p=path.join(backupPath,'manifest.json');
+  const m=validateManifest(JSON.parse((await readBoundedBackupFile(p,8*1024*1024)).toString('utf8')));
+  const listed=new Set(m.files.map(entry=>entry.path));
+  for(const entry of m.files){
+    await checkArchive();const actual=path.join(backupPath,entry.path);
+    if((await fs.promises.lstat(actual)).isSymbolicLink())throw new Error('Backup contains symlink');
+    if(await hashFile(actual,entry.bytes)!==entry.sha256)throw new Error(`Backup integrity failure: ${entry.path}`);
+  }
   if(onDisk.length!==m.files.length+1||onDisk.some(f=>f!=='manifest.json'&&!listed.has(f.split(path.sep).join('/'))))throw new Error('Backup contains unexpected files');
   if(!listed.has('db/app.sqlite'))throw new Error('Backup missing SQLite database');
   // SQLite may create transient WAL/SHM files on open; inspect a disposable copy, not the archive itself.
   const tempDir=await fs.promises.mkdtemp(path.join(os.tmpdir(),'tm-backup-verify-'));
+  const checkTemp=await bindDirectory(tempDir);if(!checkTemp)throw new Error('Backup verification scratch unavailable');
   try{
-    const copyPath=path.join(tempDir,'snapshot.sqlite');
-    await fs.promises.copyFile(path.join(backupPath,'db','app.sqlite'),copyPath);
+    await checkArchive();await checkTemp();const copyPath=path.join(tempDir,'snapshot.sqlite');
+    await copyRegularBackupFile(path.join(backupPath,'db','app.sqlite'),copyPath);
+    const dbEntry=m.files.find(entry=>entry.path==='db/app.sqlite')!;
+    if(await hashFile(copyPath,dbEntry.bytes)!==dbEntry.sha256)throw new Error('Backup SQLite copy changed');
     const backupDb=new DatabaseSync(copyPath,{readOnly:true});
     try {
       const integrity=backupDb.prepare('PRAGMA quick_check').get() as {quick_check:string}|undefined;
       if(integrity?.quick_check!=='ok')throw new Error('Backup SQLite integrity check failed');
       if(backupDb.prepare('PRAGMA foreign_key_check').all().length)throw new Error('Backup contains invalid foreign keys');
+      assertReferencedEvidence(backupDb,m);
       if(migrationsDir){
         const schemaTable=backupDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get();
         if(!schemaTable)throw new Error('Backup does not contain Fork B schema migration history');
@@ -51,28 +48,81 @@ export async function verifyBackup(backupPath:string,migrationsDir?:string):Prom
       const preflight=new LocalStore(copyPath,migrationsDir);
       preflight.close();
     }
-  }finally{await fs.promises.rm(tempDir,{recursive:true,force:true});}
+  }finally{await checkTemp();await fs.promises.rm(tempDir,{recursive:true,force:true});}
+  await checkArchive();
+  if(backupManifestIdentity(validateManifest(JSON.parse((await readBoundedBackupFile(p,8*1024*1024)).toString('utf8'))))!==backupManifestIdentity(m))throw new Error('Backup manifest changed during verification');
   return m;
 }
+/** Scan only immediate completed application-named archives in a trusted selected folder.
+ * A list is an observed verification result, not authorization to restore or authenticate history. */
+export async function listVerifiedBackups(folder:string,migrationsDir:string):Promise<BackupListResult>{
+ const checkFolder=await bindDirectory(folder);if(!checkFolder)throw new Error('Backup location unavailable');
+ const candidates:string[]=[];let scanned=0;
+ const dir=await fs.promises.opendir(folder);
+ for await(const entry of dir){
+  if(++scanned>10000)throw new Error('Backup folder exceeds scan limit; select a smaller folder');
+  if(/^tm-backup-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[a-f0-9]{6}$/.test(entry.name)){
+   candidates.push(entry.name);if(candidates.length>100)throw new Error('Backup folder exceeds archive scan limit; select a smaller folder');
+  }
+ }
+ await checkFolder();const backups:BackupListResult['backups']=[];
+ for(const id of candidates.sort().reverse()){
+  await checkFolder();
+  try{
+   const selected=path.join(folder,id),checkArchive=await bindDirectory(selected);
+   if(!checkArchive)throw new Error('Backup unavailable');
+   const manifest=await verifyBackup(selected,migrationsDir);await checkArchive();await checkFolder();
+   backups.push({id,status:'verified',createdUtc:new Date(manifest.createdUtc).toISOString(),fileCount:manifest.files.length,manifestIdentity:backupManifestIdentity(manifest)});
+  }catch{await checkFolder();backups.push({id,status:'rejected'});}
+ }
+ await checkFolder();return {backups};
+}
 /** Close live SQLite connection before calling. Returns rollback directory to retain until user confirms. */
-export async function restoreBackup(backupPath:string,activeRoot:string,migrationsDir?:string):Promise<{rollbackPath:string|null}> {
+export async function restoreBackup(backupPath:string,activeRoot:string,migrationsDir?:string,expectedIdentity?:string):Promise<{rollbackPath:string|null}> {
+  // Reject redirected managed directory objects before realpath can erase the link identity.
+  for(const root of [backupPath,activeRoot]){
+    try{const stat=await fs.promises.lstat(root);if(stat.isSymbolicLink()||!stat.isDirectory())throw new Error('Unsupported filesystem object in restore root');}
+    catch(error){if(root===activeRoot&&(error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
+  }
+  const target=await canonicalBackupPath(activeRoot), source=await canonicalBackupPath(backupPath);
+  if(backupPathsOverlap(target,source))throw new Error('Cannot restore onto backup');
+  backupPath=source;
+  // Capture the active identity before archive preflight (which can take time).
+  const checkActive=await bindDirectory(target);
+  const requireAbsent=async(file:string)=>{
+    try{await fs.promises.lstat(file);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
+    throw new Error('Restore destination directory changed');
+  };
+  const checkTarget=async()=>{if(checkActive)await checkActive();else await requireAbsent(target);};
   const manifest=await verifyBackup(backupPath,migrationsDir);
-  const target=path.resolve(activeRoot), source=path.resolve(backupPath);
-  if(target===source||target.startsWith(source+path.sep)||source.startsWith(target+path.sep))throw new Error('Cannot restore onto backup');
+  if(expectedIdentity!==undefined&&backupManifestIdentity(manifest)!==expectedIdentity)throw new Error('Backup changed after verification; select and verify it again');
+  await checkTarget();
   const parent=path.dirname(target);
   await fs.promises.mkdir(parent,{recursive:true});
+  const checkParent=await bindDirectory(parent);if(!checkParent)throw new Error('Restore parent unavailable');
   const nonce=crypto.randomBytes(5).toString('hex'),stage=path.join(parent,`.tm-restore-${nonce}`),rollback=path.join(parent,`.tm-rollback-${nonce}`);
   await fs.promises.mkdir(stage,{mode:0o700});
-  let rolledBack=false;
+  const checkStage=await bindDirectory(stage);if(!checkStage)throw new Error('Restore stage unavailable');
+  let rolledBack=false,preserveStage=false;
   try{
     for(const entry of manifest.files){
-      const dest=path.join(stage,entry.path);
+      await checkStage();const dest=path.join(stage,entry.path);
       await fs.promises.mkdir(path.dirname(dest),{recursive:true});
-      await fs.promises.copyFile(path.join(backupPath,entry.path),dest,fs.constants.COPYFILE_EXCL);
+      await checkStage();await copyRegularBackupFile(path.join(backupPath,entry.path),dest);
     }
-    for(const entry of manifest.files) if(await hashFile(path.join(stage,entry.path))!==entry.sha256) throw new Error('Restore staging mismatch');
-    if(fs.existsSync(target)){await fs.promises.rename(target,rollback);rolledBack=true;}
-    try{await fs.promises.rename(stage,target);}catch(e){if(rolledBack)await fs.promises.rename(rollback,target);throw e;}
+    await checkStage();for(const entry of manifest.files) if(await hashFile(path.join(stage,entry.path),entry.bytes)!==entry.sha256) throw new Error('Restore staging mismatch');
+    await checkStage();await checkParent();await requireAbsent(rollback);await checkTarget();
+    if(checkActive){await fs.promises.rename(target,rollback);rolledBack=true;}
+    try{await checkStage();await checkParent();await requireAbsent(target);await fs.promises.rename(stage,target);}catch(activationError){
+      if(rolledBack){
+        try{await checkParent();await requireAbsent(target);await fs.promises.rename(rollback,target);await checkTarget();}
+        catch(rollbackError){preserveStage=true;throw new AggregateError([activationError,rollbackError],'Restore recovery requires operator intervention');}
+      }
+      throw activationError;
+    }
     return {rollbackPath:rolledBack?rollback:null};
-  }catch(e){await fs.promises.rm(stage,{recursive:true,force:true});throw e;}
+  }catch(e){
+    if(!preserveStage){try{await checkStage();await fs.promises.rm(stage,{recursive:true,force:true});}catch(cleanup){throw new AggregateError([e,cleanup],'Restore failed; unverified stage retained for recovery');}}
+    throw e;
+  }
 }

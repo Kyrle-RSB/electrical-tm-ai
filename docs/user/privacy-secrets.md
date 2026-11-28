@@ -10,3 +10,11 @@ Fork B runs locally for one user. It does not create staff accounts, host a serv
 * Backups are not encrypted by this application. Users are responsible for secured storage and tested recovery.
 * On a shared computer, other programs with the same OS user identity may access the local data. Use OS account protections, full-disk encryption and good backup hygiene.
 * The OS credential protection must be proved on actual macOS Keychain and Windows mechanisms before it can be certified. The Linux fake provider test is not that proof.
+
+In the internal cockpit use **Revoke fake token** to remove the synthetic credential; do not enter real credentials. On this revision the main process still accepts only the fixed synthetic probe token through the renderer.
+
+The automated packaged lifecycle probe uses a separately marked synthetic temporary profile. It launches the same unsigned binary in three distinct processes, stores and reads a fake credential through the restricted bridge, revokes it, and checks absence after another restart. It never imports actual tokens. This does not substitute for independent OS-account, vault-denial, update/signature or physical-machine review.
+
+Credential reads fail closed if the encrypted record changes or is revoked during asynchronous OS decryption. Automatic re-encryption checks the same record again before replacement and will not recreate a detected revoked record. Re-enter a credential deliberately through the authorized adapter if needed.
+
+Credential writes stage only encrypted bytes in an exclusive temporary file, sync them, verify bounded descriptor readback, and recheck the observed storage-directory and file identities before activation. A detected staging failure preserves the preceding credential. An unrelated collision is never deleted by cleanup. If a changed directory or file prevents safe cleanup, an unverified encrypted stage can remain for qualified recovery; do not use it as a credential or copy it to a backup. These are observable-race protections, not a same-account malware boundary.

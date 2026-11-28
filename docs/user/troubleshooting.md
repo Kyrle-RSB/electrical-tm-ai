@@ -17,3 +17,21 @@
 | OS-protected token unavailable | Verify secure storage is actually available | Stop: no plaintext fallback is permitted |
 
 Local startup events are saved as **redacted stage IDs only** in the current internal test profile's `diagnostics/startup.jsonl`. Do not publish logs containing file paths or client data. Exact current profile paths may differ across machines. The app may show system security prompts; read and understand them before authorizing access.
+
+For synthetic lifecycle proof runs, the runner-created POSIX temp directory must belong to the current user and grant no group/other access. Do not relax its permissions; create a fresh runner-owned test profile instead. A detected redirected PDF destination or changed staged export is a refusal, not authorization to overwrite the original. Preserve any staged recovery file until the destination and previous export have been checked.
+
+If a backup changes after verification, select and verify it again rather than bypassing confirmation. A detected unsafe PDF cleanup retains the staged file and preserves the original failure; inspect both before removing any retained temporary export.
+
+A packaged application with an unexpected development URL fails before opening its renderer. Do not work around this by starting a Vite server or changing trust settings. Use a verified internal candidate and preserve safe startup diagnostics for investigation.
+
+If a synthetic managed image import is interrupted or disk space is exhausted, the app refuses to acknowledge the import; it removes only the incomplete file it can still identify as its own. If identity changes make cleanup unsafe, the unverified file is retained for review, not treated as an imported receipt. Restore available disk space and retry from the original source. Do not manually remove an issued original or an unrelated file to recover a failed import or credential update.
+
+If startup reports unsafe application data after an interrupted restore, inspect the redacted `paths.prepare` or `restore.recovery` event. Preserve the profile, rollback and staging directories, and obtain qualified recovery assistance. Never initialize a replacement empty business or delete a rescue to make startup succeed.
+
+Project status changes require a reason in the cockpit, maximum 500 characters. Confirm only the intended synthetic action. Canceling discards the uncommitted reason and leaves the prior status and audit history intact.
+
+If the main entry is missing, Electron may fail before this application can open its local startup journal. If preload fails after startup begins, expect a safe `renderer.preload` failure and shutdown record. Do not repair an installed package by renaming or replacing its resources; use an intact verified package and preserve existing data.
+
+If an image or PDF save reports a changed or unsafe directory, keep the original and any retained empty/staged object for inspection. Re-select a stable external export folder, or inspect the application's owned data location with support; do not delete a substituted path blindly. Startup diagnostics also refuse an unexpectedly replaced diagnostics folder.
+
+If **Verify saved backups** reports an unavailable or unsafe folder, reselect the intended external destination using the OS dialog. A rejected backup is not a restore candidate; keep the original live records and investigate the archive. For an oversized folder, choose a smaller backup folder instead of treating an incomplete scan as verified. Do not delete or modify a potentially valuable backup to clear an error.

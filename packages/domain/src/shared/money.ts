@@ -36,3 +36,29 @@ export function assertSqliteCents(value:Cents):bigint {
  if(value<-(2n**63n)||value>2n**63n-1n)throw new Error('Money exceeds SQLite signed integer storage range');
  return value;
 }
+
+/** Pure Phase 2 arithmetic only; the caller selects the calculation stage and rate. */
+export type CentsRounding = 'HALF_AWAY_FROM_ZERO';
+function requireSupportedRounding(mode:CentsRounding):void {
+ if(mode!=='HALF_AWAY_FROM_ZERO')throw new Error('Unsupported rounding mode');
+}
+/** Preserve source precision (four decimal places), separately from finalized cents. */
+function parseNonnegativeFourPlaceDecimal(value:string):bigint {
+ // Nineteen whole digits cover the signed SQLite integer range. The input bound
+ // is representational/resource safety, not a commercial price or tax-rate policy.
+ const match=/^(0|[1-9][0-9]{0,18})(?:\.([0-9]{1,4}))?$/.exec(value);
+ if(!match)throw new Error('Invalid nonnegative scaled decimal (up to four fractional digits)');
+ return BigInt(match[1])*10000n+BigInt((match[2]||'').padEnd(4,'0')||'0');
+}
+/** Extend an exact source unit price by quantity in thousandths; round only once to cents. */
+export function extendSourceUnitPriceCents(unitPrice:string,quantityMills:bigint,mode:CentsRounding):Cents {
+ requireSupportedRounding(mode);
+ if(quantityMills<0n||quantityMills>2n**63n-1n)throw new Error('Invalid quantity in signed SQLite range');
+ const scaledPrice=parseNonnegativeFourPlaceDecimal(unitPrice);
+ return assertSqliteCents(roundRatio(scaledPrice*quantityMills,100000n));
+}
+/** Apply an explicit percent to an already chosen base in cents. No tax jurisdiction or stage inference. */
+export function percentageOfCents(base:Cents,ratePercent:string,mode:CentsRounding):Cents {
+ requireSupportedRounding(mode);assertSqliteCents(base);
+ return assertSqliteCents(roundRatio(base*parseNonnegativeFourPlaceDecimal(ratePercent),1000000n));
+}

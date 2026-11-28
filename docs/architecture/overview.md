@@ -3,7 +3,7 @@
 ```text
 [React renderer: untrusted] --exact DTOs--> [sandboxed preload allowlist]
                 --> [Electron main: IPC sender + input guards]
-                    --> [use cases & pure deterministic domain (future)]
+                    --> [use cases & pure deterministic domain (foundation subset)]
                     --> [SQLite connection and migrations]
                     --> [managed image/document vault]
                     --> [PDF engine]
@@ -13,19 +13,25 @@
 
 `Electron main` is the only process permitted to request files or secrets. No raw `ipcRenderer`, Node `fs`, SQL strings or arbitrary URL redirects are exposed to React. No permanent HTTP server. Do not import UI or Electron into deterministic financial domain code. Database and document generation cannot call Claude or Gmail to finalize invoices or payment receipts.
 
-Initial schema (`packages/persistence-sqlite/src/migrations/0001-initial.sql`) contains **only synthetic business, project and audit proof tables**. It is not the reconciled 43-table financial design and not a committed V1 production migration. Production schema requires separate migrations, financial triggers, migration/backfill review, credits, payment receipts, overhead, labor snapshots and disposition ledgers. Original 135 requirement/54 acceptance definitions remain source-of-truth.
+Initial schema (`packages/persistence-sqlite/src/migrations/0001-initial.sql`) contains **only synthetic business, project and audit proof tables**. It is not the reconciled 43-table financial design and not a committed V1 production migration. Later migrations add evidence-integrity and finance snapshot groundwork. Complete production issuance, payment/credit flows and migration/backfill review remain outstanding. Original 135 requirement/54 acceptance definitions remain source-of-truth.
 
-SQLite core `node:sqlite` is a provisional driver. It ran in Linux Node 22.16.0; its real behavior inside Electron 45 (Node 24.22.x) and Forge 8 packaging must be verified before lock. This is not a vendor claim.
+SQLite core `node:sqlite` is the implemented foundation driver. The native collector exercises real Electron SQLite on macOS arm64 and Windows x64 and records the exact source and binary identity. Check receipts for the candidate, not a prior commit. Independent review remains required before release.
 
 The synthetic PDF proof is ASCII-only and omits logo rendering and full invoice accounting. It must be replaced by a reviewed production PDF adapter before any real invoice is generated. An ASCII visual proof does not establish Unicode, multipage, tax, rounding, printing, accessibility or logo behavior.
 
 Security threat-model limitations: no network listener, but malicious renderer, hostile PDF/image uploads, local malware/other OS users, backup replacement, rollback, and public binary trust must still be reviewed. Testing actual OS vaults and signing is mandatory.
 
 
-## ADR-P2-001 accepted: Vite renderer HTML entry (Owner, 2026-11-23)
+## ADR-P2-001 accepted: Vite renderer HTML entry (Owner, reaffirmed 2026-11-24)
 
 The owner explicitly approved retaining `apps/desktop/index.html` as the only
 exception to the previously approved 239-path repository map. The production
 renderer is built from this HTML entry. All other approved boundaries remain
 unchanged. This is a narrow, tested path exception, **not** permission to
 reorganize the rest of the repository.
+
+The November 24 continuation uses the public canonical development repository `Kyrle-RSB/electrical-tm-ai`. The owner reaffirmed ADR-P2-001 and explicitly authorized sanitized development-source publication, not customer release. The approved entry replaces the originally catalogued renderer HTML path in the effective audit map; existing support/test paths are separately enumerated and unexpected paths fail the audit.
+
+Migration history is append-only. SQL checkouts are pinned to LF. New checksum receipts use LF; legacy installed receipts that match the exact CRLF encoding of the same shipped SQL are accepted without rewriting the database history. Any other checksum or sequence mismatch fails closed.
+
+The approved application entry `packages/application/src/index.ts` exports the local project and branding use cases, operation queue and technology-neutral port types. Project `get` validates the UUID before a parameterized local-business read, returning a detailed record or null without adding a mutation receipt. Existing project list/edit/details/status operations also bind the local business in their repository queries. No new renderer IPC channel or multi-company workflow is introduced; foreign rows injected into a synthetic database must not be exposed or mutated by these operations.

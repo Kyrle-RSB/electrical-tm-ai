@@ -33,7 +33,8 @@
     "tests/integration/**/*.ts",
     "tests/security/**/*.ts",
     "packages/application/src/**/*.ts",
-    "apps/desktop/src/main/bootstrap.ts"
+    "apps/desktop/src/main/bootstrap.ts",
+    "tests/e2e/cockpit-flow.spec.ts"
   ],
   "exclude": [
     "node_modules",

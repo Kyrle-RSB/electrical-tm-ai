@@ -13,14 +13,17 @@
     "package:win": "pnpm --filter @electrical-tm/desktop make --platform=win32 --arch=x64",
     "test": "pnpm proof:compile && pnpm proof:run",
     "desktop:typecheck": "tsc --project apps/desktop/tsconfig.json --noEmit",
-    "quality:source": "node scripts/audit-source-secrets.mjs && node scripts/verify-licenses.mjs && node scripts/audit-requirements.mjs"
+    "quality:source": "pnpm lint && node scripts/audit-source-secrets.mjs && node scripts/verify-licenses.mjs && node scripts/audit-requirements.mjs --bootstrap",
+    "lint": "eslint . --max-warnings=0"
   },
   "description": "Fork B standalone local Electron application, active construction source. Not certified for actual billing or public distribution.",
   "engines": {
     "node": ">=24.0.0"
   },
   "devDependencies": {
-    "typescript": "5.9.3",
-    "@types/node": "24.10.1"
+    "@types/node": "24.10.1",
+    "@typescript-eslint/parser": "8.48.1",
+    "eslint": "9.39.1",
+    "typescript": "5.9.3"
   }
 }

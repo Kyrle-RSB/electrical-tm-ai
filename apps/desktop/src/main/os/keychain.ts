@@ -1,6 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+const MAX_CIPHERTEXT_BYTES=1024*1024;
+function sameCredentialFile(a:fs.Stats|null,b:fs.Stats|null):boolean{
+ if(a===null||b===null)return a===b;
+ return a.isFile()&&b.isFile()&&a.nlink===1&&b.nlink===1&&a.dev===b.dev&&a.ino===b.ino&&a.size===b.size&&a.mtimeMs===b.mtimeMs&&a.ctimeMs===b.ctimeMs;
+}
 export interface AsyncProtection {
   isAsyncEncryptionAvailable():Promise<boolean>;
   encryptStringAsync(plain:string):Promise<Buffer>;
@@ -18,24 +23,78 @@ export class ProtectedSecretFile {
     if(process.platform==='linux'&&this.provider.getSelectedStorageBackend?.()==='basic_text')
       throw new Error('Unprotected Linux credential backend is forbidden');
   }
+  private async storageDirectory(create=false):Promise<boolean>{
+    const directory=path.dirname(this.file);
+    if(create)await fs.promises.mkdir(directory,{recursive:true,mode:0o700});
+    try{
+      const stat=await fs.promises.lstat(directory);
+      if(!stat.isDirectory()||stat.isSymbolicLink())throw new Error('Unsafe credential storage directory');
+      return true;
+    }catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&!create)return false;throw error;}
+  }
+  private async inspectFile(){
+    if(!await this.storageDirectory())return null;
+    try{
+      const stat=await fs.promises.lstat(this.file);
+      if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.size===0||stat.size>MAX_CIPHERTEXT_BYTES)
+        throw new Error('Unsafe credential storage file');
+      return stat;
+    }catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error;}
+  }
   async storeFakeToken(plaintext:string):Promise<void>{
     if(!plaintext.startsWith('TEST-FAKE-'))throw new Error('Proof rejects non-test credentials');
     await this.storeEncrypted(plaintext);
   }
-  private async storeEncrypted(plaintext:string):Promise<void>{
+  private async storeEncrypted(plaintext:string,expected?:fs.Stats):Promise<void>{
     await this.ensureAvailable();
+    const before=await this.inspectFile();
+    if(expected!==undefined&&!sameCredentialFile(expected,before))throw new Error('Unsafe credential storage file changed');
     const cipher=await this.provider.encryptStringAsync(plaintext);
-    if(!cipher.length||cipher.includes(Buffer.from(plaintext,'utf8')))
+    if(!Buffer.isBuffer(cipher)||!cipher.length||cipher.length>MAX_CIPHERTEXT_BYTES||cipher.includes(Buffer.from(plaintext,'utf8')))
       throw new Error('Credential encryption returned unsafe ciphertext');
-    await fs.promises.mkdir(path.dirname(this.file),{recursive:true,mode:0o700});
+    await this.storageDirectory(true);
+    const directory=path.dirname(this.file),parent=await fs.promises.lstat(directory);
+    if(!parent.isDirectory()||parent.isSymbolicLink())throw new Error('Unsafe credential storage directory');
+    const checkParent=async()=>{
+      const named=await fs.promises.lstat(directory);
+      if(!named.isDirectory()||named.isSymbolicLink()||named.dev!==parent.dev||named.ino!==parent.ino)throw new Error('Unsafe credential storage directory changed');
+    };
+    if(!sameCredentialFile(before,await this.inspectFile()))throw new Error('Unsafe credential storage file changed');
     const tmp=this.file+`.new-${crypto.randomBytes(8).toString('hex')}`;
+    let identity:fs.Stats|undefined;
     try {
-      const handle=await fs.promises.open(tmp,'wx',0o600);
-      try{await handle.writeFile(cipher);await handle.sync();}finally{await handle.close();}
+      await checkParent();
+      const handle=await fs.promises.open(tmp,'wx+',0o600);
+      try{
+        identity=await handle.stat();
+        if(!identity.isFile()||identity.nlink!==1)throw new Error('Unsafe staged credential');
+        await handle.writeFile(cipher);await handle.sync();
+        const written=await handle.stat();
+        if(!written.isFile()||written.nlink!==1||written.size!==cipher.length)throw new Error('Unsafe staged credential');
+        const readback=Buffer.alloc(cipher.length);let offset=0;
+        while(offset<readback.length){const {bytesRead}=await handle.read(readback,offset,readback.length-offset,offset);if(!bytesRead)throw new Error('Unsafe staged credential');offset+=bytesRead;}
+        const after=await handle.stat();
+        if(!readback.equals(cipher)||!sameCredentialFile(written,after))throw new Error('Staged ciphertext changed');
+        await checkParent();
+        if(!sameCredentialFile(after,await fs.promises.lstat(tmp)))throw new Error('Unsafe staged credential');
+        identity=after;
+      }finally{await handle.close();}
+      if(!sameCredentialFile(before,await this.inspectFile()))throw new Error('Unsafe credential storage file changed');
+      await checkParent();
+      if(!sameCredentialFile(identity,await fs.promises.lstat(tmp)))throw new Error('Unsafe staged credential');
       await fs.promises.rename(tmp,this.file);
-    }finally{await fs.promises.rm(tmp,{force:true});}
+    }catch(error){
+      if(identity){
+        try{
+          await checkParent();const named=await fs.promises.lstat(tmp);
+          if(!named.isFile()||named.isSymbolicLink()||named.nlink!==1||named.dev!==identity.dev||named.ino!==identity.ino)throw new Error('Unsafe staged credential cleanup identity');
+          await fs.promises.rm(tmp);
+        }catch(cleanup){if((cleanup as NodeJS.ErrnoException).code!=='ENOENT')throw new AggregateError([error,cleanup],'Credential staging failed; unverified file retained for recovery');}
+      }
+      throw error;
+    }
   }
-  async exists():Promise<boolean>{return fs.existsSync(this.file);}
+  async exists():Promise<boolean>{return (await this.inspectFile())!==null;}
   async readFakeToken():Promise<string>{
     const value=await this.readEncrypted();
     if(!value.startsWith('TEST-FAKE-'))throw new Error('Invalid test token record');
@@ -43,12 +102,26 @@ export class ProtectedSecretFile {
   }
   private async readEncrypted():Promise<string>{
     await this.ensureAvailable();
-    const cipher=await fs.promises.readFile(this.file);
+    const before=await this.inspectFile();
+    if(!before)throw new Error('Protected credential not configured');
+    const file=await fs.promises.open(this.file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
+    let cipher:Buffer;
+    try{
+      const opened=await file.stat();
+      if(!sameCredentialFile(before,opened))
+        throw new Error('Unsafe credential storage file changed');
+      cipher=Buffer.alloc(opened.size);
+      let offset=0;
+      while(offset<cipher.length){const {bytesRead}=await file.read(cipher,offset,cipher.length-offset,offset);if(!bytesRead)throw new Error('Unsafe credential storage file changed');offset+=bytesRead;}
+      if(!sameCredentialFile(opened,await file.stat())||!sameCredentialFile(opened,await this.inspectFile()))throw new Error('Unsafe credential storage file changed');
+    }finally{await file.close();}
     const {result,shouldReEncrypt}=await this.provider.decryptStringAsync(cipher);
-    if(shouldReEncrypt)await this.storeEncrypted(result);
+    if(typeof result!=='string'||!result||result.length>65536)throw new Error('Invalid protected value');
+    if(!sameCredentialFile(before,await this.inspectFile()))throw new Error('Unsafe credential storage file changed');
+    if(shouldReEncrypt)await this.storeEncrypted(result,before);
     return result;
   }
-  async remove():Promise<void>{await fs.promises.rm(this.file,{force:true});}
+  async remove():Promise<void>{if(await this.inspectFile())await fs.promises.rm(this.file,{force:true});}
   /** Caller MUST be a privileged application adapter. Never return this value via IPC. */
   static createProviderStore(provider:AsyncProtection,root:string){
     const names=new Set(['claude-api','gmail-oauth']);

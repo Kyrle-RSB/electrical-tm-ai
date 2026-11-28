@@ -3,6 +3,8 @@ name: Windows x64 packaged foundation verification
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
@@ -14,15 +16,19 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 50
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '24'
+          node-version-file: '.nvmrc'
       - name: Execute complete native evidence collector
         run: node scripts/capture-native-proof.mjs --execute
-      - name: Upload redacted native proof, including failures
+      - name: Admit native evidence only after known-signature screening
+        id: evidence-admission
         if: always()
-        uses: actions/upload-artifact@v4
+        run: node scripts/audit-source-secrets.mjs --native-evidence
+      - name: Upload redacted native proof, including failures
+        if: always() && steps.evidence-admission.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: fork-b-windows-x64-evidence
           path: .local-evidence/native-*/
@@ -31,7 +37,7 @@ jobs:
           include-hidden-files: true
       - name: Upload UNSIGNED candidate package (not a release)
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: UNSIGNED-DO-NOT-DISTRIBUTE-windows-x64
           path: apps/desktop/out/make/

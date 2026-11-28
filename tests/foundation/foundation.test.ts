@@ -20,8 +20,8 @@ const rm=(dir:string)=>fs.rmSync(dir,{recursive:true,force:true});
 const RECEIPT_FIXTURE = process.env.TM_PROOF_FIXTURE_PNG || path.join(process.cwd(),'tests','fixtures','synthetic-receipt.png');
 
 test('bounded IPC validates request IDs, payloads and forbids arbitrary fields',()=>{
-  assert.doesNotThrow(()=>assertEnvelope({requestId:crypto.randomUUID(),payload:null}));
-  for(const bad of [{requestId:'not-a-uuid',payload:null},{requestId:crypto.randomUUID(),payload:null,command:'fs.unlink'},{requestId:crypto.randomUUID(),payload:'x'.repeat(18000)}])assert.throws(()=>assertEnvelope(bad));
+  assert.doesNotThrow(()=>assertEnvelope({requestId:crypto.randomUUID(),version:1,payload:null}));
+  for(const bad of [{requestId:'not-a-uuid',version:1,payload:null},{requestId:crypto.randomUUID(),version:1,payload:null,command:'fs.unlink'},{requestId:crypto.randomUUID(),version:1,payload:'x'.repeat(18000)}])assert.throws(()=>assertEnvelope(bad));
   assert.deepEqual(validateProjectInput({code:'SYN-001',customer:' Fictional Customer ',siteAddress:' 45 Sample Way '}),{code:'SYN-001',customer:'Fictional Customer',siteAddress:'45 Sample Way'});
   assert.throws(()=>validateProjectInput({code:'../hacker',customer:'X',siteAddress:'Y'}));
   assert.throws(()=>validateProjectInput({code:'SYN',customer:'X',siteAddress:'Y',admin:true}));
@@ -180,12 +180,12 @@ test('IPC handler registry only creates project through validated same-frame cal
     const store=new LocalStore(path.join(dir,'app.sqlite'));store.initializeFictionalCompany();
     registerFoundationHandlers({handle:(ch,h)=>{handlers.set(ch,h);}}, {primary,url,getStore:()=>store});
     assert.deepEqual([...handlers.keys()].sort(),[CHANNELS.ping,CHANNELS.projectAdd,CHANNELS.projectEdit,CHANNELS.projectList,CHANNELS.projectDetailedList,CHANNELS.projectDetails,CHANNELS.projectStatus,CHANNELS.businessGet,CHANNELS.businessUpdate].sort());
-    const event={sender:primary,senderFrame:frame};const invoke=(c:string,payload:unknown)=>handlers.get(c)!(event,{requestId:crypto.randomUUID(),payload});
+    const event={sender:primary,senderFrame:frame};const invoke=(c:string,payload:unknown)=>handlers.get(c)!(event,{requestId:crypto.randomUUID(),version:1,payload});
     assert.deepEqual(await invoke(CHANNELS.ping,null),{status:'ok',foundation:true});
     await assert.rejects(()=>invoke(CHANNELS.projectAdd,{code:'../bad',customer:'X',siteAddress:'Y'}));
     await invoke(CHANNELS.projectAdd,{code:'SYN-123',customer:'Fictional',siteAddress:'1 Sample St'});
     assert.equal((await invoke(CHANNELS.projectList,null) as any[]).length,1);
-    await assert.rejects(()=>handlers.get(CHANNELS.projectList)!({sender:{id:7},senderFrame:frame},{requestId:crypto.randomUUID(),payload:null}));
+    await assert.rejects(()=>handlers.get(CHANNELS.projectList)!({sender:{id:7},senderFrame:frame},{requestId:crypto.randomUUID(),version:1,payload:null}));
     store.close();
   }finally{rm(dir);}
 });
@@ -200,7 +200,7 @@ test('IPC project handlers use reopened SQLite connection after backup-style res
     let store=new LocalStore(dbFile);store.initializeFictionalCompany();
     registerFoundationHandlers({handle:(ch,h)=>{handlers.set(ch,h)}},{primary,url,getStore:()=>store});
     const event={sender:primary,senderFrame:frame};
-    const invoke=(channel:string,payload:unknown)=>handlers.get(channel)!(event,{requestId:crypto.randomUUID(),payload});
+    const invoke=(channel:string,payload:unknown)=>handlers.get(channel)!(event,{requestId:crypto.randomUUID(),version:1,payload});
     await invoke(CHANNELS.projectAdd,{code:'SYN-RESTORE',customer:'Fictional',siteAddress:'10 Test Way'});
     store.close();
     store=new LocalStore(dbFile); // Restore handler replaces the live LocalStore instance.
@@ -255,4 +255,66 @@ test('Vite dev CSP transformer preserves strict packaged HTML and permits local 
   assert.doesNotMatch(html,/unsafe-inline|unsafe-eval|ws:\/\/localhost/);
   assert.match(html,/connect-src 'none'/);
   assert.throws(()=>devPlugin.transformIndexHtml('<html><title>Unknown page</title></html>'),/Expected one production CSP/);
+});
+
+
+test('repository audit rejects unexplained paths and floating workflow action versions',()=>{
+ const {spawnSync}=require('node:child_process') as typeof import('node:child_process');
+ const dir=mkTemp();try{
+  fs.mkdirSync(path.join(dir,'scripts'));fs.mkdirSync(path.join(dir,'.github','workflows'),{recursive:true});
+  fs.copyFileSync('scripts/audit-repo-structure.mjs',path.join(dir,'scripts','audit-repo-structure.mjs'));
+  // The audit now uses the pinned TypeScript parser and project resolution config.
+  // Preserve the original extra-path/action-pin failure and clean-pass oracles.
+  fs.mkdirSync(path.join(dir,'apps','desktop'),{recursive:true});
+  fs.mkdirSync(path.join(dir,'node_modules'),{recursive:true});
+  fs.symlinkSync(path.dirname(require.resolve('typescript/package.json')),path.join(dir,'node_modules','typescript'),process.platform==='win32'?'junction':'dir');
+  fs.copyFileSync('tsconfig.base.json',path.join(dir,'tsconfig.base.json'));
+  fs.copyFileSync('apps/desktop/tsconfig.json',path.join(dir,'apps','desktop','tsconfig.json'));
+
+  const workflow=path.join(dir,'.github','workflows','ci.yml');
+  fs.writeFileSync(workflow,'steps:\n  - uses: actions/checkout@v4\n');
+  fs.writeFileSync(path.join(dir,'unexpected-source.ts'),'export const x=1;');
+  const failure=spawnSync(process.execPath,[path.join(dir,'scripts','audit-repo-structure.mjs')],{encoding:'utf8',windowsHide:true});
+  assert.equal(failure.status,1,failure.stderr);
+  const report=JSON.parse(failure.stdout);assert.equal(report.status,'FAIL');
+  assert.ok(report.violations.some((v:string)=>v.includes('Untracked architecture/support path')));
+  assert.ok(report.violations.some((v:string)=>v.includes('Unpinned workflow action')));
+  fs.rmSync(path.join(dir,'unexpected-source.ts'));
+  fs.writeFileSync(workflow,'steps:\n  - uses: actions/checkout@'+'a'.repeat(40)+'\n');
+  const success=spawnSync(process.execPath,[path.join(dir,'scripts','audit-repo-structure.mjs')],{encoding:'utf8',windowsHide:true});
+  assert.equal(success.status,0,success.stderr);assert.equal(JSON.parse(success.stdout).status,'PASS');
+ }finally{rm(dir);}
+});
+
+test('database mutation operation IDs cannot be replayed after reopen or reused across channels',async()=>{
+ const dir=mkTemp();try{
+  const primary={id:21},url='tmapp://app/index.html',frame:any={url};frame.top=frame;
+  const handlers=new Map<string,(event:any,request:any)=>Promise<unknown>>();
+  const file=path.join(dir,'app.sqlite');let db=new LocalStore(file);db.initializeFictionalCompany();
+  try{
+   const event={sender:primary,senderFrame:frame};
+   const register=()=>registerFoundationHandlers({handle:(ch,h)=>handlers.set(ch,h)},{primary,url,getStore:()=>db});
+   register();const id=db.createProject({code:'REPLAY',customer:'Before',siteAddress:'Site'});
+   const op=crypto.randomUUID();const invoke=(ch:string,requestId:string,payload:unknown)=>handlers.get(ch)!(event,{requestId,version:1,payload});
+   await invoke(CHANNELS.projectEdit,op,{id,code:'REPLAY',customer:'After',siteAddress:'Site'});
+   db.close();db=new LocalStore(file);handlers.clear();register();
+   await assert.rejects(()=>invoke(CHANNELS.projectEdit,op,{id,code:'REPLAY',customer:'Unexpected replay',siteAddress:'Site'}),/duplicate mutation/);
+   await assert.rejects(()=>invoke(CHANNELS.projectStatus,op,{id,status:'archived'}),/duplicate mutation/);
+   assert.equal(db.listProjectsDetailed()[0].customer_name,'After');assert.equal(db.listProjectsDetailed()[0].status,'active');
+   assert.equal((db.db.prepare('SELECT count(*) AS n FROM audit_events').get() as {n:number}).n,2);
+   const failed=crypto.randomUUID();
+   await assert.rejects(()=>invoke(CHANNELS.projectAdd,failed,{code:'REPLAY',customer:'Duplicate',siteAddress:'Site'}));
+   await invoke(CHANNELS.projectAdd,failed,{code:'RECOVERED',customer:'Recovered',siteAddress:'Site'});
+   assert.equal(db.listProjects().length,2);
+  }finally{db.close();}
+ }finally{rm(dir);}
+});
+
+test('flat-paint contrast oracle preserves alpha composition and standard luminance ratios',async()=>{
+ const {contrastForPaint}=await import('../e2e/cockpit-flow.spec');
+ assert.equal(contrastForPaint('rgb(0, 0, 0)',['rgb(255, 255, 255)']),21);
+ assert.equal(contrastForPaint('rgb(255, 255, 255)',['rgb(255, 255, 255)']),1);
+ assert.equal(contrastForPaint('rgb(0, 0, 0)',['rgb(0, 0, 0)','rgba(255, 255, 255, 1)']),21);
+ assert.equal(contrastForPaint('rgba(0, 0, 0, 0)',['rgb(255, 255, 255)']),1);
+ assert.throws(()=>contrastForPaint('red',['rgb(0, 0, 0)']),/Unsupported/);
 });
