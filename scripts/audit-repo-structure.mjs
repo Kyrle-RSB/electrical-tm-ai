@@ -11,7 +11,7 @@ canonical.delete('apps/desktop/src/renderer/index.html');canonical.add('apps/des
 // Existing supporting test/config/evidence paths in the native-verified baseline;
 // these are not additions to the approved application-module catalog.
 const supplemental=new Set([
- 'AGENTS.md','CLAUDE.md','docs/architecture/adr/0010-source-lint.md',
+ 'AGENTS.md','CLAUDE.md','docs/ROADMAP.md','docs/architecture/adr/0010-source-lint.md',
  '.github/workflows/codeql.yml','.nvmrc','apps/desktop/tsconfig.json',
  'docs/phase-1/evidence/README.md','docs/phase-1/evidence/REPAIR_SESSION_2026-11-23.md',
  'docs/public-repo/REPOSITORY_STANDARDS.md','packages/persistence-sqlite/src/migrations/0005-evidence-integrity.sql',
