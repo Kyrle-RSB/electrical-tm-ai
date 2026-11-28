@@ -63,12 +63,25 @@ async function resolveExportTarget(target:string,protectedRoots:readonly string[
 export type PdfExportIdentity={dev:number;ino:number;size:number;mtimeMs:number;ctimeMs:number;sha256:string};
 async function inspectExportIdentity(target:string,checkParent:()=>Promise<void>):Promise<PdfExportIdentity|null>{
  await checkParent();
- let before:fs.Stats;
- try{before=await fs.promises.lstat(target);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){await checkParent();return null;}throw error;}
- if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1||before.size>25*1024*1024)throw new Error('Unsafe PDF destination type');
- const handle=await fs.promises.open(target,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
+ // Open first (no-follow, non-blocking), then judge the descriptor and confirm the
+ // name still points at it. Checking the path before opening it would be a race.
+ let handle:fs.promises.FileHandle;
+ try{handle=await fs.promises.open(target,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));}
+ catch(error){
+  const code=(error as NodeJS.ErrnoException).code;
+  if(code==='ENOENT'){
+   // Absent is only acceptable when nothing, not even a dangling link, holds the name.
+   try{await fs.promises.lstat(target);}catch(missing){if((missing as NodeJS.ErrnoException).code==='ENOENT'){await checkParent();return null;}throw missing;}
+   throw new Error('Unsafe PDF destination type');
+  }
+  if(['ELOOP','EISDIR','EMLINK'].includes(code??''))throw new Error('Unsafe PDF destination type');
+  throw error;
+ }
  try{
-  const stat=await handle.stat();if(!stat.isFile()||stat.dev!==before.dev||stat.ino!==before.ino||stat.size!==before.size||stat.nlink!==1||stat.mtimeMs!==before.mtimeMs||stat.ctimeMs!==before.ctimeMs)throw new Error('PDF destination changed during inspection');
+  const stat=await handle.stat();if(!stat.isFile()||stat.nlink!==1||stat.size>25*1024*1024)throw new Error('Unsafe PDF destination type');
+  const before=await fs.promises.lstat(target);
+  await checkParent();
+  if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1||stat.dev!==before.dev||stat.ino!==before.ino||stat.size!==before.size||stat.mtimeMs!==before.mtimeMs||stat.ctimeMs!==before.ctimeMs)throw new Error('PDF destination changed during inspection');
   await checkParent();
   const bytes=Buffer.alloc(stat.size);let offset=0;
   while(offset<bytes.length){const {bytesRead}=await handle.read(bytes,offset,bytes.length-offset,offset);if(!bytesRead)throw new Error('PDF destination changed during inspection');offset+=bytesRead;}

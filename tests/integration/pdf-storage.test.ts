@@ -284,3 +284,21 @@ for(const mode of ['immutable','selection','replace'] as const)test('PDF inspect
   assert.deepEqual(fs.readFileSync(file),original);assert.deepEqual(fs.readFileSync(path.join(parked,path.basename(file))),original);
  }finally{fs.promises.lstat=lstat;fs.promises.open=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('existing immutable PDF and export targets are judged by their opened descriptor',{skip:process.platform==='win32'?'file symlinks need elevated rights on Windows':false},async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-pdf-descriptor-'));
+ try{
+  const bytes=makeSyntheticInvoicePdf(fixture),artifacts=path.join(root,'artifacts');
+  const issued=await storeImmutablePdf(artifacts,bytes),file=path.join(artifacts,issued.relativePath),copy=path.join(root,'copy.pdf');
+  fs.copyFileSync(file,copy);fs.unlinkSync(file);fs.symlinkSync(copy,file);
+  await assert.rejects(storeImmutablePdf(artifacts,bytes),/collision or tampering/);
+  assert.equal(fs.lstatSync(file).isSymbolicLink(),true);
+  const exports=path.join(root,'exports');fs.mkdirSync(exports);
+  assert.equal((await capturePdfExportTarget(path.join(exports,'absent.pdf'),[artifacts])).existing,null);
+  const present=path.join(exports,'present.pdf');fs.writeFileSync(present,bytes);
+  const selected=await capturePdfExportTarget(present,[artifacts]);
+  assert.equal(selected.existing?.size,bytes.length);
+  const dangling=path.join(exports,'dangling.pdf');fs.symlinkSync(path.join(root,'missing.pdf'),dangling);
+  await assert.rejects(capturePdfExportTarget(dangling,[artifacts]),/Unsafe PDF destination type/);
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});

@@ -50,12 +50,17 @@ export async function storeImmutablePdf(artifactsRoot:string,pdf:Buffer):Promise
  try{await writeNewPdfExclusive(file,pdf,checkParent);}
  catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;
    await checkParent();
-   const stat=await fs.promises.lstat(file);
-   if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.size!==pdf.length)throw new Error('Immutable PDF content hash collision or tampering');
-   const handle=await fs.promises.open(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
+   // Open first (no-follow, non-blocking), then judge the descriptor and confirm the
+   // name still points at it. Checking the path before opening it would be a race.
+   let handle:fs.promises.FileHandle;
+   try{handle=await fs.promises.open(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));}
+   catch(error){if(['ELOOP','EISDIR','EMLINK'].includes((error as NodeJS.ErrnoException).code??''))throw new Error('Immutable PDF content hash collision or tampering');throw error;}
    try{
     const opened=await handle.stat();
-    if(!opened.isFile()||opened.dev!==stat.dev||opened.ino!==stat.ino||opened.size!==stat.size||opened.nlink!==1||opened.mtimeMs!==stat.mtimeMs||opened.ctimeMs!==stat.ctimeMs)throw new Error('Immutable PDF changed during inspection');
+    if(!opened.isFile()||opened.nlink!==1||opened.size!==pdf.length)throw new Error('Immutable PDF content hash collision or tampering');
+    const stat=await fs.promises.lstat(file);
+    await checkParent();
+    if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||opened.dev!==stat.dev||opened.ino!==stat.ino||opened.size!==stat.size||opened.mtimeMs!==stat.mtimeMs||opened.ctimeMs!==stat.ctimeMs)throw new Error('Immutable PDF changed during inspection');
     await checkParent();
     const previous=Buffer.alloc(pdf.length);
     let offset=0;

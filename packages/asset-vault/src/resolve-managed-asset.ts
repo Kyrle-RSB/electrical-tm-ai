@@ -66,13 +66,18 @@ export async function readRegularImage(file:string,checkOwnedParent?:()=>Promise
   if(!named.isDirectory()||named.isSymbolicLink()||named.dev!==parentIdentity.dev||named.ino!==parentIdentity.ino||await fs.promises.realpath(parent)!==physical)throw new Error('Unsafe image directory changed');
  };
  await checkParent();
- const before=await fs.promises.lstat(file);
- if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1||before.size>MAX_IMAGE_BYTES)
-  throw new Error('Image must be a regular permitted file');
- const handle=await fs.promises.open(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));
+ // Open first (no-follow, non-blocking), then judge the descriptor and confirm the
+ // name still points at it. Checking the path before opening it would be a race.
+ let handle:fs.promises.FileHandle;
+ try{handle=await fs.promises.open(file,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0)|(fs.constants.O_NONBLOCK??0));}
+ catch(error){if(['ELOOP','EISDIR','EMLINK'].includes((error as NodeJS.ErrnoException).code??''))throw new Error('Image must be a regular permitted file');throw error;}
  try{
   const opened=await handle.stat();
-  if(!opened.isFile()||opened.nlink!==1||opened.size>MAX_IMAGE_BYTES||opened.size!==before.size||opened.dev!==before.dev||opened.ino!==before.ino||opened.mtimeMs!==before.mtimeMs||opened.ctimeMs!==before.ctimeMs)
+  if(!opened.isFile()||opened.nlink!==1||opened.size>MAX_IMAGE_BYTES)
+   throw new Error('Image must be a regular permitted file');
+  const before=await fs.promises.lstat(file);
+  await checkParent();
+  if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1||opened.size!==before.size||opened.dev!==before.dev||opened.ino!==before.ino||opened.mtimeMs!==before.mtimeMs||opened.ctimeMs!==before.ctimeMs)
    throw new Error('Image changed during secure import');
   await checkParent();
   const bytes=Buffer.alloc(opened.size);

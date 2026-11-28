@@ -160,3 +160,15 @@ test('managed image verification refuses parent substitution before reading any 
   assert.deepEqual(fs.readFileSync(file),original);assert.deepEqual(fs.readFileSync(path.join(parked,path.basename(file))),original);
  }finally{fs.promises.lstat=lstat;fs.promises.open=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+test('picked image that is a file symlink is refused at the descriptor, not by a prior path check',{skip:process.platform==='win32'?'file symlinks need elevated rights on Windows':false},async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'forkb-image-symlink-'));
+ try{
+  const real=path.join(root,'real.png'),linked=path.join(root,'linked.png'),vault=path.join(root,'vault');
+  fs.copyFileSync('tests/fixtures/synthetic-receipt.png',real);fs.symlinkSync(real,linked);
+  await assert.rejects(importImageFromPickedFile(linked,vault),/regular permitted file/);
+  assert.equal(fs.existsSync(vault),false);
+  const receipt=await importImageFromPickedFile(real,vault);
+  assert.equal(receipt.mime,'image/png');
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+});
