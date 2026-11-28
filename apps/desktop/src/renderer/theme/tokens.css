@@ -1,55 +1,192 @@
-:root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color-scheme:light dark;background:#f3f7f8;color:#111b28;font-synthesis:none}
-*{box-sizing:border-box}body{margin:0}button,input{font:inherit}button{background:#2b60d9;color:white;border:0;padding:10px 14px;border-radius:9px;cursor:pointer}button:hover{filter:brightness(1.1)}button:focus-visible,input:focus-visible{outline:3px solid #c8ed38;outline-offset:3px}
-.operation-scope{border:0;padding:0;margin:0;min-width:0;display:grid;gap:20px}
-.wrap{max-width:1040px;padding:30px;margin:auto;display:grid;gap:20px}.hero{display:flex;justify-content:space-between;align-items:center}.hero strong{font-size:24px}.hero p{margin:6px 0;color:#68788b}.tag{font-size:12px;letter-spacing:1.5px;background:#c8ed38;color:#1c2532;padding:8px;border-radius:8px;font-weight:700}
-.glass{background:rgba(255,255,255,.63);backdrop-filter:blur(16px);border:1px solid rgba(140,155,170,.28);border-radius:17px;padding:26px;box-shadow:0 12px 45px #15253611}.actions{display:flex;flex-wrap:wrap;gap:8px}.feedback{background:#e8edf4;border-radius:8px;padding:12px;margin-top:16px;word-break:break-word}form{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}label{display:flex;flex-direction:column;gap:6px;min-width:190px;font-size:13px}input{padding:9px;border:1px solid #94a7bc;border-radius:8px;background:rgba(255,255,255,.8);color:#121c29}footer{font-size:12px;color:#7a899c}
-@media(prefers-color-scheme:dark){:root{background:#141c26;color:#f1f6fa}.hero p{color:#a0b0c3}.glass{background:rgba(38,49,64,.7);border-color:rgba(195,210,230,.15);box-shadow:0 8px 50px #03070e55}.feedback{background:#1d2a3d;color:#d8e6f5}input{color:#ebf2fa;background:#172231;border-color:#435369}footer{color:#8e9bad}}
+/* Design tokens: the one source of every colour, type, spacing, radius, shadow and
+ * motion value in the renderer. Components and screens use these variables only.
+ * The typed names for TypeScript live in tokens.ts; tests/unit/design-tokens.test.ts
+ * keeps the two in step and checks WCAG AA contrast for both themes.
+ * Decisions: docs/architecture/adr/0011-design-system.md and 0012-bundled-font.md. */
 
-/* Phase 1 proof legibility. Design-system work happens in later phases. */
-.project-status{margin:14px 0 8px;color:#53667d;font-size:14px}
-.project-list{margin:8px 0 0;padding-left:24px;line-height:1.75}
-.project-list li{padding:4px 0;overflow-wrap:anywhere}
-@media(prefers-color-scheme:dark){.project-status{color:#b0c2d5}}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
+@font-face{
+  font-family:'Inter';
+  src:url('./fonts/InterVariable.woff2') format('woff2');
+  font-weight:100 900;
+  font-style:normal;
+  font-display:block;
+}
 
-.project-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:9px 0}
-.project-row strong{margin-right:8px}
-.project-row button{white-space:nowrap}
-.project-status-label{display:inline-flex;padding:3px 9px;border-radius:20px;background:#adca48;color:#112016;font-size:11px;text-transform:uppercase;font-weight:700}
-.project-list{list-style:none;padding-left:0}.project-list li{border-top:1px solid rgba(130,150,170,.3)}
-button:disabled{opacity:.55;cursor:wait}
-@media(max-width:700px){.hero{flex-direction:column;align-items:flex-start;gap:10px}.wrap{padding:12px}.glass{padding:16px}label{min-width:140px}.project-row{flex-wrap:wrap}}
+/* Theme-independent scales. */
+:root{
+  --tm-font-sans:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --tm-font-mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
 
-/* Phase 2 responsive cockpit shell; all theme values are derived from the OS. */
-.intro-row,.section-header{display:flex;align-items:center;justify-content:space-between;gap:18px}
-.intro-row h1{margin:0 0 6px;font-size:clamp(22px,3vw,32px);letter-spacing:-.03em}
-.intro-row p{margin:0;color:#64758b}
-.glass h2{margin-top:0;font-size:18px}
-.pill{border:1px solid #4e87dc;color:#2159b4;border-radius:40px;padding:9px 13px;white-space:nowrap;font-size:12px;font-weight:700}
-.settings-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px;align-items:start}
-.settings-grid .glass{min-width:0}
-.header-actions{align-items:center}
-.theme-indicator{font-size:12px;color:#5b6d83}
-.muted{color:#63778e;font-size:14px}
-.path-text{overflow-wrap:anywhere;padding:10px 12px;border:1px solid rgba(90,110,130,.28);border-radius:8px;font-size:12px}
-.help-panel{border-color:#7296e5}
-.help-panel li{margin:10px 0;line-height:1.45}
-@media(prefers-color-scheme:dark){.intro-row p,.theme-indicator,.muted{color:#afbdd0}.pill{color:#b6d7ff;border-color:#5681cb}}
-@media(max-width:900px){.settings-grid{grid-template-columns:1fr}}
-@media(max-width:700px){.intro-row,.section-header{flex-direction:column;align-items:flex-start}.header-actions{flex-wrap:wrap}}
+  --tm-text-xs:12px;
+  --tm-text-sm:13px;
+  --tm-text-md:14px;
+  --tm-text-lg:16px;
+  --tm-text-xl:18px;
+  --tm-text-2xl:22px;
+  --tm-text-3xl:28px;
+  --tm-text-figure:32px;
+  --tm-text-figure-lg:44px;
 
-/* Foundation accessibility: keep controls inside the measured CSS viewport at 200% zoom. */
-:root{--focus-ring:#17469a}
-button,input,textarea{font:inherit;max-width:100%}
-button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid var(--focus-ring);outline-offset:3px}
-.wrap{grid-template-columns:minmax(0,1fr)}
-.glass,.hero>div,.intro-row>div,.project-row>div,.actions{min-width:0}
-.hero,.intro-row,.section-header,.project-row{flex-wrap:wrap}
-.hero p,.intro-row p,.muted,.theme-indicator,.project-status,footer{color:#43566b}
-.pill,.tag,button{white-space:normal;overflow-wrap:anywhere}
-form label{flex:1 1 190px;min-width:0;max-width:100%}
-input,textarea{width:100%;padding:9px;border:1px solid #70859a;border-radius:8px;background:rgba(255,255,255,.92);color:#121c29}
-textarea{min-height:72px;resize:vertical}
-.glass,.project-row,.path-text,.feedback,.help-panel{overflow-wrap:anywhere}
-.project-row button{white-space:normal}
-@media(prefers-color-scheme:dark){:root{--focus-ring:#c8ed38}.hero p,.intro-row p,.muted,.theme-indicator,.project-status,footer{color:#b4c3d4}input,textarea{color:#ebf2fa;background:#172231;border-color:#70859a}}
+  --tm-leading-tight:1.2;
+  --tm-leading-snug:1.35;
+  --tm-leading-normal:1.5;
+
+  --tm-weight-regular:400;
+  --tm-weight-medium:500;
+  --tm-weight-semibold:600;
+  --tm-weight-bold:700;
+
+  --tm-tracking-tight:-0.02em;
+  --tm-tracking-normal:-0.006em;
+  --tm-tracking-caps:0.06em;
+
+  --tm-space-0-5:2px;
+  --tm-space-1:4px;
+  --tm-space-1-5:6px;
+  --tm-space-2:8px;
+  --tm-space-2-5:10px;
+  --tm-space-3:12px;
+  --tm-space-4:16px;
+  --tm-space-5:20px;
+  --tm-space-6:24px;
+  --tm-space-8:32px;
+  --tm-space-10:40px;
+  --tm-space-12:48px;
+  --tm-space-16:64px;
+
+  --tm-radius-xs:3px;
+  --tm-radius-sm:5px;
+  --tm-radius-md:7px;
+  --tm-radius-lg:10px;
+  --tm-radius-xl:14px;
+  --tm-radius-pill:999px;
+
+  --tm-control-sm:28px;
+  --tm-control-md:34px;
+  --tm-control-lg:40px;
+
+  --tm-duration-fast:100ms;
+  --tm-duration-base:160ms;
+  --tm-duration-slow:240ms;
+  --tm-ease-standard:cubic-bezier(0.2,0,0,1);
+  --tm-ease-exit:cubic-bezier(0.4,0,1,1);
+
+  --tm-content-max:1200px;
+  --tm-z-sticky:10;
+  --tm-z-toast:40;
+  --tm-z-tooltip:50;
+}
+
+@media (prefers-reduced-motion:reduce){
+  :root{--tm-duration-fast:0ms;--tm-duration-base:0ms;--tm-duration-slow:0ms}
+}
+
+/* Light theme. Also the default before the theme is resolved. */
+:root,[data-theme="light"]{
+  color-scheme:light;
+  --tm-color-bg:#f6f7f9;
+  --tm-color-surface:#ffffff;
+  --tm-color-surface-subtle:#f1f3f5;
+  --tm-color-surface-hover:#eceef1;
+  --tm-color-surface-selected:#fff4db;
+  --tm-color-border:#e1e4e8;
+  --tm-color-border-strong:#c9ced5;
+  --tm-color-border-control:#7d8792;
+  --tm-color-text:#15191e;
+  --tm-color-text-secondary:#4a535e;
+  --tm-color-text-muted:#5f6873;
+  --tm-color-accent:#f59e0b;
+  --tm-color-accent-hover:#e48f00;
+  --tm-color-accent-pressed:#cf8200;
+  --tm-color-accent-subtle:#fff4db;
+  --tm-color-accent-text:#8a5100;
+  --tm-color-text-on-accent:#1c1400;
+  --tm-color-focus-ring:#9a5b00;
+  --tm-color-danger:#c4271b;
+  --tm-color-danger-hover:#a91f15;
+  --tm-color-danger-text:#b42318;
+  --tm-color-danger-subtle:#fdecea;
+  --tm-color-text-on-danger:#ffffff;
+  --tm-color-success-text:#146c3a;
+  --tm-color-success-subtle:#e5f5ec;
+  --tm-color-info-text:#1d4fb8;
+  --tm-color-info-subtle:#e8f0fe;
+  --tm-color-skeleton:#e6e9ed;
+  --tm-color-overlay:#0b0d10;
+  --tm-color-tooltip-bg:#1f242a;
+  --tm-color-tooltip-text:#f3f5f7;
+
+  --tm-status-draft-fg:#4a535e;
+  --tm-status-draft-bg:#eef0f3;
+  --tm-status-sent-fg:#1d4fb8;
+  --tm-status-sent-bg:#e8f0fe;
+  --tm-status-paid-fg:#146c3a;
+  --tm-status-paid-bg:#e5f5ec;
+  --tm-status-overdue-fg:#b42318;
+  --tm-status-overdue-bg:#fdecea;
+  --tm-status-signed-fg:#5b34b5;
+  --tm-status-signed-bg:#f0ebfc;
+  --tm-status-locked-fg:#39424d;
+  --tm-status-locked-bg:#e3e7ec;
+
+  --tm-shadow-xs:0 1px 1px rgba(16,22,30,0.05);
+  --tm-shadow-sm:0 1px 2px rgba(16,22,30,0.06),0 1px 3px rgba(16,22,30,0.05);
+  --tm-shadow-md:0 4px 12px rgba(16,22,30,0.08),0 1px 3px rgba(16,22,30,0.06);
+  --tm-shadow-lg:0 18px 48px rgba(16,22,30,0.18),0 4px 12px rgba(16,22,30,0.08);
+  --tm-overlay-opacity:0.42;
+}
+
+/* Dark theme: charcoal neutrals, the same amber, lighter status text. */
+[data-theme="dark"]{
+  color-scheme:dark;
+  --tm-color-bg:#0f1114;
+  --tm-color-surface:#171a1e;
+  --tm-color-surface-subtle:#1d2125;
+  --tm-color-surface-hover:#23282e;
+  --tm-color-surface-selected:#2e2412;
+  --tm-color-border:#2a3036;
+  --tm-color-border-strong:#3a4148;
+  --tm-color-border-control:#6b7580;
+  --tm-color-text:#eceff2;
+  --tm-color-text-secondary:#b3bbc4;
+  --tm-color-text-muted:#9aa3ad;
+  --tm-color-accent:#ffb020;
+  --tm-color-accent-hover:#ffc04d;
+  --tm-color-accent-pressed:#e99c0c;
+  --tm-color-accent-subtle:#2e2412;
+  --tm-color-accent-text:#ffc04d;
+  --tm-color-text-on-accent:#1a1300;
+  --tm-color-focus-ring:#ffb020;
+  --tm-color-danger:#c9372c;
+  --tm-color-danger-hover:#b02c22;
+  --tm-color-danger-text:#ff8a80;
+  --tm-color-danger-subtle:#3a1714;
+  --tm-color-text-on-danger:#ffffff;
+  --tm-color-success-text:#6fd49a;
+  --tm-color-success-subtle:#10291c;
+  --tm-color-info-text:#8ab4ff;
+  --tm-color-info-subtle:#16233d;
+  --tm-color-skeleton:#262b31;
+  --tm-color-overlay:#000000;
+  --tm-color-tooltip-bg:#e9edf1;
+  --tm-color-tooltip-text:#15191e;
+
+  --tm-status-draft-fg:#b3bbc4;
+  --tm-status-draft-bg:#262b31;
+  --tm-status-sent-fg:#8ab4ff;
+  --tm-status-sent-bg:#16233d;
+  --tm-status-paid-fg:#6fd49a;
+  --tm-status-paid-bg:#10291c;
+  --tm-status-overdue-fg:#ff8a80;
+  --tm-status-overdue-bg:#3a1714;
+  --tm-status-signed-fg:#c3a6ff;
+  --tm-status-signed-bg:#261b3d;
+  --tm-status-locked-fg:#d2d8de;
+  --tm-status-locked-bg:#30363d;
+
+  --tm-shadow-xs:0 1px 1px rgba(0,0,0,0.3);
+  --tm-shadow-sm:0 1px 2px rgba(0,0,0,0.4),0 1px 3px rgba(0,0,0,0.3);
+  --tm-shadow-md:0 6px 16px rgba(0,0,0,0.45),0 1px 3px rgba(0,0,0,0.35);
+  --tm-shadow-lg:0 22px 56px rgba(0,0,0,0.6),0 4px 14px rgba(0,0,0,0.4);
+  --tm-overlay-opacity:0.6;
+}

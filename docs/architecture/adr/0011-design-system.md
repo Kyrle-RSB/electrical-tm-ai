@@ -1,0 +1,26 @@
+# ADR-0011: One in-house design system, high-voltage amber on neutral greys
+
+**Status:** accepted, 2026-11-28 (Phase 2, item "Design system").
+
+**Context:** every later screen (shell, jobs, time, tickets, invoices, reports) needs one look, in light and dark, that a contractor would be proud to show a customer. The renderer had a single stylesheet of one-off colours, no components and a theme that only followed the operating system. The packaged page runs under a strict CSP (`style-src 'self'`, `font-src 'self'`, no network), so nothing may come from a CDN, and inline style attributes are not used.
+
+**Chosen:**
+* **Tokens:** `apps/desktop/src/renderer/theme/tokens.css` is the one source of every colour, type size, weight, spacing step, radius, shadow, control height and motion value, as `--tm-*` custom properties. Light values sit on `:root` and `[data-theme="light"]`, dark values on `[data-theme="dark"]`, so a subtree can also be themed. `tokens.ts` gives the same names a typed export (`token.color.accent` is `var(--tm-color-accent)`) and lists the contrast pairs that must pass. Theme colours are plain `#rrggbb` so contrast can be computed exactly.
+* **Accent: high-voltage amber** (`#f59e0b` light, `#ffb020` dark) with near-black text on it (8.5:1 and 10.1:1). Amber reads as electrical (meter yellow, safety marking, a live circuit) without lightning-bolt cartoons, and it stands apart from the generic SaaS blue. It is used sparingly: the primary button, the selected tab, focus rings, the brand mark. Blue stays free to mean "sent". Text in the accent colour uses a darker amber (`#8a5100`, 6.4:1) in light mode. Neutrals are cool greys; dark mode is charcoal, not navy.
+* **Status colours** for the six document states: draft (grey), sent (blue), paid (green), overdue (red), signed (violet, with a check), locked (slate, with a lock). Every badge carries the word, so colour is never the only signal.
+* **Contrast is a test:** `tests/unit/design-tokens.test.ts` checks every listed pair in both themes (4.5:1 for text, 3:1 for focus rings and field borders), that both themes define exactly the typed names, that stylesheets use tokens and no raw colours, gradients or remote URLs, and that no component uses an inline style. The existing packaged smoke still measures every visible text node at 200% zoom in both themes.
+* **Theme:** follows the operating system by default; Settings > Appearance offers System, Light or Dark. The choice is a per-computer display preference in renderer `localStorage` (`tm.appearance`), not business data, so it is not in SQLite or backups. The theme is applied before first paint.
+* **Components** (`apps/desktop/src/renderer/components/ui/`): button (primary, secondary, ghost, danger; three sizes; loading; icon), text, number, money, date, text area and select fields with label, hint and error; checkbox; switch; segmented control; table (sortable headers with `aria-sort`, numeric alignment, totals row, empty and loading rows); card and stat figure; dialog on the native `<dialog>`; toast; empty state; badge and status badge; tabs (WAI-ARIA keyboard model); tooltip; keyboard hint; a small built-in stroke icon set. Pure rules (sorting, tab keys, money display, shortcuts, theme resolution) live in plain `.ts` files with unit tests.
+* **Money in components:** fields collect text and the domain parses it into cents at the boundary. Display regroups the domain's exact decimal text (`formatMoney`) into `$1,234.50`; no arithmetic on money happens in the renderer.
+* **Motion:** 100 to 240 ms with one standard easing; `prefers-reduced-motion` sets every duration to zero.
+* **Components page:** Help > "Open components page" shows every token and component, the live contrast ratio of each pair, in either theme.
+
+**Not chosen:**
+* A UI library (Radix, MUI, Chakra, shadcn, Mantine). Each adds packages, CSS-in-JS or inline styles that fight the CSP, and a second design language. The native `<dialog>`, form controls and a few small React components cover what is needed. If a later screen needs a complex primitive (combobox, date range picker), a new ADR weighs one small headless package against building it.
+* Tailwind or a CSS preprocessor: more toolchain for a token set this size.
+* Electric blue as the accent: calm but generic, and it would collide with "sent".
+* Storing the theme choice in SQLite: a display preference should not travel inside a business backup to another computer.
+
+**Consequences:** no new npm dependency. Every new screen uses these components and tokens; a new colour means a token in both themes plus a contrast pair, or the tests fail. Item 2 (the new shell) replaces the `.wrap`/`.hero` layout in `theme/screens.css`.
+
+**Development screenshots:** an unpackaged build started with `TM_DEV_PROFILE_DIR` set to a folder named `electrical-tm-dev-<name>` directly in the system temp folder uses that empty profile instead of `ElectricalTMCockpit-P2-Internal`, so a second dev instance (for screenshots or design review) runs beside the first without sharing its data or its single-instance lock. Packaged builds ignore it (`resolveDevelopmentProfile` in `apps/desktop/src/main/bootstrap.ts`, tested in `tests/integration/startup-evidence.test.ts`).

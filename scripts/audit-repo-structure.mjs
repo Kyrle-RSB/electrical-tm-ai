@@ -23,7 +23,17 @@ const supplemental=new Set([
  'tests/fixtures/synthetic-receipt.png','tests/foundation/foundation.test.ts','tests/integration/backup-location.test.ts',
  'tests/integration/financial-evidence-locks.test.ts','tests/integration/migration-rescue.test.ts','tests/integration/operation-queue.test.ts',
  'tests/integration/pdf-storage.test.ts','tests/integration/project-crud.test.ts','tests/integration/startup-evidence.test.ts',
- 'tests/security/ipc-error-envelope.test.ts','tests/unit/quantity.test.ts','tests/unit/rate-snapshots.test.ts','tsconfig.probe.json'
+ 'tests/security/ipc-error-envelope.test.ts','tests/unit/quantity.test.ts','tests/unit/rate-snapshots.test.ts','tsconfig.probe.json',
+ // Phase 2 design system (ADR-0011, ADR-0012): tokens, bundled font, components and their tests.
+ 'docs/architecture/adr/0011-design-system.md','docs/architecture/adr/0012-bundled-font.md',
+ 'apps/desktop/src/renderer/theme/tokens.ts','apps/desktop/src/renderer/theme/contrast.ts','apps/desktop/src/renderer/theme/base.css',
+ 'apps/desktop/src/renderer/theme/screens.css','apps/desktop/src/renderer/theme/AppearanceProvider.tsx',
+ 'apps/desktop/src/renderer/theme/fonts/InterVariable.woff2','apps/desktop/src/renderer/theme/fonts/OFL.txt',
+ ...['Badge','Button','Card','Choice','Dialog','EmptyState','Field','Icon','Kbd','Table','Tabs','Toast','Tooltip'].map(n=>`apps/desktop/src/renderer/components/ui/${n}.tsx`),
+ 'apps/desktop/src/renderer/components/ui/components.css','apps/desktop/src/renderer/components/ui/format.ts',
+ 'apps/desktop/src/renderer/components/ui/index.ts','apps/desktop/src/renderer/components/ui/interaction.ts',
+ 'apps/desktop/src/renderer/features/design-system/ComponentsPage.tsx','apps/desktop/src/renderer/features/settings/AppearanceSetting.tsx',
+ 'tests/unit/design-tokens.test.ts','tests/unit/design-components.test.ts'
 ]);
 const ignored=new Set(['node_modules','dist-probe','.vite','.git','out','coverage','dist','.local-evidence']);
 const discovered=[];

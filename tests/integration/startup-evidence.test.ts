@@ -221,3 +221,15 @@ test('lifecycle proof opens existing marker and receipt read-only and never crea
   fs.openSync=open;assert.deepEqual(fs.readFileSync(marker),prior);assert.deepEqual(fs.readFileSync(receipt),previousReceipt);
  }finally{fs.openSync=open;fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });
+
+import {resolveDevelopmentProfile} from '../../apps/desktop/src/main/bootstrap';
+test('a development profile override is honoured only unpackaged, named, and directly in the temp folder',()=>{
+ const tmp=fs.realpathSync(os.tmpdir());
+ const good=path.join(tmp,'electrical-tm-dev-screens-1');
+ assert.equal(resolveDevelopmentProfile({TM_DEV_PROFILE_DIR:good},false),good);
+ assert.equal(resolveDevelopmentProfile({TM_DEV_PROFILE_DIR:good},true),null,'packaged builds ignore it');
+ assert.equal(resolveDevelopmentProfile({},false),null);
+ for(const bad of ['electrical-tm-dev-x','relative/electrical-tm-dev-x',path.join(tmp,'other-name'),path.join(tmp,'nested','electrical-tm-dev-x'),
+  path.join(tmp,'electrical-tm-dev-'),path.join(tmp,'electrical-tm-dev-a b'),path.join(os.homedir(),'electrical-tm-dev-x'),path.join(tmp,'electrical-tm-dev-x','..','electrical-tm-dev-y','..')])
+  assert.equal(resolveDevelopmentProfile({TM_DEV_PROFILE_DIR:bad},false),null,bad);
+});

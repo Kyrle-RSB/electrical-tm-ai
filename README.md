@@ -10,7 +10,7 @@ Where it is going: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 - `main` runs from source as a local foundation: projects, business profile and logo, managed photos, verified backup and restore, and a sample PDF.
 - Underneath: checksum-verified SQLite migrations 0001 to 0009, guarded IPC, exact integer-cent money, dated labour rates, half-day overhead, material splits, immutable PDF storage and OS-protected credentials. Most of these have no screens yet.
-- CI on `main`: 169 tests pass, plus typecheck, lint, source and secret audits, and packaged builds on macOS (arm64) and Windows (x64). Check the current commit's CI before relying on any of it; a result for one commit does not certify another.
+- CI on `main`: 186 tests pass, plus typecheck, lint, source and secret audits, and packaged builds on macOS (arm64) and Windows (x64). Check the current commit's CI before relying on any of it; a result for one commit does not certify another.
 - **Not built:** a full invoicing workflow, Claude receipt reading, Gmail sending, and multi-user sync. None of these is implemented or claimed.
 - Independent security, financial, data-recovery and install reviews are still to come. No release is authorized, and no build is fit for real billing.
 
