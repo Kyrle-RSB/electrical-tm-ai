@@ -28,7 +28,7 @@ import {storeImmutablePdf} from '../../../../packages/pdf/src/common/stored-pdf'
 import {LocalOperationQueue} from '../../../../packages/application/src/use-cases/backup-restore';
 import {createCockpitWindow} from './window';
 import {establishSingleInstance} from './os/single-instance';
-import {createStartupRecorder,resolveLifecycleProof,createShutdownCoordinator,createRendererFailureGate,selectRendererUrl} from './bootstrap';
+import {createStartupRecorder,resolveDevelopmentProfile,resolveLifecycleProof,createShutdownCoordinator,createRendererFailureGate,selectRendererUrl} from './bootstrap';
 
 protocol.registerSchemesAsPrivileged([{scheme:'tmapp',privileges:{standard:true,secure:true,supportFetchAPI:true,stream:true}}]);
 // Internal construction profile is intentionally separate from the owner's previously
@@ -36,9 +36,10 @@ protocol.registerSchemesAsPrivileged([{scheme:'tmapp',privileges:{standard:true,
 const isPackagedSmoke=process.argv.includes('--tm-smoke');
 const lifecycleProof=isPackagedSmoke?resolveLifecycleProof(process.env):null;
 const rawIpcProof=isPackagedSmoke&&process.argv.includes('--tm-raw-ipc-proof');
+const developmentProfile=isPackagedSmoke?null:resolveDevelopmentProfile(process.env,app.isPackaged);
 const P2_TEST_PROFILE=isPackagedSmoke
   ? lifecycleProof?.profile??fs.mkdtempSync(path.join(os.tmpdir(),'electrical-tm-packaged-smoke-'))
-  : path.join(app.getPath('appData'),'ElectricalTMCockpit-P2-Internal');
+  : developmentProfile??path.join(app.getPath('appData'),'ElectricalTMCockpit-P2-Internal');
 fs.mkdirSync(P2_TEST_PROFILE,{recursive:true,mode:0o700});
 app.setPath('userData',P2_TEST_PROFILE);
 let mainWindow!:BrowserWindow;

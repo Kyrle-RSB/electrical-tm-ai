@@ -1,7 +1,8 @@
 import {useRef,useState} from 'react';
+import {Badge,Button,EmptyState,TextArea,TextField} from '../../components/ui';
 import type {DetailedProject} from '../../../../../../packages/contracts/src/ipc/projects.contract';
 export type ProjectRow=DetailedProject;
-export function ProjectsPanel({projects,onChanged,track}:{projects:ProjectRow[];onChanged:()=>Promise<void>;track:<T>(action:()=>Promise<T>)=>Promise<T>}){
+export function ProjectsPanel({projects,ready=true,onChanged,track}:{projects:ProjectRow[];ready?:boolean;onChanged:()=>Promise<void>;track:<T>(action:()=>Promise<T>)=>Promise<T>}){
  const [error,setError]=useState('');const [busy,setBusy]=useState<string|null>(null);
  const lock=useRef(false);
  const [editing,setEditing]=useState<string|null>(null);
@@ -21,29 +22,34 @@ export function ProjectsPanel({projects,onChanged,track}:{projects:ProjectRow[];
   }catch(err){setError('Unable to save project: '+String(err));}
   finally{lock.current=false;setBusy(null);}
  }
- return <><ul className="project-list">{projects.map(project=><li key={project.id}>
-    <div className="project-row"><div><strong>{project.project_code}</strong>
-      <span className="project-status-label">{project.status}</span><div>{project.customer_name} · Site: {project.site_address}</div>
-      {project.project_name&&<div>{project.project_name}</div>}
-      {project.billing_address&&<div>Billing: {project.billing_address}</div>}
-      {project.notes&&<div>Notes: {project.notes}</div>}
-    </div><div className="actions"><button type="button" disabled={busy!==null} onClick={()=>startEdit(project)}>Edit</button>
-    <button type="button" disabled={busy!==null} onClick={()=>{setEditing(null);setStatusEditing(project.id);setStatusReason('');setError('');}}>
-      {project.status==='archived'?'Reopen':'Archive'}</button></div></div>
-    {statusEditing===project.id&&<form aria-label={'Change project status '+project.project_code} onSubmit={e=>{e.preventDefault();void toggle(project);}}>
-      <label>Status reason<input required maxLength={500} value={statusReason} onChange={e=>setStatusReason(e.target.value)}/></label>
-      <button disabled={busy!==null} type="submit">Confirm {project.status==='archived'?'reopen':'archive'}</button>
-      <button disabled={busy!==null} type="button" onClick={()=>{setStatusEditing(null);setStatusReason('');}}>Cancel status change</button>
+ return <>{ready&&projects.length===0&&<EmptyState compact icon="inbox" title="No projects yet">Create a fictional project above. It is saved in the local database and reloads after a restart.</EmptyState>}
+  <ul className="project-list">{projects.map(project=><li key={project.id}>
+    <div className="project-row"><div className="project-row__main">
+      <div className="project-row__title"><strong className="project-row__code">{project.project_code}</strong>
+      <Badge tone={project.status==='archived'?'slate':'success'} dot>{project.status==='archived'?'Archived':'Active'}</Badge></div>
+      <div className="project-row__meta">{project.customer_name} · Site: {project.site_address}</div>
+      {project.project_name&&<div className="project-row__detail">{project.project_name}</div>}
+      {project.billing_address&&<div className="project-row__detail">Billing: {project.billing_address}</div>}
+      {project.notes&&<div className="project-row__detail">Notes: {project.notes}</div>}
+    </div><div className="actions"><Button size="sm" disabled={busy!==null} onClick={()=>startEdit(project)}>Edit</Button>
+    <Button size="sm" variant="ghost" disabled={busy!==null} onClick={()=>{setEditing(null);setStatusEditing(project.id);setStatusReason('');setError('');}}>
+      {project.status==='archived'?'Reopen':'Archive'}</Button></div></div>
+    {statusEditing===project.id&&<form className="inline-form form-grid" aria-label={'Change project status '+project.project_code} onSubmit={e=>{e.preventDefault();void toggle(project);}}>
+      <TextField label="Status reason" className="form-grid__wide" hint="Saved in the audit trail with the change." required maxLength={500} value={statusReason} onChange={e=>setStatusReason(e.target.value)}/>
+      <div className="actions form-grid__full">
+      <Button variant="primary" loading={busy===project.id} disabled={busy!==null} type="submit">Confirm {project.status==='archived'?'reopen':'archive'}</Button>
+      <Button variant="ghost" disabled={busy!==null} type="button" onClick={()=>{setStatusEditing(null);setStatusReason('');}}>Cancel status change</Button></div>
     </form>}
-    {editing===project.id&&<form aria-label={'Edit project '+project.project_code} onSubmit={e=>{e.preventDefault();save(project.id);}}>
-      <label>Code<input required maxLength={60} value={draft.code} onChange={e=>setDraft({...draft,code:e.target.value})}/></label>
-      <label>Customer<input required maxLength={200} value={draft.customer} onChange={e=>setDraft({...draft,customer:e.target.value})}/></label>
-      <label>Site address<input required maxLength={300} value={draft.siteAddress} onChange={e=>setDraft({...draft,siteAddress:e.target.value})}/></label>
-      <label>Project name<input maxLength={200} value={draft.details.name} onChange={e=>setDraft({...draft,details:{...draft.details,name:e.target.value}})}/></label>
-      <label>Billing address<input maxLength={600} value={draft.details.billingAddress} onChange={e=>setDraft({...draft,details:{...draft.details,billingAddress:e.target.value}})}/></label>
-      <label>Project notes<textarea maxLength={2000} value={draft.details.notes} onChange={e=>setDraft({...draft,details:{...draft.details,notes:e.target.value}})}/></label>
-      <button disabled={busy!==null} type="submit">Save changes</button>
-      <button type="button" disabled={busy!==null} onClick={()=>setEditing(null)}>Cancel</button>
+    {editing===project.id&&<form className="inline-form form-grid" aria-label={'Edit project '+project.project_code} onSubmit={e=>{e.preventDefault();save(project.id);}}>
+      <TextField label="Code" required maxLength={60} value={draft.code} onChange={e=>setDraft({...draft,code:e.target.value})}/>
+      <TextField label="Customer" required maxLength={200} value={draft.customer} onChange={e=>setDraft({...draft,customer:e.target.value})}/>
+      <TextField label="Site address" required maxLength={300} value={draft.siteAddress} onChange={e=>setDraft({...draft,siteAddress:e.target.value})}/>
+      <TextField label="Project name" optional maxLength={200} value={draft.details.name} onChange={e=>setDraft({...draft,details:{...draft.details,name:e.target.value}})}/>
+      <TextField label="Billing address" optional maxLength={600} value={draft.details.billingAddress} onChange={e=>setDraft({...draft,details:{...draft.details,billingAddress:e.target.value}})}/>
+      <TextArea label="Project notes" optional className="form-grid__full" maxLength={2000} value={draft.details.notes} onChange={e=>setDraft({...draft,details:{...draft.details,notes:e.target.value}})}/>
+      <div className="actions form-grid__full">
+      <Button variant="primary" loading={busy===project.id} disabled={busy!==null} type="submit">Save changes</Button>
+      <Button type="button" variant="ghost" disabled={busy!==null} onClick={()=>setEditing(null)}>Cancel</Button></div>
     </form>}
-    </li>)}</ul>{error&&<p role="alert">{error}</p>}</>;
+    </li>)}</ul>{error&&<p className="inline-error" role="alert">{error}</p>}</>;
 }

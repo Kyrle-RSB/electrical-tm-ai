@@ -1,4 +1,5 @@
 import {useEffect,useState} from 'react';
+import {Badge,Button,Card} from '../../components/ui';
 import type {BackupListEntry} from '../../../../../../packages/contracts/src/ipc/settings.contract';
 /** A backup is not a proof of recovery until the separate restore test passes. */
 export function BackupLocation({track}:{track:<T>(action:()=>Promise<T>)=>Promise<T>}){
@@ -22,14 +23,14 @@ export function BackupLocation({track}:{track:<T>(action:()=>Promise<T>)=>Promis
   }catch(error){setStatus('Backup operation failed: '+String(error));}
   finally{setBusy(false);}
  };
- return <section className="glass" aria-labelledby="backup-title">
-  <h2 id="backup-title">Backup and recovery</h2>
-  <p>Keep backups on a separate drive or folder. A successful backup needs a verified restore before relying on it.</p>
+ return <Card title="Backup and recovery" titleId="backup-title" description="Keep backups on a separate drive or folder. A successful backup needs a verified restore before relying on it.">
   <p className="path-text">{folder||'No folder configured'}</p>
-  <div className="actions"><button disabled={busy} onClick={()=>perform('choose')}>Choose backup folder</button>
-   <button disabled={busy||!folder} onClick={()=>perform('create')}>Back up now</button>
-   <button disabled={busy||!folder} onClick={()=>perform('list')}>Verify saved backups</button></div>
-  {backups&&backups.length>0&&<ul aria-label="Saved backup verification results">{backups.map(b=><li key={b.id} className="path-text">{b.id}: {b.status==='verified'?`Verified at scan, ${b.fileCount} files (${b.createdUtc})`:'Rejected: do not rely on this archive'}</li>)}</ul>}
+  <div className="actions"><Button disabled={busy} onClick={()=>perform('choose')}>Choose backup folder</Button>
+   <Button variant="primary" disabled={busy||!folder} onClick={()=>perform('create')}>Back up now</Button>
+   <Button variant="ghost" disabled={busy||!folder} onClick={()=>perform('list')}>Verify saved backups</Button></div>
+  {backups&&backups.length>0&&<ul className="backup-list" aria-label="Saved backup verification results">{backups.map(b=><li key={b.id} className="backup-list__item">
+   {b.status==='verified'?<Badge tone="success" dot>Verified</Badge>:<Badge tone="danger" dot>Rejected</Badge>}
+   <span className="path-text">{b.id}: {b.status==='verified'?`Verified at scan, ${b.fileCount} files (${b.createdUtc})`:'Rejected: do not rely on this archive'}</span></li>)}</ul>}
   <p role="status" aria-live="polite" className="project-status">{status}</p>
- </section>;
+ </Card>;
 }

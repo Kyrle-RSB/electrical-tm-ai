@@ -4,7 +4,11 @@ import {BackupLocation} from './features/settings/BackupLocation';
 import {ProjectsPanel,type ProjectRow} from './features/projects/ProjectsPanel';
 import {CockpitShell} from './shell/CockpitShell';
 import {GlassCard} from './components/GlassCard';
+import {AppearanceSetting} from './features/settings/AppearanceSetting';
+import {ComponentsPage} from './features/design-system/ComponentsPage';
+import {Badge,Button,Stat,TextArea,TextField} from './components/ui';
 export default function App(){
+  const [view,setView]=useState<'cockpit'|'components'>('cockpit');
   const [message,setMessage]=useState('Foundation ready. Synthetic data only.');
   const [projects,setProjects]=useState<ProjectRow[]>([]);
   const [projectStatus,setProjectStatus]=useState('Loading saved fictional projects...');
@@ -62,39 +66,51 @@ export default function App(){
     }catch(error){setMessage('Restore failed: '+String(error));}
     finally{operations.current.restoring=false;setRestoring(false);}
   };
-  return <CockpitShell>
+  const activeCount=projects.filter(p=>p.status!=='archived').length;
+  const archivedCount=projects.length-activeCount;
+  return <CockpitShell onOpenComponents={()=>setView('components')}>
+    <div hidden={view!=='components'}>{view==='components'&&<ComponentsPage onBack={()=>setView('cockpit')}/>}</div>
+    <div className="cockpit" hidden={view!=='cockpit'}>
     <div className="intro-row"><div><h1>Local foundation cockpit</h1>
       <p>One operator, one business. A real Electron foundation, not yet approved for customer billing.</p></div>
-      <div className="pill">Phase 2 · Development</div></div>
+      <Badge tone="info">Phase 2 · Development</Badge></div>
+    <div className="stat-strip" aria-label="Project counts">
+      <Stat label="Saved projects" value={projectsReady?String(projects.length):'...'}/>
+      <Stat label="Active" value={projectsReady?String(activeCount):'...'} tone={activeCount>0?'success':'neutral'}/>
+      <Stat label="Archived" value={projectsReady?String(archivedCount):'...'}/>
+    </div>
     <fieldset className="operation-scope" aria-label="Local operations" disabled={restoring} aria-busy={restoring}>
-    <GlassCard title="Foundation tools">
-      <p className="muted">Verify the desktop services, imports, document export, backups and protected fake-token workflow.</p>
+    <GlassCard title="Foundation tools" description="Verify the desktop services, imports, document export, backups and protected fake-token workflow.">
       <div className="actions">
-        <button onClick={()=>run('Health',()=>window.tmBridge.ping())}>Check health</button>
-        <button onClick={()=>run('Receipt import',()=>window.tmBridge.importReceiptImage())}>Import test photo</button>
-        <button onClick={()=>run('Invoice PDF',()=>window.tmBridge.saveSyntheticPdf())}>Save synthetic PDF</button>
-        <button disabled={restoring||pending>0} onClick={()=>void restore()}>Restore verified backup</button>
-        <button onClick={()=>run('Secure fake token',()=>window.tmBridge.storeFakeSecretProof())}>Store FAKE token</button>
-        <button onClick={()=>run('Check fake token',()=>window.tmBridge.checkFakeSecretProof())}>Check fake token</button>
-        <button onClick={()=>run('Revoke fake token',()=>window.tmBridge.removeFakeSecretProof())}>Revoke fake token</button>
+        <Button icon="check" onClick={()=>run('Health',()=>window.tmBridge.ping())}>Check health</Button>
+        <Button onClick={()=>run('Receipt import',()=>window.tmBridge.importReceiptImage())}>Import test photo</Button>
+        <Button icon="file" onClick={()=>run('Invoice PDF',()=>window.tmBridge.saveSyntheticPdf())}>Save synthetic PDF</Button>
+        <Button disabled={restoring||pending>0} loading={restoring} onClick={()=>void restore()}>Restore verified backup</Button>
+        <Button variant="ghost" onClick={()=>run('Secure fake token',()=>window.tmBridge.storeFakeSecretProof())}>Store FAKE token</Button>
+        <Button variant="ghost" onClick={()=>run('Check fake token',()=>window.tmBridge.checkFakeSecretProof())}>Check fake token</Button>
+        <Button variant="ghost" onClick={()=>run('Revoke fake token',()=>window.tmBridge.removeFakeSecretProof())}>Revoke fake token</Button>
       </div>
       <div aria-live="polite" className="feedback" role="status">{message}</div>
     </GlassCard>
-    <GlassCard title="Projects">
-      <form onSubmit={async(e)=>{e.preventDefault();if(createLock.current||!projectsReady||operations.current.restoring)return;createLock.current=true;setCreating(true);try{await run('Create project',async()=>{const result=await window.tmBridge.createProject({code,customer,siteAddress,details});await refresh();return result;});}finally{createLock.current=false;setCreating(false);}}}>
-        <label>Project code<input value={code} onChange={e=>setCode(e.target.value)} required maxLength={60}/></label>
-        <label>Customer<input value={customer} onChange={e=>setCustomer(e.target.value)} required maxLength={200}/></label>
-        <label>Job-site address<input value={siteAddress} onChange={e=>setAddress(e.target.value)} required maxLength={300}/></label>
-        <label>Project name<input value={details.name} onChange={e=>setDetails({...details,name:e.target.value})} maxLength={200}/></label>
-        <label>Billing address<input value={details.billingAddress} onChange={e=>setDetails({...details,billingAddress:e.target.value})} maxLength={600}/></label>
-        <label>Project notes<textarea value={details.notes} onChange={e=>setDetails({...details,notes:e.target.value})} maxLength={2000}/></label>
-        <button type="submit" disabled={creating||!projectsReady}>{creating?'Saving project...':'Create fictional project'}</button>
-        <button type="button" onClick={()=>run('List projects',async()=>{await refresh();return 'Updated';})}>Refresh</button>
+    <GlassCard title="Projects" description="Fictional jobs only. Each one keeps its code, customer and job-site address.">
+      <form className="form-grid" onSubmit={async(e)=>{e.preventDefault();if(createLock.current||!projectsReady||operations.current.restoring)return;createLock.current=true;setCreating(true);try{await run('Create project',async()=>{const result=await window.tmBridge.createProject({code,customer,siteAddress,details});await refresh();return result;});}finally{createLock.current=false;setCreating(false);}}}>
+        <TextField label="Project code" value={code} onChange={e=>setCode(e.target.value)} required maxLength={60}/>
+        <TextField label="Customer" value={customer} onChange={e=>setCustomer(e.target.value)} required maxLength={200}/>
+        <TextField label="Job-site address" value={siteAddress} onChange={e=>setAddress(e.target.value)} required maxLength={300}/>
+        <TextField label="Project name" optional value={details.name} onChange={e=>setDetails({...details,name:e.target.value})} maxLength={200}/>
+        <TextField label="Billing address" optional value={details.billingAddress} onChange={e=>setDetails({...details,billingAddress:e.target.value})} maxLength={600}/>
+        <TextArea label="Project notes" optional className="form-grid__full" value={details.notes} onChange={e=>setDetails({...details,notes:e.target.value})} maxLength={2000}/>
+        <div className="actions form-grid__full">
+          <Button type="submit" variant="primary" icon="plus" loading={creating} disabled={!projectsReady}>{creating?'Saving project...':'Create fictional project'}</Button>
+          <Button type="button" variant="ghost" onClick={()=>run('List projects',async()=>{await refresh();return 'Updated';})}>Refresh</Button>
+        </div>
       </form>
       <p className="project-status" role="status">{projectStatus}</p>
-      <ProjectsPanel key={restoreGeneration} projects={projects} onChanged={refresh} track={track}/>
+      <ProjectsPanel key={restoreGeneration} projects={projects} ready={projectsReady} onChanged={refresh} track={track}/>
     </GlassCard>
-    <div className="settings-grid"><BusinessBranding key={restoreGeneration} track={track}/><BackupLocation track={track}/></div>
+    <div className="settings-grid"><BusinessBranding key={restoreGeneration} track={track}/>
+      <div className="settings-stack"><AppearanceSetting/><BackupLocation track={track}/></div></div>
     </fieldset>
+    </div>
   </CockpitShell>;
 }

@@ -135,3 +135,15 @@ export function selectRendererUrl(packaged:boolean,devUrl:string|undefined):stri
  if(parsed.protocol!=='http:'||!['127.0.0.1','localhost','[::1]'].includes(parsed.hostname)||!parsed.port||parsed.username||parsed.password||parsed.pathname!=='/'||parsed.search||parsed.hash)throw new Error('Invalid development renderer URL');
  return parsed.href;
 }
+/** Development only: a second unpackaged instance (screenshots, design review) may use its
+ * own empty profile, so it neither shares data nor the single-instance lock with the first.
+ * Accepted only for an unpackaged build and only as a folder directly in the temp
+ * directory named electrical-tm-dev-<letters, digits or dashes>. Anything else is ignored. */
+export function resolveDevelopmentProfile(env:NodeJS.ProcessEnv,packaged:boolean,tmpdir=os.tmpdir()):string|null{
+ const requested=env.TM_DEV_PROFILE_DIR;
+ if(packaged||!requested||!path.isAbsolute(requested))return null;
+ const parent=fs.realpathSync(tmpdir),name=path.basename(requested);
+ if(!/^electrical-tm-dev-[a-zA-Z0-9-]{1,40}$/.test(name))return null;
+ let dir:string;try{dir=fs.realpathSync(path.dirname(requested));}catch{return null;}
+ return dir===parent?path.join(parent,name):null;
+}
