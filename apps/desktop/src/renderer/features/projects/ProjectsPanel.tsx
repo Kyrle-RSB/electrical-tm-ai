@@ -23,7 +23,7 @@ export function ProjectsPanel({projects,ready=true,onChanged,track}:{projects:Pr
   finally{lock.current=false;setBusy(null);}
  }
  return <>{ready&&projects.length===0&&<EmptyState compact icon="inbox" title="No projects yet">Create a fictional project above. It is saved in the local database and reloads after a restart.</EmptyState>}
-  <ul className="project-list">{projects.map(project=><li key={project.id}>
+  <ul className="project-list">{projects.map(project=><li key={project.id} id={'project-row-'+project.id} tabIndex={-1}>
     <div className="project-row"><div className="project-row__main">
       <div className="project-row__title"><strong className="project-row__code">{project.project_code}</strong>
       <Badge tone={project.status==='archived'?'slate':'success'} dot>{project.status==='archived'?'Archived':'Active'}</Badge></div>

@@ -44,6 +44,36 @@ export async function runPackagedCockpitFlow(win:CockpitWindow,theme:{themeSourc
    await new Promise(r=>setTimeout(r,50));
    if(field.value!==value)throw new Error('Synthetic input update failed');
   };
+  // The shell (contract 18): a fresh profile opens on Today; every sidebar screen renders a
+  // heading, and screens not built yet a designed empty state; the palette opens on Mod+K,
+  // returns focus when closed and runs a command by keyboard.
+  stage='shell';
+  const nav=label=>[...document.querySelectorAll('nav[aria-label="Main"] button')].find(e=>e.textContent.trim()===label);
+  const screen=id=>document.querySelector('[data-screen="'+id+'"]');
+  const visible=id=>{const node=screen(id);return !!node&&!node.hidden&&node.getClientRects().length>0;};
+  const go=async(id,label)=>{nav(label).click();await wait(()=>visible(id)&&nav(label).getAttribute('aria-current')==='page'&&document.title===label+' · Electrical T&M'&&document.querySelectorAll('[data-screen]:not([hidden])').length===1,'navigate '+id);};
+  await wait(()=>visible('today')&&screen('today').querySelector('h1')?.textContent==='Today'&&button(screen('today'),'Go to Jobs'),'opens on Today');
+  if([...document.querySelectorAll('nav[aria-label="Main"] button')].map(e=>e.textContent.trim()).join('|')!=='Today|Jobs|Customers|Crew|Materials|Invoices|Reports|Settings')throw new Error('Sidebar screens differ');
+  for(const [id,label] of [['customers','Customers'],['crew','Crew'],['materials','Materials'],['invoices','Invoices'],['reports','Reports'],['settings','Settings'],['jobs','Jobs'],['today','Today']]){
+   await go(id,label);
+   if(screen(id).querySelector('h1')?.textContent!==label)throw new Error('Screen heading missing');
+   if(!['jobs','settings'].includes(id)&&!(screen(id).querySelector('.tm-empty__title')?.textContent?.length>10))throw new Error('Designed empty state missing');
+  }
+  stage='palette';
+  const mac=/Mac|iPhone|iPad/.test(navigator.platform||navigator.userAgent);
+  const shortcut=()=>window.dispatchEvent(new KeyboardEvent('keydown',{key:'k',metaKey:mac,ctrlKey:!mac,bubbles:true,cancelable:true}));
+  const paletteInput=()=>document.querySelector('dialog[open] input[role="combobox"]');
+  const opener=nav('Jobs');opener.focus();shortcut();
+  await wait(()=>paletteInput()&&document.activeElement===paletteInput()&&document.querySelectorAll('dialog[open] [role="option"]').length>=16,'palette opens with focus in its input');
+  button(document.querySelector('dialog[open]'),'Close').click();
+  await wait(()=>!document.querySelector('dialog[open]')&&document.activeElement===opener,'palette closes and focus returns');
+  shortcut();
+  await wait(()=>paletteInput()&&document.activeElement===paletteInput(),'palette reopens');
+  const query=paletteInput();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(query,'sett');query.dispatchEvent(new Event('input',{bubbles:true}));
+  await wait(()=>document.querySelector('dialog[open] [role="option"][aria-selected="true"]')?.textContent?.startsWith('Settings')&&query.getAttribute('aria-activedescendant')===document.querySelector('dialog[open] [role="option"][aria-selected="true"]')?.id,'palette filters');
+  query.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
+  await wait(()=>!document.querySelector('dialog[open]')&&visible('settings')&&document.activeElement===screen('settings').querySelector('h1'),'palette runs the command and focuses the screen');
+  stage='initial';
   await wait(()=>formByButton('Save local business profile')&&formByButton('Create fictional project'),'initial forms');
   const business=formByButton('Save local business profile');
   const originalProfile=await window.tmBridge.getBusinessProfile();
@@ -60,6 +90,7 @@ export async function runPackagedCockpitFlow(win:CockpitWindow,theme:{themeSourc
   button(business,'Save local business profile').click();
   await wait(async()=>(await window.tmBridge.getBusinessProfile()).legalName==='Synthetic Cockpit Electric','business profile save');
   stage='required-customer';
+  await go('jobs','Jobs');
   const create=formByButton('Create fictional project');
   await set(create,'Project code','COCKPIT-UI-001');await set(create,'Customer','');
   if(!field(create,'Customer')?.validity.valueMissing)throw new Error('Required customer validation absent');
@@ -114,13 +145,14 @@ export async function runPackagedCockpitFlow(win:CockpitWindow,theme:{themeSourc
   window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
   await wait(()=>!document.getElementById('help-region')&&document.activeElement===help,'help escape and focus return');
   stage='disabled-backup';
+  await go('settings','Settings');
   const backup=button(document,'Back up now');
   if(!backup?.disabled||!document.querySelector('[aria-labelledby=backup-title]')?.textContent?.includes('Choose a backup folder before creating a backup.'))throw new Error('Disabled backup reason absent');
-  return {profileSaved:true,projectCreated:true,projectEdited:true,archiveReopen:true,stableIdentity:true,helpFocusReturn:true,duplicateDenied:true,missingCustomerDenied:true,taxLengthDenied:true,cancelEdit:true,cancelStatus:true,longContent:true,disabledReason:true,projectId:first.id};
+  return {profileSaved:true,projectCreated:true,projectEdited:true,archiveReopen:true,stableIdentity:true,helpFocusReturn:true,duplicateDenied:true,missingCustomerDenied:true,taxLengthDenied:true,cancelEdit:true,cancelStatus:true,longContent:true,disabledReason:true,shellOpensToday:true,shellNavigation:true,paletteNavigation:true,paletteFocusReturn:true,projectId:first.id};
   }catch{ return {syntheticFailureStage:stage}; }
  })()`);
  const failedStage=(interaction as {syntheticFailureStage?:string})?.syntheticFailureStage;
- if(failedStage){if(['initial','tax-length','profile-save','required-customer','project-create','duplicate','cancel-edit','edit','cancel-status','archive','reopen','identity','help','disabled-backup'].includes(failedStage))progress(failedStage);throw new Error('Synthetic cockpit interaction failed');}
+ if(failedStage){if(['shell','palette','initial','tax-length','profile-save','required-customer','project-create','duplicate','cancel-edit','edit','cancel-status','archive','reopen','identity','help','disabled-backup'].includes(failedStage))progress(failedStage);throw new Error('Synthetic cockpit interaction failed');}
  const originalSize=win.getContentSize(),originalZoom=win.webContents.getZoomFactor(),originalTheme=theme.themeSource,originalVisible=win.isVisible();
  const layouts:unknown[]=[];
  try{
@@ -355,20 +387,20 @@ export async function runDevelopmentHmrFlow(win:SecurityWindow,nonce:string,read
  const before=await win.webContents.executeJavaScript(`(async()=>{
   const expected=${JSON.stringify('initial-'+nonce)},marker=${JSON.stringify(nonce)},deadline=Date.now()+20000;
   const css=()=>getComputedStyle(document.documentElement).getPropertyValue('--tm-hmr-proof').trim();
-  while(Date.now()<deadline&&(!document.querySelector('.intro-row h1')||css()!==expected))await new Promise(r=>setTimeout(r,50));
+  while(Date.now()<deadline&&(!document.querySelector('[data-screen]:not([hidden]) h1')||css()!==expected))await new Promise(r=>setTimeout(r,50));
   const health=await window.tmBridge.ping();
   document.documentElement.dataset.tmHmrDocumentMarker=marker;
-  return {value:css(),title:document.querySelector('.intro-row h1')?.textContent,csp:document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content,health:health.status==='ok'&&health.foundation===true,requireAbsent:typeof require==='undefined',processAbsent:typeof process==='undefined',marker:document.documentElement.dataset.tmHmrDocumentMarker};
+  return {value:css(),title:document.querySelector('[data-screen]:not([hidden]) h1')?.textContent,csp:document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content,health:health.status==='ok'&&health.foundation===true,requireAbsent:typeof require==='undefined',processAbsent:typeof process==='undefined',marker:document.documentElement.dataset.tmHmrDocumentMarker};
  })()`);
  const b=before as {value?:string;title?:string;csp?:string;health?:boolean;requireAbsent?:boolean;processAbsent?:boolean;marker?:string};
- if(b.value!=='initial-'+nonce||b.title!=='Local foundation cockpit'||b.csp!==expectedCsp||b.health!==true||b.requireAbsent!==true||b.processAbsent!==true||b.marker!==nonce)throw new Error('Development proof initial observations invalid');
+ if(b.value!=='initial-'+nonce||b.title!=='Today'||b.csp!==expectedCsp||b.health!==true||b.requireAbsent!==true||b.processAbsent!==true||b.marker!==nonce)throw new Error('Development proof initial observations invalid');
  ready(before);
  const after=await win.webContents.executeJavaScript(`(async()=>{
   const expected=${JSON.stringify('updated-'+nonce)},marker=${JSON.stringify(nonce)},deadline=Date.now()+30000;
   const css=()=>getComputedStyle(document.documentElement).getPropertyValue('--tm-hmr-proof').trim();
   while(Date.now()<deadline&&css()!==expected)await new Promise(r=>setTimeout(r,50));
   const health=await window.tmBridge.ping();
-  return {value:css(),title:document.querySelector('.intro-row h1')?.textContent,csp:document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content,health:health.status==='ok'&&health.foundation===true,requireAbsent:typeof require==='undefined',processAbsent:typeof process==='undefined',marker:document.documentElement.dataset.tmHmrDocumentMarker===marker?marker:null};
+  return {value:css(),title:document.querySelector('[data-screen]:not([hidden]) h1')?.textContent,csp:document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content,health:health.status==='ok'&&health.foundation===true,requireAbsent:typeof require==='undefined',processAbsent:typeof process==='undefined',marker:document.documentElement.dataset.tmHmrDocumentMarker===marker?marker:null};
  })()`);
  const a=after as typeof b;
  if(a.value!=='updated-'+nonce||a.title!==b.title||a.csp!==expectedCsp||a.health!==true||a.requireAbsent!==true||a.processAbsent!==true||a.marker!==nonce||win.webContents.getURL()!==url.href)throw new Error('Development proof hot-update observations invalid');

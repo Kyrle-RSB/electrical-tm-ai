@@ -293,7 +293,7 @@ The following machine-readable inventory preserves each original Phase 2 task an
     ],
     "implementedPaths": [
       "apps/desktop/src/renderer/App.tsx",
-      "apps/desktop/src/renderer/shell/CockpitShell.tsx",
+      "apps/desktop/src/renderer/shell/AppShell.tsx",
       "apps/desktop/src/renderer/components/GlassCard.tsx",
       "apps/desktop/src/renderer/theme/tokens.css",
       "apps/desktop/src/renderer/theme/system-theme.ts",

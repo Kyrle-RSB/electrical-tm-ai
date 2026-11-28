@@ -33,7 +33,11 @@ const supplemental=new Set([
  'apps/desktop/src/renderer/components/ui/components.css','apps/desktop/src/renderer/components/ui/format.ts',
  'apps/desktop/src/renderer/components/ui/index.ts','apps/desktop/src/renderer/components/ui/interaction.ts',
  'apps/desktop/src/renderer/features/design-system/ComponentsPage.tsx','apps/desktop/src/renderer/features/settings/AppearanceSetting.tsx',
- 'tests/unit/design-tokens.test.ts','tests/unit/design-components.test.ts'
+ 'tests/unit/design-tokens.test.ts','tests/unit/design-components.test.ts',
+ // Phase 2 app shell (ADR-0013): sidebar, header search, command palette and typed in-house router.
+ 'docs/architecture/adr/0013-app-shell-routing.md',
+ ...['AppShell.tsx','CommandPalette.tsx','Screen.tsx','commands.ts','router.ts','routes.ts'].map(n=>`apps/desktop/src/renderer/shell/${n}`),
+ 'tests/unit/app-shell.test.ts'
 ]);
 const ignored=new Set(['node_modules','dist-probe','.vite','.git','out','coverage','dist','.local-evidence']);
 const discovered=[];
